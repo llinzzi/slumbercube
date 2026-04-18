@@ -6,11 +6,11 @@
 
 | 引脚 | GPIO | 功能 |
 |------|------|------|
-| SCL  | IO3  | SPI时钟 |
-| SDA  | IO12 | SPI数据(MOSI) |
-| RST  | IO10 | 复位 |
-| CS   | IO0  | 片选 |
-| DC   | IO1  | 数据/命令选择 |
+| SCL  | IO3  |  SPI时钟 |7
+| SDA  | IO12 | SPI数据(MOSI) | 10
+| RST  | IO10 | 复位 | null
+| CS   | IO0  | 片选 | GND
+| DC   | IO1  | 数据/命令选择 | 8
 
 ## 功能特性
 

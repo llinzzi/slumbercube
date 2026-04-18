@@ -35,10 +35,10 @@ spi_device_handle_t ssd1322_get_spi_handle(void)
 esp_err_t ssd1322_init(void)
 {
     esp_err_t ret;
-    
-    // 配置GPIO
+
+    // 配置GPIO (DC + RST)
     gpio_config_t io_conf = {
-        .pin_bit_mask = (1ULL << PIN_NUM_RST) | (1ULL << PIN_NUM_DC),
+        .pin_bit_mask = (1ULL << PIN_NUM_DC) | (1ULL << PIN_NUM_RST),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -78,14 +78,12 @@ esp_err_t ssd1322_init(void)
         return ret;
     }
     
-    // 硬件复位
-    gpio_set_level(PIN_NUM_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    // 硬件复位: RES# 低脉冲 >10us
     gpio_set_level(PIN_NUM_RST, 0);
-    vTaskDelay(pdMS_TO_TICKS(10));
+    vTaskDelay(pdMS_TO_TICKS(1));  // 保持低电平 1ms
     gpio_set_level(PIN_NUM_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(10));
-    
+    vTaskDelay(pdMS_TO_TICKS(5));  // 等待复位完成
+
     // 初始化SSD1322寄存器
     ssd1322_send_cmd(0xFD); ssd1322_send_data(0x12);
     ssd1322_send_cmd(0xAE);

@@ -11,7 +11,10 @@ static const char *TAG = "MAIN";
 void app_main(void)
 {
     ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL");
-    
+
+    // 通电后等待1秒让硬件稳定
+    vTaskDelay(pdMS_TO_TICKS(1000));
+
     // 初始化SSD1322驱动
     ESP_ERROR_CHECK(ssd1322_init());
     

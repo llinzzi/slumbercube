@@ -6,11 +6,11 @@
 
 // GPIO配置
 #define LCD_HOST       SPI2_HOST
-#define PIN_NUM_MOSI   12  // IO18: SDA
-#define PIN_NUM_CLK    3   // IO3: SCL  
-#define PIN_NUM_CS     0   // IO0: CS
-#define PIN_NUM_DC     1   // IO1: DC
-#define PIN_NUM_RST    10  // IO10: RST
+#define PIN_NUM_MOSI   10  // IO10: SDA
+#define PIN_NUM_CLK    7   // IO7: SCL
+#define PIN_NUM_CS     -1  // IO0: CS (硬件接地)
+#define PIN_NUM_DC     8   // IO8: DC
+#define PIN_NUM_RST    20  // IO20: RST
 
 // 显示参数
 #define LCD_H_RES      256
