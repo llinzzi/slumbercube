@@ -1,14 +1,5 @@
-#include <string.h>
-
 #include "screens.h"
-#include "images.h"
-#include "fonts.h"
-#include "actions.h"
 #include "vars.h"
-#include "styles.h"
-#include "ui.h"
-
-#include <string.h>
 
 objects_t objects;
 lv_obj_t *tick_value_change_obj;
@@ -31,14 +22,7 @@ void create_screen_main() {
             lv_obj_set_pos(obj, 21, 24);
             lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
             lv_label_set_text(obj, "Hello, world!");
-            // 设置白色文字
             lv_obj_set_style_text_color(obj, lv_color_make(0xFF, 0xFF, 0xFF), 0);
-        }
-        {
-            lv_obj_t *obj = lv_image_create(parent_obj);
-            lv_obj_set_pos(obj, 143, 0);
-            lv_obj_set_size(obj, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-            lv_image_set_src(obj, &img_sunning);
         }
     }
     
