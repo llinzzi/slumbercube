@@ -22,7 +22,7 @@ void create_screen_main() {
         objects.time_label = label;
         lv_obj_set_pos(label, 80, 20);
         lv_obj_set_size(label, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_label_set_text(label, "00:00:00");
+        lv_label_set_text(label, "00:00");
         lv_obj_set_style_text_color(label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
     }
 
@@ -35,7 +35,7 @@ void tick_screen_main() {
     localtime_r(&now, &timeinfo);
 
     static char time_str[16] = {0};
-    strftime(time_str, sizeof(time_str), "%H:%M:%S", &timeinfo);
+    strftime(time_str, sizeof(time_str), "%H:%M", &timeinfo);
     lv_label_set_text(objects.time_label, time_str);
 }
 
