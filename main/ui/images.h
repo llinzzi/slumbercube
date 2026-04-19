@@ -1,5 +1,5 @@
-#ifndef EEZ_LVGL_UI_IMAGES_H
-#define EEZ_LVGL_UI_IMAGES_H
+#ifndef LVGL_UI_IMAGES_H
+#define LVGL_UI_IMAGES_H
 
 #include <lvgl.h>
 
@@ -19,9 +19,8 @@ typedef struct _ext_img_desc_t {
 
 extern const ext_img_desc_t images[1];
 
-
 #ifdef __cplusplus
 }
 #endif
 
-#endif /*EEZ_LVGL_UI_IMAGES_H*/
+#endif // LVGL_UI_IMAGES_H

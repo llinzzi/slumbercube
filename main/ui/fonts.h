@@ -1,5 +1,5 @@
-#ifndef EEZ_LVGL_UI_FONTS_H
-#define EEZ_LVGL_UI_FONTS_H
+#ifndef LVGL_UI_FONTS_H
+#define LVGL_UI_FONTS_H
 
 #include <lvgl.h>
 
@@ -7,10 +7,8 @@
 extern "C" {
 #endif
 
-
-
 #ifdef __cplusplus
 }
 #endif
 
-#endif /*EEZ_LVGL_UI_FONTS_H*/
+#endif // LVGL_UI_FONTS_H
