@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ui/ui.h"
+#include "sleep.h"
 
 static const char *TAG = "LVGL_ADAPTER";
 static lv_display_t *g_disp = NULL;

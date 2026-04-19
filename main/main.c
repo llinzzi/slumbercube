@@ -6,33 +6,39 @@
 #include "ui.h"
 #include "lvgl.h"
 #include "wifi.h"
+#include "sleep.h"
+#include "esp_sleep.h"
 
 static const char *TAG = "MAIN";
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL");
+    esp_sleep_wakeup_cause_t wakeup_cause = esp_sleep_get_wakeup_cause();
+    bool from_deep_sleep = (wakeup_cause != ESP_SLEEP_WAKEUP_UNDEFINED);
 
-    // Initialize WiFi first (blocks until connected)
-    ESP_ERROR_CHECK(wifi_init_sta());
+    ESP_LOGI(TAG, "Wakeup cause: %d, from_deep_sleep: %d", wakeup_cause, from_deep_sleep);
 
-    // Initialize SSD1322 driver
+    if (!from_deep_sleep) {
+        // Cold boot: init WiFi and sync time
+        ESP_LOGI(TAG, "Cold boot, initializing WiFi and NTP...");
+        wifi_init_sta();
+    } else {
+        ESP_LOGI(TAG, "Wake from deep sleep, skipping WiFi");
+    }
+
     ESP_ERROR_CHECK(ssd1322_init());
-
-    // Initialize LVGL adapter
     ESP_ERROR_CHECK(lvgl_adapter_init());
 
-    // Wait for LVGL task to start
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    // Create UI
     ESP_ERROR_CHECK(ui_wrapper_init());
 
-    // Wait for UI to load
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    // Force screen refresh
     lv_refr_now(NULL);
+
+    // Init sleep manager (starts sleep timer on cold boot)
+    sleep_init(from_deep_sleep);
 
     ESP_LOGI(TAG, "All initialized successfully");
 
