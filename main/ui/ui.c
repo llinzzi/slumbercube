@@ -1,7 +1,7 @@
 #include <string.h>
 #include "ui.h"
 
-static int16_t currentScreen = -1;
+static int16_t currentScreen = 0;
 
 static lv_obj_t *getLvglObjectFromIndex(int32_t index) {
     if (index == -1) {

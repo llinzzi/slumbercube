@@ -16,9 +16,4 @@ esp_err_t lvgl_adapter_init(void);
  */
 lv_display_t* lvgl_adapter_get_display(void);
 
-/**
- * @brief 设置UI已准备好
- */
-void lvgl_adapter_set_ui_ready(void);
-
 #endif // LVGL_ADAPTER_H

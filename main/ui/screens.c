@@ -1,5 +1,7 @@
 #include "screens.h"
 #include "vars.h"
+#include "ssd1322_driver.h"
+#include <string.h>
 #include <time.h>
 #include <sys/time.h>
 
@@ -30,13 +32,24 @@ void create_screen_main() {
 }
 
 void tick_screen_main() {
+    static int tick_count = -1;
+    tick_count++;
+
     time_t now = time(NULL);
     struct tm timeinfo = {0};
     localtime_r(&now, &timeinfo);
 
-    static char time_str[16] = {0};
-    strftime(time_str, sizeof(time_str), "%H:%M", &timeinfo);
-    lv_label_set_text(objects.time_label, time_str);
+    char buf[32];
+    if (tick_count % 2 == 0) {
+        strftime(buf, sizeof(buf), "%H:%M", &timeinfo);
+    } else {
+        strftime(buf, sizeof(buf), "%H %M", &timeinfo);
+    }
+    lv_label_set_text(objects.time_label, buf);
+
+    lv_area_t full_screen = {0, 0, LCD_H_RES - 1, LCD_V_RES - 1};
+    lv_obj_invalidate_area(lv_screen_active(), &full_screen);
+    lv_refr_now(NULL);
 }
 
 typedef void (*tick_screen_func_t)(void);

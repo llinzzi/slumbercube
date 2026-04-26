@@ -5,17 +5,23 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "esp_task_wdt.h"
 #include "ui/ui.h"
 
 static const char *TAG = "LVGL_ADAPTER";
 static lv_display_t *g_disp = NULL;
 static uint8_t *g_i4_buffer = NULL;
-static bool ui_initialized = false;
 
 static void lvgl_task(void *arg);
 
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
+    static uint32_t flush_n;
+    flush_n++;
+    if (flush_n % 100 == 1) {
+        ESP_LOGI(TAG, "FLUSH n=%lu", (unsigned long)flush_n);
+    }
+
     int x_start = area->x1;
     int y_start = area->y1;
     int x_end = area->x2;
@@ -88,7 +94,7 @@ esp_err_t lvgl_adapter_init(void)
 
     lv_display_set_flush_cb(g_disp, lvgl_flush_cb);
 
-    xTaskCreate(lvgl_task, "lvgl_task", 4096, NULL, 5, NULL);
+    xTaskCreate(lvgl_task, "lvgl_task", 8192, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "LVGL adapter initialized");
     return ESP_OK;
@@ -97,18 +103,19 @@ esp_err_t lvgl_adapter_init(void)
 static void lvgl_task(void *arg)
 {
     ESP_LOGI(TAG, "Starting LVGL task");
+    esp_task_wdt_add(NULL);
+    uint32_t count = 0;
     while (1) {
+        esp_task_wdt_reset();
         lv_timer_handler();
-        if (ui_initialized) {
+        /* Call ui_tick every 100 iterations (~1 second) */
+        count++;
+        if (count % 100 == 0) {
             ui_tick();
+            ESP_LOGI(TAG, "alive=%lu", (unsigned long)count);
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
-}
-
-void lvgl_adapter_set_ui_ready(void)
-{
-    ui_initialized = true;
 }
 
 lv_display_t* lvgl_adapter_get_display(void)
