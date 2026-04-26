@@ -18,15 +18,31 @@ void create_screen_main() {
     lv_obj_set_style_bg_color(obj, lv_color_make(0x00, 0x00, 0x00), 0);
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
 
-    {
-        lv_obj_t *parent_obj = obj;
-        lv_obj_t *label = lv_label_create(parent_obj);
-        objects.time_label = label;
-        lv_obj_set_pos(label, 80, 20);
-        lv_obj_set_size(label, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
-        lv_label_set_text(label, "00:00");
-        lv_obj_set_style_text_color(label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
-    }
+    static lv_style_t style_time;
+    lv_style_init(&style_time);
+    lv_style_set_text_color(&style_time, lv_color_make(0xFF, 0xFF, 0xFF));
+    lv_style_set_text_font(&style_time, &lv_font_montserrat_48);
+
+    lv_obj_t *label = lv_label_create(obj);
+    objects.hour_label = label;
+    lv_obj_set_pos(label, 48, 8);
+    lv_obj_set_size(label, 64, 48);
+    lv_label_set_text(label, "00");
+    lv_obj_add_style(label, &style_time, 0);
+
+    label = lv_label_create(obj);
+    objects.colon_label = label;
+    lv_obj_set_pos(label, 100, 8);
+    lv_obj_set_size(label, 32, 48);
+    lv_label_set_text(label, ":");
+    lv_obj_add_style(label, &style_time, 0);
+
+    label = lv_label_create(obj);
+    objects.minute_label = label;
+    lv_obj_set_pos(label, 132, 8);
+    lv_obj_set_size(label, 64, 48);
+    lv_label_set_text(label, "00");
+    lv_obj_add_style(label, &style_time, 0);
 
     tick_screen_main();
 }
@@ -39,13 +55,19 @@ void tick_screen_main() {
     struct tm timeinfo = {0};
     localtime_r(&now, &timeinfo);
 
-    char buf[32];
+    char buf[8];
+    strftime(buf, sizeof(buf), "%H", &timeinfo);
+    lv_label_set_text(objects.hour_label, buf);
+
+    strftime(buf, sizeof(buf), "%M", &timeinfo);
+    lv_label_set_text(objects.minute_label, buf);
+
+    /* Toggle colon visibility every second */
     if (tick_count % 2 == 0) {
-        strftime(buf, sizeof(buf), "%H:%M", &timeinfo);
+        lv_obj_set_style_text_color(objects.colon_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
     } else {
-        strftime(buf, sizeof(buf), "%H %M", &timeinfo);
+        lv_obj_set_style_text_color(objects.colon_label, lv_color_make(0x00, 0x00, 0x00), 0);
     }
-    lv_label_set_text(objects.time_label, buf);
 
     lv_area_t full_screen = {0, 0, LCD_H_RES - 1, LCD_V_RES - 1};
     lv_obj_invalidate_area(lv_screen_active(), &full_screen);
