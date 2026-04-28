@@ -32,7 +32,7 @@ void create_screen_main() {
 
     label = lv_label_create(obj);
     objects.colon_label = label;
-    lv_obj_set_pos(label, 100, 8);
+    lv_obj_set_pos(label, 112, 8);
     lv_obj_set_size(label, 32, 48);
     lv_label_set_text(label, ":");
     lv_obj_add_style(label, &style_time, 0);

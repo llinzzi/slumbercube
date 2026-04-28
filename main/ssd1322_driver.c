@@ -95,7 +95,7 @@ esp_err_t ssd1322_init(void)
     ssd1322_send_cmd(0xAB); ssd1322_send_data(0x01);
     ssd1322_send_cmd(0xB4); ssd1322_send_data(0xA0); ssd1322_send_data(0xFD);
     ssd1322_send_cmd(0xC1); ssd1322_send_data(0x80);
-    ssd1322_send_cmd(0xC7); ssd1322_send_data(0x0F);
+    ssd1322_send_cmd(0xC7); ssd1322_send_data(0x01);
     ssd1322_send_cmd(0xB1); ssd1322_send_data(0xE2);
     ssd1322_send_cmd(0xD1); ssd1322_send_data(0x82); ssd1322_send_data(0x20);
     ssd1322_send_cmd(0xBB); ssd1322_send_data(0x1F);
