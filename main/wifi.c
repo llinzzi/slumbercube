@@ -1,5 +1,6 @@
 #include "wifi.h"
 #include <string.h>
+#include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
@@ -51,33 +52,42 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
     }
 }
 
+void wifi_set_timezone(void)
+{
+    setenv("TZ", "CST-8", 1);
+    tzset();
+    ESP_LOGI(TAG, "Timezone set to CST-8 (UTC+8)");
+}
+
 static void sntp_init_time(void)
 {
     ESP_LOGI(TAG, "Initializing SNTP");
 
-    // Set timezone to CST (China Standard Time, UTC+8)
-    setenv("TZ", "CST-8", 1);
-    tzset();
+    wifi_set_timezone();
 
     sntp_setservername(0, "pool.ntp.org");
     sntp_setservername(1, "time.nist.gov");
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
     sntp_init();
 
-    // Wait for time to be set (simple delay approach)
-    vTaskDelay(pdMS_TO_TICKS(3000));
-
+    // Wait for time to be set, polling up to 10 seconds
+    int retry = 0;
+    const int max_retry = 20;
     time_t now = 0;
     struct tm timeinfo = {0};
-    time(&now);
-    localtime_r(&now, &timeinfo);
-    if (timeinfo.tm_year > (2020 - 1900)) {
-        ESP_LOGI(TAG, "SNTP sync success: %04d-%02d-%02d %02d:%02d:%02d",
-                 timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                 timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-    } else {
-        ESP_LOGW(TAG, "SNTP sync may have failed, time: %ld", (long)now);
+    for (retry = 0; retry < max_retry; retry++) {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        time(&now);
+        localtime_r(&now, &timeinfo);
+        if (timeinfo.tm_year > (2020 - 1900)) {
+            ESP_LOGI(TAG, "SNTP sync success (%dms): %04d-%02d-%02d %02d:%02d:%02d",
+                     (retry + 1) * 500,
+                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
+                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
+            return;
+        }
     }
+    ESP_LOGW(TAG, "SNTP sync failed after %dms, time: %ld", max_retry * 500, (long)now);
 }
 
 esp_err_t wifi_init_sta(void)
@@ -155,4 +165,48 @@ esp_err_t wifi_init_sta(void)
 bool wifi_is_connected(void)
 {
     return s_wifi_connected;
+}
+
+static const char *NVS_NAMESPACE = "clock";
+static const char *NVS_KEY_TIME_SET = "time_set";
+
+bool wifi_is_time_set(void)
+{
+    // Initialize NVS first (required after deep sleep reboot)
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        nvs_flash_erase();
+        ret = nvs_flash_init();
+    }
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        return false;
+    }
+
+    uint8_t value = 0;
+    err = nvs_get_u8(handle, NVS_KEY_TIME_SET, &value);
+    nvs_close(handle);
+
+    return (err == ESP_OK && value == 1);
+}
+
+void wifi_mark_time_set(void)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to open NVS: %s", esp_err_to_name(err));
+        return;
+    }
+
+    err = nvs_set_u8(handle, NVS_KEY_TIME_SET, 1);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Failed to set NVS value: %s", esp_err_to_name(err));
+    } else {
+        err = nvs_commit(handle);
+        ESP_LOGI(TAG, "Time set flag saved to NVS");
+    }
+    nvs_close(handle);
 }

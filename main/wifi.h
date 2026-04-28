@@ -6,5 +6,8 @@
 
 esp_err_t wifi_init_sta(void);
 bool wifi_is_connected(void);
+bool wifi_is_time_set(void);
+void wifi_mark_time_set(void);
+void wifi_set_timezone(void);
 
 #endif // WIFI_MANAGER_H

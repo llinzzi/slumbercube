@@ -20,7 +20,7 @@ void create_screen_main() {
 
     static lv_style_t style_time;
     lv_style_init(&style_time);
-    lv_style_set_text_color(&style_time, lv_color_make(0xFF, 0xFF, 0xFF));
+    lv_style_set_text_color(&style_time, lv_color_make(0x44, 0x44, 0x44));
     lv_style_set_text_font(&style_time, &lv_font_montserrat_48);
 
     lv_obj_t *label = lv_label_create(obj);
@@ -64,7 +64,7 @@ void tick_screen_main() {
 
     /* Toggle colon visibility every second */
     if (tick_count % 2 == 0) {
-        lv_obj_set_style_text_color(objects.colon_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
+        lv_obj_set_style_text_color(objects.colon_label, lv_color_make(0x44, 0x44, 0x44), 0);
     } else {
         lv_obj_set_style_text_color(objects.colon_label, lv_color_make(0x00, 0x00, 0x00), 0);
     }
