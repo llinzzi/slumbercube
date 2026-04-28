@@ -41,4 +41,14 @@ void ssd1322_send_data(uint8_t data);
  */
 spi_device_handle_t ssd1322_get_spi_handle(void);
 
+/**
+ * @brief 关闭OLED显示
+ */
+void ssd1322_display_off(void);
+
+/**
+ * @brief 打开OLED显示
+ */
+void ssd1322_display_on(void);
+
 #endif // SSD1322_DRIVER_H

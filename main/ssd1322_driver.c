@@ -32,6 +32,18 @@ spi_device_handle_t ssd1322_get_spi_handle(void)
     return g_spi;
 }
 
+void ssd1322_display_off(void)
+{
+    ssd1322_send_cmd(0xAE);  // Display off
+    ESP_LOGI(TAG, "Display off");
+}
+
+void ssd1322_display_on(void)
+{
+    ssd1322_send_cmd(0xAF);  // Display on
+    ESP_LOGI(TAG, "Display on");
+}
+
 esp_err_t ssd1322_init(void)
 {
     esp_err_t ret;
