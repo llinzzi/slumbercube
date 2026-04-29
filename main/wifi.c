@@ -175,19 +175,30 @@ bool wifi_is_time_set(void)
     // Initialize NVS first (required after deep sleep reboot)
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_LOGW(TAG, "NVS needs erase, erasing...");
         nvs_flash_erase();
         ret = nvs_flash_init();
+    }
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_flash_init failed: %s", esp_err_to_name(ret));
     }
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
     if (err != ESP_OK) {
+        ESP_LOGI(TAG, "NVS '%s' namespace not found (%s), time not set", NVS_NAMESPACE, esp_err_to_name(err));
         return false;
     }
 
     uint8_t value = 0;
     err = nvs_get_u8(handle, NVS_KEY_TIME_SET, &value);
     nvs_close(handle);
+
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "NVS time_set=%u -> time IS set", value);
+    } else {
+        ESP_LOGI(TAG, "NVS time_set not found (%s) -> time NOT set", esp_err_to_name(err));
+    }
 
     return (err == ESP_OK && value == 1);
 }

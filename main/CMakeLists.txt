@@ -3,8 +3,11 @@ idf_component_register(SRCS "main.c"
                             "lvgl_adapter.c"
                             "ui_wrapper.c"
                             "wifi.c"
+                            "weather_service.c"
+                            "weather_chart.c"
+                            "miniz_tinfl.c"
                             "ui/ui.c"
                             "ui/screens.c"
                             "ui/styles.c"
                     INCLUDE_DIRS "."
-                    REQUIRES lvgl__lvgl driver esp_netif esp_wifi lwip nvs_flash)
+                    REQUIRES lvgl__lvgl driver esp_netif esp_wifi lwip nvs_flash esp_http_client json)

@@ -26,6 +26,12 @@ void tick_screen_by_id(enum ScreensEnum screenId);
 void tick_screen(int screen_index);
 void create_screens(void);
 
+void screens_request_toggle(void);
+void screens_toggle_weather(void);
+bool screens_is_weather_visible(void);
+
+void screens_set_weather_data_ptr(const void *data);
+
 #ifdef __cplusplus
 }
 #endif

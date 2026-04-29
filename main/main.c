@@ -6,6 +6,7 @@
 #include "ui.h"
 #include "lvgl.h"
 #include "wifi.h"
+#include "weather_service.h"
 #include "esp_sleep.h"
 #include "driver/gpio.h"
 #include "iot_button.h"
@@ -19,12 +20,35 @@ static const char *TAG = "MAIN";
 #define LONG_PRESS_TIME_MS    3000
 
 static button_handle_t g_btn = NULL;
+static weather_data_t s_weather;
+
+static void button_short_press_cb(void *button_handle, void *usr_data)
+{
+    ESP_LOGI(TAG, "Short press, toggling weather/time");
+    screens_request_toggle();
+}
 
 static void button_long_press_cb(void *button_handle, void *usr_data)
 {
     ESP_LOGI(TAG, "Button long pressed, syncing time via WiFi...");
     wifi_init_sta();
     wifi_mark_time_set();
+
+    esp_err_t err = weather_fetch(&s_weather);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "--- Weather updated ---");
+        for (int i = 0; i < s_weather.count && i < 6; i++) {
+            ESP_LOGI(TAG, "  H%02d: %d°C pop=%d%% %s",
+                     s_weather.hourly[i].hour,
+                     s_weather.hourly[i].temp,
+                     s_weather.hourly[i].rain_prob,
+                     s_weather.hourly[i].text);
+        }
+        ESP_LOGI(TAG, "  (total %d hours)", s_weather.count);
+        screens_set_weather_data_ptr(&s_weather);
+    } else {
+        ESP_LOGE(TAG, "Weather fetch failed after long press");
+    }
 }
 
 void app_main(void)
@@ -35,10 +59,10 @@ void app_main(void)
     ESP_ERROR_CHECK(ssd1322_init());
     ssd1322_display_on();
 
-    // Initialize button for long-press detection
+    // Initialize button for short press + long-press detection
     button_config_t btn_cfg = {
         .long_press_time = LONG_PRESS_TIME_MS,
-        .short_press_time = 0,
+        .short_press_time = 200,
     };
     button_gpio_config_t gpio_cfg = {
         .gpio_num = BUTTON_GPIO_NUM,
@@ -47,8 +71,10 @@ void app_main(void)
     };
     esp_err_t err = iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &g_btn);
     if (err == ESP_OK) {
+        iot_button_register_cb(g_btn, BUTTON_SINGLE_CLICK, NULL, button_short_press_cb, NULL);
         iot_button_register_cb(g_btn, BUTTON_LONG_PRESS_START, NULL, button_long_press_cb, NULL);
-        ESP_LOGI(TAG, "Button initialized on GPIO%d, long press=%dms", BUTTON_GPIO_NUM, LONG_PRESS_TIME_MS);
+        ESP_LOGI(TAG, "Button initialized on GPIO%d, short=%dms long=%dms",
+                 BUTTON_GPIO_NUM, btn_cfg.short_press_time, LONG_PRESS_TIME_MS);
     } else {
         ESP_LOGE(TAG, "Failed to init button on GPIO%d: %s", BUTTON_GPIO_NUM, esp_err_to_name(err));
     }
@@ -56,13 +82,26 @@ void app_main(void)
     // Always set timezone after wake (TZ env var is lost during deep sleep)
     wifi_set_timezone();
 
-    // Check if time has been set before
+    // Connect WiFi: sync time on first boot, always fetch weather
     if (!wifi_is_time_set()) {
         ESP_LOGI(TAG, "Time not set, connecting WiFi to sync time");
         ESP_ERROR_CHECK(wifi_init_sta());
         wifi_mark_time_set();
     } else {
-        ESP_LOGI(TAG, "Time already set, skipping WiFi");
+        ESP_LOGI(TAG, "Time already set, quick WiFi for weather...");
+        wifi_init_sta();  // non-fatal if WiFi fails here
+    }
+
+    // Fetch weather data after WiFi is connected
+    err = weather_fetch(&s_weather);
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "Weather fetched: %d hours, first: H%02d %d°C pop=%d%%",
+                 s_weather.count,
+                 s_weather.count > 0 ? s_weather.hourly[0].hour : 0,
+                 s_weather.count > 0 ? s_weather.hourly[0].temp : 0,
+                 s_weather.count > 0 ? s_weather.hourly[0].rain_prob : 0);
+    } else {
+        ESP_LOGW(TAG, "Weather fetch failed, will retry on long press");
     }
 
     // Initialize LVGL adapter
@@ -73,6 +112,11 @@ void app_main(void)
 
     // Create UI
     ESP_ERROR_CHECK(ui_wrapper_init());
+
+    // Pass weather data to screens (if available)
+    if (s_weather.valid) {
+        screens_set_weather_data_ptr(&s_weather);
+    }
 
     // Wait for UI to load
     vTaskDelay(pdMS_TO_TICKS(100));
