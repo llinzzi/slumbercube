@@ -18,23 +18,21 @@ ser.setDTR(False)
 ser.reset_input_buffer()
 
 start = time.time()
-capture = False
+in_dump = False
 while time.time() - start < 30:
     line = ser.readline()
     if line:
         try:
             s = line.decode('utf-8', errors='replace').rstrip()
-            # Start capture at Parsed log, continue through crash dump until reboot
-            if 'Parsed' in s or 'Guru' in s or 'Backtrace' in s or 'MCAUSE' in s or 'MTVAL' in s or 'MEPC' in s:
+            if 'Guru Meditation' in s:
+                in_dump = True
                 print(s)
-            if 'WEATHER_SVC: HTTP' in s:
+            elif in_dump:
                 print(s)
-            if 'WEATHER_SVC: Decompressed' in s:
-                print(s)
-            if 'WEATHER_SVC: Parsed' in s:
-                print(s)
-            # Print register dump lines (contain ':0x')
-            if ':0x' in s and ('M' in s or 'S' in s or 'A' in s or 'T' in s or 'GP' in s):
+                if 'Rebooting' in s or 'rst:' in s or 'ESP-ROM' in s or 'ets' in s:
+                    in_dump = False
+                    print('--- end of dump ---')
+            elif any(k in s for k in ['WEATHER_SVC', 'WIFI', 'MAIN', 'Parsed', 'Decompressed']):
                 print(s)
         except:
             pass

@@ -23,7 +23,7 @@ while time.time() - start < 30:
     if line:
         try:
             s = line.decode('utf-8', errors='replace').rstrip()
-            if any(k in s for k in ['WEATHER_SVC', 'WIFI', 'MAIN', 'Gzip', 'Decompress', 'Parsed', 'error', 'Guru', 'panic', 'HTTP']):
+            if any(k in s for k in ['WEATHER_SVC', 'WIFI', 'MAIN', 'Gzip', 'Decompress', 'Parsed', 'error', 'Guru', 'panic', 'HTTP', 'FLUSH', 'alive', 'LVGL']):
                 print(s)
         except:
             pass

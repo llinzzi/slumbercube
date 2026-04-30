@@ -18,7 +18,7 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 {
     static uint32_t flush_n;
     flush_n++;
-    if (flush_n % 100 == 1) {
+    if (flush_n % 10 == 1) {
         ESP_LOGI(TAG, "FLUSH n=%lu", (unsigned long)flush_n);
     }
 

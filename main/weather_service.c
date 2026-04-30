@@ -12,6 +12,9 @@ static const char *TAG = "WEATHER_SVC";
 
 #define QWEATHER_URL "https://nn3aaqw4wr.re.qweatherapi.com/v7/weather/24h?location=101210101&key=e8e879aca230481f9201f67de0583184"
 
+/* Static decompressor in BSS — avoids heap metadata corruption from tinfl */
+static tinfl_decompressor s_decomp;
+
 typedef struct {
     char *buf;
     int len;
@@ -40,14 +43,14 @@ static char *decompress_gzip(const char *src, int src_len, int *out_len)
         return NULL;
     }
 
-    /* Decompress using manual loop with large buffer */
-    tinfl_decompressor *decomp = (tinfl_decompressor *)malloc(sizeof(tinfl_decompressor));
-    if (!decomp) { ESP_LOGE(TAG, "No mem for decomp"); return NULL; }
+    /* Use static decompressor (BSS, not heap) to avoid heap metadata corruption */
+    tinfl_decompressor *decomp = &s_decomp;
     tinfl_init(decomp);
 
-    size_t out_cap = 32768;
-    char *out = (char *)malloc(out_cap);
-    if (!out) { ESP_LOGE(TAG, "No mem for output"); free(decomp); return NULL; }
+    size_t out_cap = 8192;
+    size_t guard = 1024;
+    char *out = (char *)malloc(out_cap + guard);
+    if (!out) { ESP_LOGE(TAG, "No mem for output"); return NULL; }
 
     size_t in_ofs = 0, out_ofs = 0;
     tinfl_status status;
@@ -57,23 +60,23 @@ static char *decompress_gzip(const char *src, int src_len, int *out_len)
         status = tinfl_decompress(decomp,
             (const mz_uint8 *)src + hdr_size + in_ofs, &in_avail,
             (mz_uint8 *)out, (mz_uint8 *)out + out_ofs,
-            &out_avail, 0);
+            &out_avail, TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
         in_ofs += in_avail;
         out_ofs += out_avail;
         if (status == TINFL_STATUS_DONE) break;
-        if (status < 0) {
+        if (status != TINFL_STATUS_HAS_MORE_OUTPUT) {
             ESP_LOGE(TAG, "tinfl status=%d in=%d out=%d", status, (int)in_ofs, (int)out_ofs);
-            free(out); free(decomp); return NULL;
+            free(out); return NULL;
         }
         if (out_ofs >= out_cap) {
             ESP_LOGE(TAG, "Output buffer full at %d", (int)out_ofs);
-            free(out); free(decomp); return NULL;
+            free(out); return NULL;
         }
-    } while (status == TINFL_STATUS_HAS_MORE_OUTPUT);
+    } while (1);
 
     ESP_LOGI(TAG, "Decompressed %d -> %zu bytes", deflate_len, out_ofs);
+    out[out_ofs] = '\0';
     *out_len = (int)out_ofs;
-    free(decomp);
     return out;
 }
 
@@ -102,11 +105,13 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     return ESP_OK;
 }
 
-static esp_err_t parse_hourly(const char *json, weather_data_t *data)
+static esp_err_t parse_hourly(const char *json, int json_len, weather_data_t *data)
 {
-    cJSON *root = cJSON_Parse(json);
+    const char *err_ptr = NULL;
+    cJSON *root = cJSON_ParseWithLengthOpts(json, json_len, &err_ptr, false);
     if (!root) {
-        ESP_LOGE(TAG, "JSON parse failed");
+        ESP_LOGE(TAG, "JSON parse failed at offset %d",
+                 err_ptr ? (int)(err_ptr - json) : -1);
         return ESP_FAIL;
     }
 
@@ -197,26 +202,28 @@ esp_err_t weather_fetch(weather_data_t *data)
         return ESP_FAIL;
     }
 
+    char *uncomp = NULL;
+    int uncomp_len = 0;
+    bool need_free_uncomp = false;
+
     esp_err_t err = esp_http_client_perform(client);
     if (err == ESP_OK) {
         int status = esp_http_client_get_status_code(client);
         ESP_LOGI(TAG, "HTTP status=%d, body=%d bytes", status, rb.len);
         if (status == 200 && rb.len > 0) {
-            /* QWeather returns gzip-compressed data — detect by magic bytes */
             const unsigned char *d = (const unsigned char *)rb.buf;
             bool is_gzip = (rb.len >= 2 && d[0] == 0x1f && d[1] == 0x8b);
             if (is_gzip) {
-                int uncomp_len = 0;
-                char *uncomp = decompress_gzip(rb.buf, rb.len, &uncomp_len);
-                if (uncomp) {
-                    err = parse_hourly(uncomp, data);
-                    free(uncomp);
-                } else {
-                    ESP_LOGE(TAG, "Gzip decompression failed");
+                uncomp = decompress_gzip(rb.buf, rb.len, &uncomp_len);
+                need_free_uncomp = true;
+                if (!uncomp) {
+                    ESP_LOGE(TAG, "Decompression failed");
                     err = ESP_FAIL;
                 }
             } else {
-                err = parse_hourly(rb.buf, data);
+                /* Not gzipped — use response buffer directly (cannot free before parse) */
+                uncomp = rb.buf;
+                uncomp_len = rb.len;
             }
         } else {
             ESP_LOGE(TAG, "Bad HTTP response: %d", status);
@@ -226,7 +233,17 @@ esp_err_t weather_fetch(weather_data_t *data)
         ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
     }
 
+    /* Free HTTP resources before cJSON parse to maximize available heap */
     esp_http_client_cleanup(client);
+    client = NULL;
     free(resp_buf);
+    resp_buf = NULL;
+
+    /* Now parse with freed-up heap */
+    if (uncomp) {
+        err = parse_hourly(uncomp, uncomp_len, data);
+        if (need_free_uncomp) free(uncomp);
+    }
+
     return err;
 }

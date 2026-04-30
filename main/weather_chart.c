@@ -283,6 +283,12 @@ void weather_chart_show(void)
     if (!container) return;
     visible = true;
     lv_obj_remove_flag(container, LV_OBJ_FLAG_HIDDEN);
+    if (!weather || !weather->valid) {
+        lv_label_set_text(temp_labels[0], "update");
+        lv_obj_set_pos(temp_labels[0], 100, 24);
+        lv_obj_set_size(temp_labels[0], 56, 14);
+        lv_obj_set_style_text_align(temp_labels[0], LV_TEXT_ALIGN_CENTER, 0);
+    }
 }
 
 void weather_chart_hide(void)

@@ -4,11 +4,9 @@
 #include "ssd1322_driver.h"
 #include "lvgl_adapter.h"
 #include "ui.h"
-#include "lvgl.h"
 #include "wifi.h"
 #include "weather_service.h"
 #include "esp_sleep.h"
-#include "driver/gpio.h"
 #include "iot_button.h"
 #include "button_gpio.h"
 
@@ -24,8 +22,23 @@ static weather_data_t s_weather;
 
 static void button_short_press_cb(void *button_handle, void *usr_data)
 {
-    ESP_LOGI(TAG, "Short press, toggling weather/time");
+    ESP_LOGI(TAG, "Short press, updating weather");
+
+    /* Toggle to weather view immediately (shows "update" text until data arrives) */
     screens_request_toggle();
+
+    /* Fetch fresh weather data */
+    esp_err_t err = ESP_FAIL;
+    for (int retry = 0; retry < 3; retry++) {
+        err = weather_fetch(&s_weather);
+        if (err == ESP_OK) break;
+        ESP_LOGW(TAG, "Weather fetch on short press attempt %d/3 failed", retry + 1);
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+
+    if (err == ESP_OK) {
+        screens_set_weather_data_ptr(&s_weather);
+    }
 }
 
 static void button_long_press_cb(void *button_handle, void *usr_data)
@@ -82,6 +95,23 @@ void app_main(void)
     // Always set timezone after wake (TZ env var is lost during deep sleep)
     wifi_set_timezone();
 
+    // Initialize LVGL before WiFi (clean heap avoids allocation failures)
+    ESP_ERROR_CHECK(lvgl_adapter_init());
+
+    // Wait for LVGL task to start
+    vTaskDelay(pdMS_TO_TICKS(100));
+
+    // Create UI
+    ESP_ERROR_CHECK(ui_wrapper_init());
+
+    // Pass weather data to screens if available (from a previous fetch)
+    if (s_weather.valid) {
+        screens_set_weather_data_ptr(&s_weather);
+    }
+
+    // Wait for UI to load
+    vTaskDelay(pdMS_TO_TICKS(100));
+
     // Connect WiFi: sync time on first boot, always fetch weather
     if (!wifi_is_time_set()) {
         ESP_LOGI(TAG, "Time not set, connecting WiFi to sync time");
@@ -92,44 +122,30 @@ void app_main(void)
         wifi_init_sta();  // non-fatal if WiFi fails here
     }
 
-    // Fetch weather data after WiFi is connected
-    err = weather_fetch(&s_weather);
+    // Fetch weather data after WiFi is connected, with retries
+    err = ESP_FAIL;
+    for (int retry = 0; retry < 3; retry++) {
+        err = weather_fetch(&s_weather);
+        if (err == ESP_OK) break;
+        ESP_LOGW(TAG, "Weather fetch attempt %d/3 failed, retrying...", retry + 1);
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
     if (err == ESP_OK) {
         ESP_LOGI(TAG, "Weather fetched: %d hours, first: H%02d %d°C pop=%d%%",
                  s_weather.count,
                  s_weather.count > 0 ? s_weather.hourly[0].hour : 0,
                  s_weather.count > 0 ? s_weather.hourly[0].temp : 0,
                  s_weather.count > 0 ? s_weather.hourly[0].rain_prob : 0);
+        screens_set_weather_data_ptr(&s_weather);
     } else {
         ESP_LOGW(TAG, "Weather fetch failed, will retry on long press");
     }
 
-    // Initialize LVGL adapter
-    ESP_ERROR_CHECK(lvgl_adapter_init());
-
-    // Wait for LVGL task to start
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Create UI
-    ESP_ERROR_CHECK(ui_wrapper_init());
-
-    // Pass weather data to screens (if available)
-    if (s_weather.valid) {
-        screens_set_weather_data_ptr(&s_weather);
-    }
-
-    // Wait for UI to load
-    vTaskDelay(pdMS_TO_TICKS(100));
-
-    // Force screen refresh
-    lv_refr_now(NULL);
-
     ESP_LOGI(TAG, "Running for %d seconds before sleep", ACTIVE_DURATION_SECS);
 
-    // Run for 60 seconds with periodic UI updates
+    // Run for 60 seconds (LVGL task handles display updates)
     for (int i = 0; i < ACTIVE_DURATION_SECS; i++) {
         vTaskDelay(pdMS_TO_TICKS(1000));
-        ui_tick();
     }
 
     ESP_LOGI(TAG, "Time to sleep, turning off display");
