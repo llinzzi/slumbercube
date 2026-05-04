@@ -41,9 +41,8 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL, active=%ds", ACTIVE_DURATION_SECS);
 
-    // Initialize SSD1322 driver first
+    // Initialize SSD1322 driver first (display stays OFF until first frame rendered)
     ESP_ERROR_CHECK(ssd1322_init());
-    ssd1322_display_on();
 
     // Initialize button for short press + long-press detection
     button_config_t btn_cfg = {
@@ -74,8 +73,11 @@ void app_main(void)
     // Wait for LVGL task to start
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    // Create UI
+    // Create UI (first frame rendered and flushed to GDDRAM inside this call)
     ESP_ERROR_CHECK(ui_wrapper_init());
+
+    // Turn on display AFTER first frame is in GDDRAM — eliminates white flash on wake
+    ssd1322_display_on();
 
     // Pass weather data to screens if available (from a previous fetch)
     if (s_weather.valid) {

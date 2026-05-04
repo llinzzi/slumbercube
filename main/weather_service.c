@@ -151,9 +151,16 @@ static esp_err_t parse_forecast(const char *json, int json_len, weather_data_t *
     data->fetch_time = time(NULL);
 
     if (slot_idx > 0) {
-        ESP_LOGI(TAG, "Parsed %d slots from %d-day forecast, first: H%d %d°C %s",
-                 slot_idx, cast_count,
-                 data->hourly[0].hour, data->hourly[0].temp, data->hourly[0].text);
+        ESP_LOGI(TAG, "Parsed %d slots from %d-day forecast:", slot_idx, cast_count);
+        for (int i = 0; i < slot_idx; i++) {
+            ESP_LOGI(TAG, "  [%d] H%02d  %d°C  pop=%d%%  %s  icon=%s",
+                     i,
+                     data->hourly[i].hour,
+                     data->hourly[i].temp,
+                     data->hourly[i].rain_prob,
+                     data->hourly[i].text,
+                     data->hourly[i].icon);
+        }
     }
 
     cJSON_Delete(root);

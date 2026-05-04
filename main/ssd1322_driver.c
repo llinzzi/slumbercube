@@ -151,7 +151,8 @@ esp_err_t ssd1322_init(void)
     /* Clear GDDRAM before turning on display to avoid white flash on wake */
     ssd1322_clear_display();
 
-    ssd1322_send_cmd(0xAF);
+    /* NOTE: 0xAF (display on) is now called AFTER first LVGL frame is rendered */
+    /* ssd1322_send_cmd(0xAF); */
 
     vTaskDelay(pdMS_TO_TICKS(100));
     ESP_LOGI(TAG, "SSD1322 initialized");
