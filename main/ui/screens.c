@@ -106,7 +106,7 @@ void tick_screen_main() {
 
     lv_area_t full_screen = {0, 0, LCD_H_RES - 1, LCD_V_RES - 1};
     lv_obj_invalidate_area(lv_screen_active(), &full_screen);
-    lv_refr_now(NULL);
+    lv_refr_now(lv_disp_get_default());
 }
 
 void screens_toggle_weather(void)
@@ -129,7 +129,7 @@ void screens_toggle_weather(void)
 
     lv_area_t full_screen = {0, 0, LCD_H_RES - 1, LCD_V_RES - 1};
     lv_obj_invalidate_area(lv_screen_active(), &full_screen);
-    lv_refr_now(NULL);
+    lv_refr_now(lv_disp_get_default());
 }
 
 bool screens_is_weather_visible(void)

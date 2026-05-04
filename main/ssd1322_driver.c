@@ -1,8 +1,11 @@
 #include "ssd1322_driver.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <stdlib.h>
+#include <string.h>
 
 static const char *TAG = "SSD1322_DRV";
 static spi_device_handle_t g_spi = NULL;
@@ -42,6 +45,36 @@ void ssd1322_display_on(void)
 {
     ssd1322_send_cmd(0xAF);  // Display on
     ESP_LOGI(TAG, "Display on");
+}
+
+void ssd1322_clear_display(void)
+{
+    /* Fill GDDRAM with zeros (all black) via SPI */
+    size_t buf_size = (LCD_H_RES / 2) * LCD_V_RES;
+    uint8_t *clear_buf = (uint8_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
+    if (!clear_buf) {
+        ESP_LOGE(TAG, "Failed to allocate clear buffer");
+        return;
+    }
+    memset(clear_buf, 0, buf_size);
+
+    ssd1322_send_cmd(0x15);
+    ssd1322_send_data(0x1C);
+    ssd1322_send_data(0x1C + 63);
+    ssd1322_send_cmd(0x75);
+    ssd1322_send_data(0);
+    ssd1322_send_data(63);
+    ssd1322_send_cmd(0x5C);
+
+    gpio_set_level(PIN_NUM_DC, 1);
+    spi_transaction_t t = {
+        .length = buf_size * 8,
+        .tx_buffer = clear_buf,
+    };
+    spi_device_polling_transmit(g_spi, &t);
+
+    free(clear_buf);
+    ESP_LOGI(TAG, "Display cleared");
 }
 
 esp_err_t ssd1322_init(void)
@@ -114,8 +147,12 @@ esp_err_t ssd1322_init(void)
     ssd1322_send_cmd(0xB6); ssd1322_send_data(0x08);
     ssd1322_send_cmd(0xBE); ssd1322_send_data(0x07);
     ssd1322_send_cmd(0xA6);
+
+    /* Clear GDDRAM before turning on display to avoid white flash on wake */
+    ssd1322_clear_display();
+
     ssd1322_send_cmd(0xAF);
-    
+
     vTaskDelay(pdMS_TO_TICKS(100));
     ESP_LOGI(TAG, "SSD1322 initialized");
     

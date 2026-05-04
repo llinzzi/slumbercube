@@ -294,8 +294,8 @@ void weather_chart_set_data(const weather_data_t *data)
 
     draw_chart();
 
-    /* Force display refresh to show chart immediately */
-    lv_obj_invalidate(canvas);
+    /* Force redraw: invalidate canvas AND container to ensure labels refresh */
+    lv_obj_invalidate(container);
     lv_refr_now(lv_disp_get_default());
 }
 
@@ -303,13 +303,16 @@ void weather_chart_show(void)
 {
     if (!container) return;
     visible = true;
-    lv_obj_remove_flag(container, LV_OBJ_FLAG_HIDDEN);
-    if (!weather || !weather->valid) {
+    if (weather && weather->valid) {
+        draw_chart();
+    } else {
         lv_label_set_text(temp_labels[0], "update");
         lv_obj_set_pos(temp_labels[0], 100, 24);
         lv_obj_set_size(temp_labels[0], 56, 14);
         lv_obj_set_style_text_align(temp_labels[0], LV_TEXT_ALIGN_CENTER, 0);
     }
+    lv_obj_remove_flag(container, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(container);
 }
 
 void weather_chart_hide(void)

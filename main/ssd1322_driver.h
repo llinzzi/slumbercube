@@ -51,4 +51,9 @@ void ssd1322_display_off(void);
  */
 void ssd1322_display_on(void);
 
+/**
+ * @brief 清空GDDRAM（全黑），避免唤醒时闪白
+ */
+void ssd1322_clear_display(void);
+
 #endif // SSD1322_DRIVER_H
