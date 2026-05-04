@@ -40,8 +40,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             esp_wifi_connect();
             s_retry_num++;
         } else {
-            s_retry_num = 0;
-            esp_wifi_connect();
+            ESP_LOGW(TAG, "WiFi max retry reached, giving up");
+            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
         }
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
@@ -90,9 +90,12 @@ static void sntp_init_time(void)
     ESP_LOGW(TAG, "SNTP sync failed after %dms, time: %ld", max_retry * 500, (long)now);
 }
 
-esp_err_t wifi_init_sta(void)
+static bool s_netif_inited = false;
+
+esp_err_t wifi_ensure_netif(void)
 {
-    // Initialize NVS for WiFi
+    if (s_netif_inited) return ESP_OK;
+
     esp_err_t ret = nvs_flash_init();
     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -100,10 +103,47 @@ esp_err_t wifi_init_sta(void)
     }
     ESP_ERROR_CHECK(ret);
 
-    s_wifi_event_group = xEventGroupCreate();
-
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
+    s_netif_inited = true;
+    ESP_LOGI(TAG, "Netif initialized");
+    return ESP_OK;
+}
+
+static bool s_wifi_inited = false;
+
+static esp_err_t wifi_wait_connected(int timeout_ms)
+{
+    int elapsed = 0;
+    const int tick = 100;
+    while (elapsed < timeout_ms) {
+        if (s_wifi_connected) {
+            return ESP_OK;
+        }
+        vTaskDelay(pdMS_TO_TICKS(tick));
+        elapsed += tick;
+    }
+    return ESP_FAIL;
+}
+
+esp_err_t wifi_init_sta(void)
+{
+    if (s_wifi_inited) {
+        /* Already initialized — just trigger reconnect if disconnected */
+        if (!s_wifi_connected) {
+            ESP_LOGI(TAG, "WiFi disconnected, reconnecting...");
+            esp_wifi_connect();
+            if (wifi_wait_connected(30000) == ESP_OK) return ESP_OK;
+            ESP_LOGW(TAG, "WiFi reconnect timeout (30s)");
+            return ESP_FAIL;
+        }
+        return ESP_OK;
+    }
+
+    wifi_ensure_netif();
+
+    s_wifi_event_group = xEventGroupCreate();
+
     esp_netif_t *netif = esp_netif_create_default_wifi_sta();
     ESP_ERROR_CHECK(esp_netif_set_hostname(netif, "oled_clock"));
 
@@ -129,7 +169,7 @@ esp_err_t wifi_init_sta(void)
             .threshold = {
                 .authmode = WIFI_AUTH_WPA2_PSK,
             },
-            .channel = 0,
+            .channel = 1,  /* Skip full channel scan, connect faster */
         },
     };
     strncpy((char *)wifi_config.sta.ssid, WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
@@ -143,23 +183,15 @@ esp_err_t wifi_init_sta(void)
     esp_wifi_set_max_tx_power(50);
 
     ESP_LOGI(TAG, "wifi_init_sta finished.");
+    s_wifi_inited = true;
 
-    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
-                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
-                                            pdFALSE,
-                                            pdFALSE,
-                                            portMAX_DELAY);
-
-    if (bits & WIFI_CONNECTED_BIT) {
+    if (wifi_wait_connected(30000) == ESP_OK) {
         ESP_LOGI(TAG, "connected to ap SSID:%s", WIFI_SSID);
         sntp_init_time();
         return ESP_OK;
-    } else if (bits & WIFI_FAIL_BIT) {
-        ESP_LOGI(TAG, "Failed to connect to SSID:%s", WIFI_SSID);
-        return ESP_FAIL;
     }
-
-    return ESP_OK;
+    ESP_LOGW(TAG, "WiFi connection timeout (30s)");
+    return ESP_FAIL;
 }
 
 bool wifi_is_connected(void)

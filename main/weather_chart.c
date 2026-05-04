@@ -27,7 +27,7 @@ static uint8_t *canvas_buf = NULL;
 static lv_obj_t *temp_labels[CHART_HOURS];
 static lv_obj_t *hour_labels[CHART_HOURS];
 static lv_obj_t *first_time_label = NULL;
-static lv_timer_t *anim_timer = NULL;
+/* static lv_timer_t *anim_timer = NULL; */
 
 static const weather_data_t *weather = NULL;
 static bool visible = false;
@@ -47,6 +47,55 @@ static int temp_to_y(int temp, int t_min, int t_max)
     return 45 - (int)(frac * 37.0f);
 }
 
+/* Draw a pixel in the canvas buffer */
+static void draw_pixel(int x, int y, uint8_t gray)
+{
+    if (x < 0 || x >= CANVAS_W || y < 0 || y >= CANVAS_H) return;
+    canvas_buf[y * CANVAS_W + x] = gray;
+}
+
+/* Draw a line using Bresenham's algorithm */
+static void draw_line(int x0, int y0, int x1, int y1, uint8_t gray)
+{
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1;
+    int dy = y1 > y0 ? y1 - y0 : y0 - y1;
+    int sx = x0 < x1 ? 1 : -1;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx - dy;
+
+    while (1) {
+        draw_pixel(x0, y0, gray);
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 > -dy) { err -= dy; x0 += sx; }
+        if (e2 < dx)  { err += dx; y0 += sy; }
+    }
+}
+
+/* Draw a filled circle */
+static void draw_filled_circle(int cx, int cy, int r, uint8_t gray)
+{
+    for (int y = cy - r; y <= cy + r; y++) {
+        for (int x = cx - r; x <= cx + r; x++) {
+            int dx = x - cx;
+            int dy = y - cy;
+            if (dx * dx + dy * dy <= r * r) {
+                draw_pixel(x, y, gray);
+            }
+        }
+    }
+}
+
+/* Draw a filled rectangle */
+static void draw_rect(int x, int y, int w, int h, uint8_t gray)
+{
+    for (int row = 0; row < h; row++) {
+        for (int col = 0; col < w; col++) {
+            draw_pixel(x + col, y + row, gray);
+        }
+    }
+}
+
 static void draw_chart(void)
 {
     if (!canvas || !canvas_buf || !weather || !weather->valid) return;
@@ -63,75 +112,36 @@ static void draw_chart(void)
     }
     if (t_max <= t_min) { t_min = t_max - 1; t_max = t_min + 2; }
 
-    lv_canvas_fill_bg(canvas, lv_color_make(0, 0, 0), LV_OPA_COVER);
+    /* Clear canvas buffer to black */
+    memset(canvas_buf, 0, CANVAS_W * CANVAS_H);
 
-    lv_layer_t layer;
-    lv_canvas_init_layer(canvas, &layer);
-
-    lv_color_t curve_col = lv_color_make(COL_CURVE, COL_CURVE, COL_CURVE);
-    lv_color_t point_col = lv_color_make(COL_POINT, COL_POINT, COL_POINT);
-    lv_color_t axis_col  = lv_color_make(COL_AXIS, COL_AXIS, COL_AXIS);
-    lv_color_t rain_col  = lv_color_make(COL_RAIN, COL_RAIN, COL_RAIN);
-
-    /* Temperature curve */
-    lv_draw_line_dsc_t line_dsc;
-    lv_draw_line_dsc_init(&line_dsc);
-    line_dsc.color = curve_col;
-    line_dsc.width = 1;
-
+    /* Temperature curve (line segments between points) */
     for (int i = 0; i < count - 1; i++) {
         int x1 = PT_X(i);
         int y1 = temp_to_y(weather->hourly[i].temp, t_min, t_max);
         int x2 = PT_X(i + 1);
         int y2 = temp_to_y(weather->hourly[i + 1].temp, t_min, t_max);
-        line_dsc.p1.x = x1;
-        line_dsc.p1.y = y1;
-        line_dsc.p2.x = x2;
-        line_dsc.p2.y = y2;
-        lv_draw_line(&layer, &line_dsc);
+        draw_line(x1, y1, x2, y2, COL_CURVE);
     }
 
-    /* Data points */
-    lv_draw_fill_dsc_t pt_dsc;
-    lv_draw_fill_dsc_init(&pt_dsc);
-    pt_dsc.color = point_col;
-    pt_dsc.radius = 2;
-
+    /* Data points (filled circles) */
     for (int i = 0; i < count; i++) {
         int x = PT_X(i);
         int y = temp_to_y(weather->hourly[i].temp, t_min, t_max);
-        lv_area_t a = {x - 2, y - 2, x + 2, y + 2};
-        lv_draw_fill(&layer, &pt_dsc, &a);
+        draw_filled_circle(x, y, 2, COL_POINT);
     }
 
-    /* Time axis */
-    lv_draw_line_dsc_t axis_line;
-    lv_draw_line_dsc_init(&axis_line);
-    axis_line.color = axis_col;
-    axis_line.width = 1;
-    axis_line.p1.x = 8;
-    axis_line.p1.y = 48;
-    axis_line.p2.x = 248;
-    axis_line.p2.y = 48;
-    lv_draw_line(&layer, &axis_line);
+    /* Time axis (horizontal line at bottom) */
+    draw_line(8, 48, 248, 48, COL_AXIS);
 
     /* Raindrops */
-    if (drop_count > 0) {
-        lv_draw_fill_dsc_t rain_dsc;
-        lv_draw_fill_dsc_init(&rain_dsc);
-        rain_dsc.color = rain_col;
-        rain_dsc.radius = 0;
-        for (int i = 0; i < drop_count; i++) {
-            if (!raindrops[i].active) continue;
-            int rx = (int)raindrops[i].x;
-            int ry = (int)raindrops[i].y;
-            if (ry < 0 || ry > 46) continue;
-            lv_area_t ra = {rx, ry, rx + 1, ry + 3};
-            lv_draw_fill(&layer, &rain_dsc, &ra);
-        }
+    for (int i = 0; i < drop_count; i++) {
+        if (!raindrops[i].active) continue;
+        int rx = (int)raindrops[i].x;
+        int ry = (int)raindrops[i].y;
+        if (ry < 0 || ry > 46) continue;
+        draw_rect(rx, ry, 2, 4, COL_RAIN);
     }
-
-    lv_canvas_finish_layer(canvas, &layer);
 
     /* Update temperature labels */
     for (int i = 0; i < count; i++) {
@@ -241,7 +251,9 @@ lv_obj_t *weather_chart_create(lv_obj_t *parent)
         lv_label_set_text(hour_labels[i], "");
     }
 
-    anim_timer = lv_timer_create(anim_cb, 100, NULL);
+    /* FIXME: temporarily disabled to isolate crash */
+    /* anim_timer = lv_timer_create(anim_cb, 100, NULL); */
+    (void)anim_cb;
 
     return container;
 }
@@ -249,7 +261,12 @@ lv_obj_t *weather_chart_create(lv_obj_t *parent)
 void weather_chart_set_data(const weather_data_t *data)
 {
     weather = data;
-    if (!weather || !weather->valid) return;
+    if (!weather || !weather->valid) {
+        ESP_LOGI(TAG, "set_data: invalid weather data");
+        return;
+    }
+
+    ESP_LOGI(TAG, "set_data: count=%d valid=%d", weather->count, weather->valid);
 
     memset(raindrops, 0, sizeof(raindrops));
     drop_count = 0;
@@ -276,6 +293,10 @@ void weather_chart_set_data(const weather_data_t *data)
     }
 
     draw_chart();
+
+    /* Force display refresh to show chart immediately */
+    lv_obj_invalidate(canvas);
+    lv_refr_now(lv_disp_get_default());
 }
 
 void weather_chart_show(void)

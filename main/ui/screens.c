@@ -12,10 +12,17 @@ uint32_t active_theme_index = 0;
 
 static bool show_weather = false;
 static volatile bool pending_toggle = false;
+static const weather_data_t *volatile pending_weather_data = NULL;
 
 void screens_request_toggle(void)
 {
     pending_toggle = true;
+}
+
+void screens_set_weather_data_ptr(const void *data)
+{
+    /* Defer: will be applied from LVGL task context in tick_screen_main */
+    pending_weather_data = (const weather_data_t *)data;
 }
 
 void create_screen_main() {
@@ -65,6 +72,13 @@ void tick_screen_main() {
         pending_toggle = false;
         screens_toggle_weather();
         return;
+    }
+
+    /* Apply pending weather data from non-LVGL context (e.g. button callback) */
+    if (pending_weather_data) {
+        const weather_data_t *data = pending_weather_data;
+        pending_weather_data = NULL;
+        weather_chart_set_data(data);
     }
 
     static int tick_count = -1;
@@ -123,10 +137,6 @@ bool screens_is_weather_visible(void)
     return show_weather;
 }
 
-void screens_set_weather_data_ptr(const void *data)
-{
-    weather_chart_set_data((const weather_data_t *)data);
-}
 
 typedef void (*tick_screen_func_t)(void);
 tick_screen_func_t tick_screen_funcs[] = {

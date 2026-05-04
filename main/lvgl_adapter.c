@@ -78,13 +78,16 @@ esp_err_t lvgl_adapter_init(void)
 
     lv_display_set_color_format(g_disp, LV_COLOR_FORMAT_L8);
 
-    g_i4_buffer = heap_caps_malloc(LCD_H_RES * LCD_V_RES / 2, MALLOC_CAP_DMA);
+    /* 1/4 screen partial buffer to reduce DMA memory usage for TLS */
+    size_t buf_size = LCD_H_RES * LCD_V_RES / 4;
+    size_t i4_buf_size = buf_size / 2;
+
+    g_i4_buffer = heap_caps_malloc(i4_buf_size, MALLOC_CAP_DMA);
     if (!g_i4_buffer) {
-        ESP_LOGE(TAG, "Failed to allocate I4 buffer");
+        ESP_LOGE(TAG, "Failed to allocate I4 buffer (%d)", (int)i4_buf_size);
         return ESP_ERR_NO_MEM;
     }
 
-    size_t buf_size = LCD_H_RES * LCD_V_RES;
     void *buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
     if (!buf1) {
         ESP_LOGE(TAG, "Failed to allocate LVGL buffer");
