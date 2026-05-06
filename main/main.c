@@ -1,4 +1,5 @@
 #include "esp_log.h"
+#include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ssd1322_driver.h"
@@ -40,6 +41,18 @@ static void button_long_press_cb(void *button_handle, void *usr_data)
 void app_main(void)
 {
     ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL, active=%ds", ACTIVE_DURATION_SECS);
+
+    /* Hold RST high immediately to prevent SSD1322 from seeing a floating RST
+     * during bootloader phase (GPIO20 defaults to input, high-Z). */
+    gpio_config_t rst_cfg = {
+        .pin_bit_mask = (1ULL << PIN_NUM_RST),
+        .mode = GPIO_MODE_OUTPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&rst_cfg);
+    gpio_set_level(PIN_NUM_RST, 1);
 
     // Initialize SSD1322 driver first (display stays OFF until first frame rendered)
     ESP_ERROR_CHECK(ssd1322_init());
@@ -129,14 +142,16 @@ void app_main(void)
             esp_err_t err = weather_fetch(&s_weather);
             if (err == ESP_OK) {
                 ESP_LOGI(TAG, "--- Weather updated ---");
-                for (int j = 0; j < s_weather.count && j < 6; j++) {
-                    ESP_LOGI(TAG, "  H%02d: %d°C pop=%d%% %s",
-                             s_weather.hourly[j].hour,
-                             s_weather.hourly[j].temp,
-                             s_weather.hourly[j].rain_prob,
-                             s_weather.hourly[j].text);
+                for (int j = 0; j < s_weather.count; j++) {
+                    ESP_LOGI(TAG, "  Day%d: %02d-%02d  %d/%d°C  %s",
+                             j,
+                             s_weather.daily[j].month,
+                             s_weather.daily[j].day,
+                             s_weather.daily[j].high,
+                             s_weather.daily[j].low,
+                             s_weather.daily[j].day_text);
                 }
-                ESP_LOGI(TAG, "  (total %d hours)", s_weather.count);
+                ESP_LOGI(TAG, "  (total %d days)", s_weather.count);
                 screens_set_weather_data_ptr(&s_weather);
             } else {
                 ESP_LOGE(TAG, "Weather fetch failed after long press");

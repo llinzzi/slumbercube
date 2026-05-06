@@ -43,7 +43,12 @@ void ssd1322_display_off(void)
 
 void ssd1322_display_on(void)
 {
+    /* Ramp up: set master contrast to minimum before display-on to hide any
+     * VCC charge-pump transient that could cause a white flash. */
+    ssd1322_send_cmd(0xC7); ssd1322_send_data(0x00);  // Master contrast = min
     ssd1322_send_cmd(0xAF);  // Display on
+    vTaskDelay(pdMS_TO_TICKS(30));  // Wait for VCC to stabilize
+    ssd1322_send_cmd(0xC7); ssd1322_send_data(0x01);  // Restore master contrast
     ESP_LOGI(TAG, "Display on");
 }
 

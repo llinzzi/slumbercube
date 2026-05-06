@@ -88,7 +88,7 @@ esp_err_t lvgl_adapter_init(void)
         return ESP_ERR_NO_MEM;
     }
 
-    void *buf1 = heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
+    void *buf1 = heap_caps_calloc(1, buf_size, MALLOC_CAP_DMA);
     if (!buf1) {
         ESP_LOGE(TAG, "Failed to allocate LVGL buffer");
         return ESP_ERR_NO_MEM;

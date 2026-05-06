@@ -4,19 +4,19 @@
 #include <stdbool.h>
 #include <time.h>
 
-#define WEATHER_MAX_HOURLY 24
+#define WEATHER_MAX_DAYS 4
 
 typedef struct {
-    int hour;
-    int temp;
-    int rain_prob;
-    float rain_mm;
-    char icon[8];
-    char text[32];
-} hourly_forecast_t;
+    int high;           /* day temperature (daytemp) */
+    int low;            /* night temperature (nighttemp) */
+    char day_text[16];  /* day weather text, e.g. "小雨" */
+    char night_text[16];
+    int month;          /* 1-12 */
+    int day;            /* 1-31 */
+} daily_forecast_t;
 
 typedef struct {
-    hourly_forecast_t hourly[WEATHER_MAX_HOURLY];
+    daily_forecast_t daily[WEATHER_MAX_DAYS];
     int count;
     bool valid;
     time_t fetch_time;

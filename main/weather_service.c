@@ -13,45 +13,11 @@ static const char *TAG = "WEATHER_SVC";
 #define AMAP_CITY "330100"   /* 杭州 adcode */
 #define AMAP_URL  "https://restapi.amap.com/v3/weather/weatherInfo?city=" AMAP_CITY "&key=" AMAP_KEY "&extensions=all"
 
-/* Map each daily cast to 3 hourly slots: morning, afternoon, evening */
-/* 4 days × 3 = 12 slots — fits nicely into CHART_HOURS (12) */
-#define SLOTS_PER_DAY 3
-
-static const int slot_hours[SLOTS_PER_DAY] = {7, 14, 21};  /* morning, afternoon, evening */
-
 typedef struct {
     char *buf;
     int len;
     int cap;
 } resp_buf_t;
-
-/* Derive a simple icon string from Chinese weather text */
-static const char *text_to_icon(const char *text)
-{
-    if (!text) return "";
-    if (strstr(text, "晴")) return "sun";
-    if (strstr(text, "多云")) return "cloud";
-    if (strstr(text, "阴")) return "overcast";
-    if (strstr(text, "雾")) return "fog";
-    if (strstr(text, "雪")) return "snow";
-    if (strstr(text, "雨")) return "rain";
-    if (strstr(text, "风")) return "wind";
-    return "";
-}
-
-/* Convert day weather text to a short localized description */
-static const char *text_to_short(const char *text)
-{
-    if (!text) return "?";
-    if (strstr(text, "晴")) return "晴";
-    if (strstr(text, "多云")) return "多云";
-    if (strstr(text, "阴")) return "阴";
-    if (strstr(text, "雾")) return "雾";
-    if (strstr(text, "雪")) return "雪";
-    if (strstr(text, "雨")) return "雨";
-    if (strstr(text, "风")) return "风";
-    return text;
-}
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
 {
@@ -76,6 +42,18 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
             break;
     }
     return ESP_OK;
+}
+
+/* Parse "2026-05-07" into month=5, day=7 */
+static void parse_date(const char *date_str, int *month, int *day)
+{
+    *month = 1; *day = 1;
+    if (!date_str) return;
+    int y, m, d;
+    if (sscanf(date_str, "%d-%d-%d", &y, &m, &d) == 3) {
+        *month = m;
+        *day = d;
+    }
 }
 
 static esp_err_t parse_forecast(const char *json, int json_len, weather_data_t *data)
@@ -117,54 +95,51 @@ static esp_err_t parse_forecast(const char *json, int json_len, weather_data_t *
     int cast_count = cJSON_GetArraySize(casts);
     int slot_idx = 0;
 
-    for (int i = 0; i < cast_count && slot_idx < WEATHER_MAX_HOURLY; i++) {
+    for (int i = 0; i < cast_count && slot_idx < WEATHER_MAX_DAYS; i++) {
         cJSON *cast = cJSON_GetArrayItem(casts, i);
         if (!cast) continue;
 
-        cJSON *daytemp    = cJSON_GetObjectItem(cast, "daytemp");
-        cJSON *nighttemp  = cJSON_GetObjectItem(cast, "nighttemp");
-        cJSON *dayweather = cJSON_GetObjectItem(cast, "dayweather");
-        cJSON *nightweather = cJSON_GetObjectItem(cast, "nightweather");
+        cJSON *date_json      = cJSON_GetObjectItem(cast, "date");
+        cJSON *daytemp        = cJSON_GetObjectItem(cast, "daytemp");
+        cJSON *nighttemp      = cJSON_GetObjectItem(cast, "nighttemp");
+        cJSON *dayweather     = cJSON_GetObjectItem(cast, "dayweather");
+        cJSON *nightweather   = cJSON_GetObjectItem(cast, "nightweather");
 
-        for (int s = 0; s < SLOTS_PER_DAY && slot_idx < WEATHER_MAX_HOURLY; s++) {
-            bool is_night = (slot_hours[s] >= 20 || slot_hours[s] <= 6);
-            const char *temp_str = is_night
-                ? (nighttemp && nighttemp->valuestring ? nighttemp->valuestring : "0")
-                : (daytemp && daytemp->valuestring ? daytemp->valuestring : "0");
-            const char *weather_str = is_night
-                ? (nightweather && nightweather->valuestring ? nightweather->valuestring : "")
-                : (dayweather && dayweather->valuestring ? dayweather->valuestring : "");
+        parse_date(date_json && date_json->valuestring ? date_json->valuestring : NULL,
+                   &data->daily[slot_idx].month,
+                   &data->daily[slot_idx].day);
 
-            data->hourly[slot_idx].hour = slot_hours[s];
+        data->daily[slot_idx].high = daytemp && daytemp->valuestring
+            ? atoi(daytemp->valuestring) : 0;
+        data->daily[slot_idx].low  = nighttemp && nighttemp->valuestring
+            ? atoi(nighttemp->valuestring) : 0;
 
-            data->hourly[slot_idx].temp     = atoi(temp_str);
-            data->hourly[slot_idx].rain_prob = 0;
-            data->hourly[slot_idx].rain_mm  = 0.0f;
-            strncpy(data->hourly[slot_idx].icon, text_to_icon(weather_str), sizeof(data->hourly[slot_idx].icon) - 1);
-            strncpy(data->hourly[slot_idx].text, text_to_short(weather_str), sizeof(data->hourly[slot_idx].text) - 1);
-            slot_idx++;
-        }
+        strncpy(data->daily[slot_idx].day_text,
+                dayweather && dayweather->valuestring ? dayweather->valuestring : "",
+                sizeof(data->daily[slot_idx].day_text) - 1);
+        strncpy(data->daily[slot_idx].night_text,
+                nightweather && nightweather->valuestring ? nightweather->valuestring : "",
+                sizeof(data->daily[slot_idx].night_text) - 1);
+
+        slot_idx++;
     }
 
     data->count = slot_idx;
-    data->valid = true;
+    data->valid = (slot_idx > 0);
     data->fetch_time = time(NULL);
 
-    if (slot_idx > 0) {
-        ESP_LOGI(TAG, "Parsed %d slots from %d-day forecast:", slot_idx, cast_count);
+    if (data->valid) {
         for (int i = 0; i < slot_idx; i++) {
-            ESP_LOGI(TAG, "  [%d] H%02d  %d°C  pop=%d%%  %s  icon=%s",
+            ESP_LOGI(TAG, "  Day%d: %02d-%02d  %d/%d°C  %s",
                      i,
-                     data->hourly[i].hour,
-                     data->hourly[i].temp,
-                     data->hourly[i].rain_prob,
-                     data->hourly[i].text,
-                     data->hourly[i].icon);
+                     data->daily[i].month, data->daily[i].day,
+                     data->daily[i].high, data->daily[i].low,
+                     data->daily[i].day_text);
         }
     }
 
     cJSON_Delete(root);
-    return ESP_OK;
+    return data->valid ? ESP_OK : ESP_FAIL;
 }
 
 esp_err_t weather_fetch(weather_data_t *data)
@@ -173,7 +148,6 @@ esp_err_t weather_fetch(weather_data_t *data)
     data->valid = false;
     data->count = 0;
 
-    /* Allocate HTTP response buffer */
     char *resp_buf = (char *)malloc(4096);
     if (!resp_buf) {
         ESP_LOGE(TAG, "Failed to allocate response buffer");
@@ -207,7 +181,6 @@ esp_err_t weather_fetch(weather_data_t *data)
              esp_err_to_name(err), status, rb.len);
 
     if (err == ESP_OK && status == 200 && rb.len > 0) {
-        ESP_LOGI(TAG, "Raw response: %.*s", rb.len > 200 ? 200 : rb.len, rb.buf);
         err = parse_forecast(rb.buf, rb.len, data);
     } else {
         if (err != ESP_OK) ESP_LOGE(TAG, "HTTP request failed: %s", esp_err_to_name(err));
@@ -216,9 +189,7 @@ esp_err_t weather_fetch(weather_data_t *data)
         err = ESP_FAIL;
     }
 
-    /* Clean up */
     esp_http_client_cleanup(client);
     free(resp_buf);
-
     return err;
 }
