@@ -13,7 +13,7 @@
 
 static const char *TAG = "MAIN";
 
-#define ACTIVE_DURATION_SECS 60
+#define ACTIVE_DURATION_SECS 600
 #define WAKEUP_GPIO_NUM       3
 #define BUTTON_GPIO_NUM       3
 #define LONG_PRESS_TIME_MS    3000
@@ -28,7 +28,6 @@ static volatile bool s_long_press_pending = false;
 static void button_short_press_cb(void *button_handle, void *usr_data)
 {
     ESP_LOGI(TAG, "Short press");
-    screens_request_toggle();
     s_short_press_pending = true;
 }
 
@@ -106,6 +105,17 @@ void app_main(void)
         if (!wifi_is_time_set()) {
             wifi_mark_time_set();
         }
+    }
+
+    // Initial weather fetch (retries handle async WiFi connection)
+    for (int retry = 0; retry < 5; retry++) {
+        esp_err_t err = weather_fetch(&s_weather);
+        if (err == ESP_OK) {
+            screens_set_weather_data_ptr(&s_weather);
+            break;
+        }
+        ESP_LOGW(TAG, "Boot weather fetch attempt %d/5 failed", retry + 1);
+        vTaskDelay(pdMS_TO_TICKS(2000));
     }
 
     ESP_LOGI(TAG, "Running for %d seconds before sleep", ACTIVE_DURATION_SECS);

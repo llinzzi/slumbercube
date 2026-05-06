@@ -9,9 +9,6 @@ extern "C" {
 
 typedef struct _objects_t {
     lv_obj_t *main;
-    lv_obj_t *hour_label;
-    lv_obj_t *colon_label;
-    lv_obj_t *minute_label;
 } objects_t;
 
 extern objects_t objects;
@@ -25,10 +22,6 @@ void tick_screen_main(void);
 void tick_screen_by_id(enum ScreensEnum screenId);
 void tick_screen(int screen_index);
 void create_screens(void);
-
-void screens_request_toggle(void);
-void screens_toggle_weather(void);
-bool screens_is_weather_visible(void);
 
 void screens_set_weather_data_ptr(const void *data);
 

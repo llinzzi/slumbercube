@@ -1,4 +1,6 @@
 #include "weather_chart.h"
+#include "font_weather.h"
+#include "font_digital.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include <string.h>
@@ -9,23 +11,21 @@ static const char *TAG = "WEATHER_CHART";
 
 #define CANVAS_W 256
 #define CANVAS_H 64
-#define MAX_DAYS 4
-#define COL_W   64
-
-#define COL_CENTER(i) (2 + (i) * COL_W)
+#define TIME_W   88
+#define WEATHER_X 90
 
 #define COL_DATE   0x88
 #define COL_TEMP   0xBB
 #define COL_LOW    0x66
 #define COL_ICON   0xCC
-#define COL_SEP    0x44
+#define COL_SEP    0x33
 
 static lv_obj_t *container = NULL;
 static lv_obj_t *canvas = NULL;
 static uint8_t *canvas_buf = NULL;
-static lv_obj_t *date_labels[MAX_DAYS];
-static lv_obj_t *high_labels[MAX_DAYS];
-static lv_obj_t *low_labels[MAX_DAYS];
+static lv_obj_t *time_label = NULL;
+static lv_obj_t *weather_label = NULL;
+static lv_obj_t *temp_label = NULL;
 
 static const weather_data_t *weather = NULL;
 static bool visible = false;
@@ -65,14 +65,13 @@ static void draw_filled_circle(int cx, int cy, int r, uint8_t gray)
     }
 }
 
-/* ── Weather icons (drawn on canvas) ── */
+/* ── Weather icons ── */
 
 static void draw_weather_icon(int cx, int cy, const char *text)
 {
     if (!text) return;
 
     if (strstr(text, "晴")) {
-        /* Sun: 5px circle with 4 rays */
         draw_filled_circle(cx, cy, 2, COL_ICON);
         draw_pixel(cx, cy - 5, COL_ICON);
         draw_pixel(cx, cy + 5, COL_ICON);
@@ -84,109 +83,90 @@ static void draw_weather_icon(int cx, int cy, const char *text)
         draw_pixel(cx + 3, cy + 3, COL_ICON);
 
     } else if (strstr(text, "云") || strstr(text, "阴")) {
-        /* Cloud: two overlapping filled circles */
         draw_filled_circle(cx - 3, cy, 4, COL_ICON);
         draw_filled_circle(cx + 3, cy - 1, 4, COL_ICON);
-        /* Flat bottom */
         draw_line(cx - 7, cy + 2, cx + 7, cy + 2, COL_ICON);
         draw_line(cx - 6, cy + 3, cx + 6, cy + 3, COL_ICON);
 
     } else if (strstr(text, "雨")) {
-        /* Rain: cloud + 3 drops */
         draw_filled_circle(cx - 3, cy - 1, 4, COL_ICON);
         draw_filled_circle(cx + 3, cy - 2, 4, COL_ICON);
         draw_line(cx - 7, cy + 1, cx + 7, cy + 1, COL_ICON);
         draw_line(cx - 6, cy + 2, cx + 6, cy + 2, COL_ICON);
-        /* Rain drops */
         draw_line(cx - 5, cy + 4, cx - 4, cy + 8, COL_ICON);
         draw_line(cx,     cy + 5, cx + 1, cy + 9, COL_ICON);
         draw_line(cx + 5, cy + 4, cx + 6, cy + 8, COL_ICON);
 
     } else if (strstr(text, "雪")) {
-        /* Snow: cloud + 3 asterisks */
         draw_filled_circle(cx - 3, cy - 1, 4, COL_ICON);
         draw_filled_circle(cx + 3, cy - 2, 4, COL_ICON);
         draw_line(cx - 7, cy + 1, cx + 7, cy + 1, COL_ICON);
         draw_line(cx - 6, cy + 2, cx + 6, cy + 2, COL_ICON);
-        /* Snowflakes as small dots */
         draw_filled_circle(cx - 4, cy + 5, 1, COL_ICON);
         draw_filled_circle(cx,     cy + 6, 1, COL_ICON);
         draw_filled_circle(cx + 4, cy + 5, 1, COL_ICON);
 
     } else if (strstr(text, "雾")) {
-        /* Fog: three horizontal lines */
         draw_line(cx - 6, cy - 3, cx + 6, cy - 3, COL_ICON);
         draw_line(cx - 5, cy,     cx + 5, cy,     COL_ICON);
         draw_line(cx - 6, cy + 3, cx + 6, cy + 3, COL_ICON);
 
     } else if (strstr(text, "风")) {
-        /* Wind: angled lines */
         draw_line(cx - 5, cy - 3, cx + 5, cy - 1, COL_ICON);
         draw_line(cx - 4, cy,     cx + 4, cy + 1, COL_ICON);
         draw_line(cx - 3, cy + 2, cx + 3, cy + 4, COL_ICON);
 
     } else {
-        /* Default: small dot */
         draw_filled_circle(cx, cy, 2, COL_ICON);
     }
 }
 
-/* ── Main draw ── */
+/* ── Draw chart ── */
 
 static void draw_chart(void)
 {
-    if (!canvas || !canvas_buf || !weather || !weather->valid) return;
-
-    int count = weather->count;
-    if (count > MAX_DAYS) count = MAX_DAYS;
-    if (count < 1) return;
+    if (!canvas || !canvas_buf || !weather || !weather->valid || weather->count < 1) return;
 
     /* Clear canvas */
     memset(canvas_buf, 0, CANVAS_W * CANVAS_H);
 
-    /* Vertical separators between days */
-    for (int col = 1; col < count; col++) {
-        draw_line(col * COL_W, 2, col * COL_W, CANVAS_H - 1, COL_SEP);
+    /* Separator between time and weather */
+    draw_line(TIME_W, 4, TIME_W, CANVAS_H - 4, COL_SEP);
+
+    /* Current time on the left */
+    time_t now = time(NULL);
+    struct tm tm_now = {0};
+    localtime_r(&now, &tm_now);
+    {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%02d:%02d",
+                 (unsigned char)tm_now.tm_hour, (unsigned char)tm_now.tm_min);
+        lv_label_set_text(time_label, buf);
     }
+
+    /* Today's weather on the right */
+    draw_weather_icon(116, 10, weather->daily[0].day_text);
+    lv_label_set_text(weather_label, weather->daily[0].day_text);
+
+    {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%d° / %d°",
+                 weather->daily[0].high, weather->daily[0].low);
+        lv_label_set_text(temp_label, buf);
+    }
+}
+
+void weather_chart_update_time(void)
+{
+    if (!visible || !time_label) return;
 
     time_t now = time(NULL);
     struct tm tm_now = {0};
     localtime_r(&now, &tm_now);
-
-    for (int i = 0; i < count; i++) {
-        int cx = COL_CENTER(i);
-        char buf[16];
-
-        /* ── Date label ── */
-        snprintf(buf, sizeof(buf), "%02d-%02d",
-                 weather->daily[i].month, weather->daily[i].day);
-        lv_label_set_text(date_labels[i], buf);
-        lv_obj_set_pos(date_labels[i], cx, 2);
-        lv_obj_set_size(date_labels[i], COL_W - 4, 10);
-
-        /* ── Weather icon on canvas ── */
-        const char *day_text = weather->daily[i].day_text;
-        draw_weather_icon(cx + COL_W / 2 - 4, 20, day_text);
-
-        /* ── High temperature ── */
-        snprintf(buf, sizeof(buf), "%d°", weather->daily[i].high);
-        lv_label_set_text(high_labels[i], buf);
-        lv_obj_set_pos(high_labels[i], cx, 32);
-        lv_obj_set_size(high_labels[i], COL_W - 4, 16);
-
-        /* ── Low temperature ── */
-        snprintf(buf, sizeof(buf), "%d°", weather->daily[i].low);
-        lv_label_set_text(low_labels[i], buf);
-        lv_obj_set_pos(low_labels[i], cx, 50);
-        lv_obj_set_size(low_labels[i], COL_W - 4, 10);
-    }
-
-    /* Hide unused labels */
-    for (int i = count; i < MAX_DAYS; i++) {
-        lv_label_set_text(date_labels[i], "");
-        lv_label_set_text(high_labels[i], "");
-        lv_label_set_text(low_labels[i], "");
-    }
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%02d:%02d",
+             (unsigned char)tm_now.tm_hour, (unsigned char)tm_now.tm_min);
+    lv_label_set_text(time_label, buf);
 }
 
 /* ── Public API ── */
@@ -212,25 +192,31 @@ lv_obj_t *weather_chart_create(lv_obj_t *parent)
     lv_canvas_set_buffer(canvas, canvas_buf, CANVAS_W, CANVAS_H, LV_COLOR_FORMAT_L8);
     lv_obj_set_pos(canvas, 0, 0);
 
-    for (int i = 0; i < MAX_DAYS; i++) {
-        date_labels[i] = lv_label_create(container);
-        lv_obj_set_style_text_color(date_labels[i], lv_color_make(COL_DATE, COL_DATE, COL_DATE), 0);
-        lv_obj_set_style_text_font(date_labels[i], &lv_font_montserrat_8, 0);
-        lv_obj_set_style_text_align(date_labels[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_text(date_labels[i], "");
+    /* Time label (left side) */
+    time_label = lv_label_create(container);
+    lv_obj_set_style_text_color(time_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
+    lv_obj_set_style_text_font(time_label, &lv_font_digital, 0);
+    lv_obj_set_style_text_align(time_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(time_label, 0, 14);
+    lv_obj_set_size(time_label, TIME_W, 36);
+    lv_label_set_text(time_label, "");
 
-        high_labels[i] = lv_label_create(container);
-        lv_obj_set_style_text_color(high_labels[i], lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
-        lv_obj_set_style_text_font(high_labels[i], &lv_font_montserrat_14, 0);
-        lv_obj_set_style_text_align(high_labels[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_text(high_labels[i], "");
+    /* Weather text label (right side, next to icon) */
+    weather_label = lv_label_create(container);
+    lv_obj_set_style_text_color(weather_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
+    lv_obj_set_style_text_font(weather_label, &lv_font_weather, 0);
+    lv_obj_set_pos(weather_label, 140, 6);
+    lv_obj_set_size(weather_label, 100, 20);
+    lv_label_set_text(weather_label, "");
 
-        low_labels[i] = lv_label_create(container);
-        lv_obj_set_style_text_color(low_labels[i], lv_color_make(COL_LOW, COL_LOW, COL_LOW), 0);
-        lv_obj_set_style_text_font(low_labels[i], &lv_font_montserrat_8, 0);
-        lv_obj_set_style_text_align(low_labels[i], LV_TEXT_ALIGN_CENTER, 0);
-        lv_label_set_text(low_labels[i], "");
-    }
+    /* Temp label (right side) */
+    temp_label = lv_label_create(container);
+    lv_obj_set_style_text_color(temp_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
+    lv_obj_set_style_text_font(temp_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_align(temp_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(temp_label, WEATHER_X, 22);
+    lv_obj_set_size(temp_label, CANVAS_W - WEATHER_X - 4, 24);
+    lv_label_set_text(temp_label, "");
 
     return container;
 }
@@ -242,7 +228,9 @@ void weather_chart_set_data(const weather_data_t *data)
         ESP_LOGI(TAG, "set_data: invalid weather data");
         return;
     }
-    ESP_LOGI(TAG, "set_data: %d days", weather->count);
+    ESP_LOGI(TAG, "set_data: %s %d°/%d°",
+             weather->daily[0].day_text,
+             weather->daily[0].high, weather->daily[0].low);
     draw_chart();
     lv_obj_invalidate(container);
     lv_refr_now(lv_disp_get_default());
