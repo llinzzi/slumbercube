@@ -30,6 +30,7 @@ static lv_obj_t *time_label = NULL;
 static lv_obj_t *date_label = NULL;
 static lv_obj_t *weather_label = NULL;
 static lv_obj_t *temp_label = NULL;
+static lv_obj_t *weather_date_label = NULL;
 
 static const weather_data_t *weather = NULL;
 static bool visible = false;
@@ -151,7 +152,7 @@ static void draw_chart(void)
     }
 
     /* ── Right: Weather ── */
-    draw_weather_icon(SEP_X + 22, 12, weather->daily[0].day_text);
+    draw_weather_icon(SEP_X + 18, 9, weather->daily[0].day_text);
     lv_label_set_text(weather_label, weather->daily[0].day_text);
 
     {
@@ -159,6 +160,12 @@ static void draw_chart(void)
         snprintf(buf, sizeof(buf), "%d\xc2\xb0 - %d\xc2\xb0",
                  weather->daily[0].low, weather->daily[0].high);
         lv_label_set_text(temp_label, buf);
+    }
+    {
+        char buf[8];
+        snprintf(buf, sizeof(buf), "%02d-%02d",
+                 weather->daily[0].month, weather->daily[0].day);
+        lv_label_set_text(weather_date_label, buf);
     }
 
     /* ── Bottom progress bar (time-of-day) ── */
@@ -254,18 +261,27 @@ lv_obj_t *weather_chart_create(lv_obj_t *parent)
     weather_label = lv_label_create(container);
     lv_obj_set_style_text_color(weather_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
     lv_obj_set_style_text_font(weather_label, &lv_font_weather, 0);
-    lv_obj_set_pos(weather_label, SEP_X + 40, 6);
-    lv_obj_set_size(weather_label, 120, 18);
+    lv_obj_set_pos(weather_label, SEP_X + 34, 5);
+    lv_obj_set_size(weather_label, 110, 14);
     lv_label_set_text(weather_label, "");
 
     /* ── Temperature label (right) ── */
     temp_label = lv_label_create(container);
     lv_obj_set_style_text_color(temp_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
     lv_obj_set_style_text_font(temp_label, &lv_font_weather, 0);
-    lv_obj_set_style_text_align(temp_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(temp_label, SEP_X + 12, 32);
-    lv_obj_set_size(temp_label, CANVAS_W - SEP_X - 16, 18);
+    lv_obj_set_style_text_align(temp_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_pos(temp_label, SEP_X + 8, 24);
+    lv_obj_set_size(temp_label, 130, 14);
     lv_label_set_text(temp_label, "");
+
+    /* ── Weather date label (right) ── */
+    weather_date_label = lv_label_create(container);
+    lv_obj_set_style_text_color(weather_date_label, lv_color_make(COL_DATE, COL_DATE, COL_DATE), 0);
+    lv_obj_set_style_text_font(weather_date_label, &lv_font_weather, 0);
+    lv_obj_set_style_text_align(weather_date_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_pos(weather_date_label, SEP_X + 8, 40);
+    lv_obj_set_size(weather_date_label, 130, 14);
+    lv_label_set_text(weather_date_label, "");
 
     return container;
 }
