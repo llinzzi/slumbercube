@@ -32,18 +32,23 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL, active=%ds", ACTIVE_DURATION_SECS);
 
-    /* Hold RST low to keep SSD1322 in reset during bootloader and early init.
-     * This prevents the SSD1322 from defaulting to Display ON with garbage
-     * GDDRAM when its RST pin floats during the bootloader phase. */
-    gpio_config_t rst_cfg = {
-        .pin_bit_mask = (1ULL << PIN_NUM_RST),
+    /* Hold all control and SPI pins at known levels before SSD1322 init.
+     * CS is hardwired to GND, so the SSD1322 SPI is always selected — any
+     * floating or transitioning MOSI/SCLK during bootloader can be interpreted
+     * as random commands and cause the display to light up with garbage. */
+    gpio_config_t early_pins = {
+        .pin_bit_mask = (1ULL << PIN_NUM_RST) | (1ULL << PIN_NUM_DC) |
+                        (1ULL << PIN_NUM_MOSI) | (1ULL << PIN_NUM_CLK),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
-    gpio_config(&rst_cfg);
-    gpio_set_level(PIN_NUM_RST, 0);
+    gpio_config(&early_pins);
+    gpio_set_level(PIN_NUM_RST, 0);   /* Keep SSD1322 in reset */
+    gpio_set_level(PIN_NUM_MOSI, 0);  /* MOSI low */
+    gpio_set_level(PIN_NUM_CLK, 0);   /* SCLK low */
+    gpio_set_level(PIN_NUM_DC, 0);    /* DC low */
 
     // Initialize SSD1322 driver first (display stays OFF until first frame rendered)
     ESP_ERROR_CHECK(ssd1322_init());
