@@ -1,5 +1,6 @@
 #include "weather_chart.h"
 #include "weather_icons.h"
+#include "loading_img.h"
 #include "font_weather.h"
 #include "font_digital.h"
 #include "esp_heap_caps.h"
@@ -31,6 +32,7 @@ static lv_obj_t *weather_label = NULL;
 static lv_obj_t *temp_label = NULL;
 static lv_obj_t *weather_date_label = NULL;
 static lv_obj_t *icon_img = NULL;
+static lv_obj_t *loading_img_obj = NULL;
 
 static const weather_data_t *weather = NULL;
 static bool visible = false;
@@ -194,6 +196,7 @@ lv_obj_t *weather_chart_create(lv_obj_t *parent)
     icon_img = lv_img_create(container);
     lv_img_set_src(icon_img, weather_icon_default());
     lv_obj_set_pos(icon_img, SEP_X + 6, 4);
+    lv_obj_add_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
 
     /* ── Weather text (right, top) ── */
     weather_label = lv_label_create(container);
@@ -202,6 +205,7 @@ lv_obj_t *weather_chart_create(lv_obj_t *parent)
     lv_obj_set_pos(weather_label, SEP_X + 44, 6);
     lv_obj_set_size(weather_label, 100, 14);
     lv_label_set_text(weather_label, "");
+    lv_obj_add_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
 
     /* ── Temperature label (right, middle) ── */
     temp_label = lv_label_create(container);
@@ -211,6 +215,7 @@ lv_obj_t *weather_chart_create(lv_obj_t *parent)
     lv_obj_set_pos(temp_label, SEP_X + 44, 24);
     lv_obj_set_size(temp_label, 100, 14);
     lv_label_set_text(temp_label, "");
+    lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
 
     /* ── Weather date label (right, bottom) ── */
     weather_date_label = lv_label_create(container);
@@ -220,6 +225,12 @@ lv_obj_t *weather_chart_create(lv_obj_t *parent)
     lv_obj_set_pos(weather_date_label, SEP_X + 44, 42);
     lv_obj_set_size(weather_date_label, 100, 14);
     lv_label_set_text(weather_date_label, "");
+    lv_obj_add_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
+
+    /* ── Loading image (centered in weather area, hidden when data arrives) ── */
+    loading_img_obj = lv_img_create(container);
+    lv_img_set_src(loading_img_obj, loading_img_get());
+    lv_obj_set_pos(loading_img_obj, SEP_X + (128 - 48) / 2, (CANVAS_H - 52) / 2);
 
     return container;
 }
@@ -234,6 +245,15 @@ void weather_chart_set_data(const weather_data_t *data)
     ESP_LOGI(TAG, "set_data: %s %d°/%d°",
              weather->daily[0].day_text,
              weather->daily[0].high, weather->daily[0].low);
+
+    /* Hide loading image and show weather data */
+    if (loading_img_obj) {
+        lv_obj_add_flag(loading_img_obj, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (icon_img) lv_obj_remove_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
+    if (weather_label) lv_obj_remove_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
+    if (temp_label) lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
+    if (weather_date_label) lv_obj_remove_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
     draw_chart();
     lv_obj_invalidate(container);
     lv_refr_now(lv_disp_get_default());
