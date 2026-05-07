@@ -176,6 +176,54 @@ WiFi 和天气 API 相关参数目前硬编码在源码中：
 - **深度睡眠**: 关闭显示，GPIO3 低电平唤醒，功耗极低
 - **唤醒**: 短按按键即可唤醒设备
 
+## 字体
+
+项目使用两个编译后的 LVGL 字体，分别对应时间显示和天气信息。
+
+### 数字字体 (`font_digital.c`)
+
+- **源文件**: `main/digital-7 (mono).ttf`
+- **用途**: 时钟时间显示 (HH:MM)
+- **字符子集**: `0123456789:` （数字+冒号）
+- **编译参数**: size=40, bpp=4
+
+编译命令：
+
+```bash
+lv_font_conv --size 40 --bpp 4 --format lvgl --no-compress \
+  --font "main/digital-7 (mono).ttf" \
+  --symbols "0123456789:" \
+  --output font_digital.c --lv-font-name lv_font_digital
+```
+
+### 天气字体 (`font_weather.c`)
+
+- **源文件**: `main/fusion-pixel-12px-monospaced-zh_hans.ttf`
+- **用途**: 天气文字、日期、温度显示
+- **字符子集**: `0123456789°/-:AMPM严中云伴冰冷冻劲卷和多大天夹小少尘带平并度强微扬晴暴有未极毛气沙浓浮清烈热爆特狂疾知端细重间阴阵降雨雪雷雹雾霾静风飓龙转到`
+- **编译参数**: size=12, bpp=1
+
+编译命令：
+
+```bash
+lv_font_conv --size 12 --bpp 1 --format lvgl --no-compress \
+  --font fusion-pixel-12px-monospaced-zh_hans.ttf \
+  --symbols "0123456789°/-:AMPM严中云伴冰冷冻劲卷和多大天夹小少尘带平并度强微扬晴暴有未极毛气沙浓浮清烈热爆特狂疾知端细重间阴阵降雨雪雷雹雾霾静风飓龙转到" \
+  --output font_weather.c --lv-font-name lv_font_weather
+```
+
+> 如需增删天气描述文字，需同步更新 `--symbols` 中的字符子集并重新编译字体。
+
+### 未使用的字体文件
+
+下列字体文件已下载但未在代码中引用，仅作备存：
+
+| 文件 | 说明 |
+|------|------|
+| `fusion-pixel-12px-monospaced-latin.ttf` | 同款字体的拉丁字母版本 |
+| `fusion-pixel-12px-monospaced-zh_hant.ttf.woff2` | 同款字体的繁体中文版本 (WOFF2) |
+| `NotoSansSC-Light.ttf` | 思源黑体 Light 字重 |
+
 ## 依赖组件
 
 | 组件 | 版本 | 说明 |
