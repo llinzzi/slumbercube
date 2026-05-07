@@ -185,12 +185,12 @@ WiFi 和天气 API 相关参数目前硬编码在源码中：
 - **源文件**: `main/digital-7 (mono).ttf`
 - **用途**: 时钟时间显示 (HH:MM)
 - **字符子集**: `0123456789:` （数字+冒号）
-- **编译参数**: size=40, bpp=4
+- **编译参数**: size=48, bpp=4
 
 编译命令：
 
 ```bash
-lv_font_conv --size 40 --bpp 4 --format lvgl --no-compress \
+lv_font_conv --size 48 --bpp 4 --format lvgl --no-compress \
   --font "main/digital-7 (mono).ttf" \
   --symbols "0123456789:" \
   --output font_digital.c --lv-font-name lv_font_digital
