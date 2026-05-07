@@ -12,7 +12,7 @@ static const char *TAG = "WEATHER_CHART";
 
 #define CANVAS_W 256
 #define CANVAS_H 64
-#define TIME_W   116
+#define TIME_W   128
 #define SEP_X    TIME_W
 
 #define COL_DATE   0x88
