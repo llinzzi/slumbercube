@@ -1,4 +1,5 @@
 #include "weather_chart.h"
+#include "weather_icons.h"
 #include "font_weather.h"
 #include "font_digital.h"
 #include "esp_heap_caps.h"
@@ -17,9 +18,7 @@ static const char *TAG = "WEATHER_CHART";
 #define COL_DATE   0x88
 #define COL_TEMP   0xCC
 #define COL_LOW    0x66
-#define COL_ICON   0xCC
 #define COL_SEP    0x33
-#define COL_FRAME  0x77
 #define COL_PROGBG 0x22
 #define COL_PROGFG 0xAA
 
@@ -31,6 +30,7 @@ static lv_obj_t *date_label = NULL;
 static lv_obj_t *weather_label = NULL;
 static lv_obj_t *temp_label = NULL;
 static lv_obj_t *weather_date_label = NULL;
+static lv_obj_t *icon_img = NULL;
 
 static const weather_data_t *weather = NULL;
 static bool visible = false;
@@ -56,73 +56,6 @@ static void draw_line(int x0, int y0, int x1, int y1, uint8_t gray)
         int e2 = 2 * err;
         if (e2 > -dy) { err -= dy; x0 += sx; }
         if (e2 < dx)  { err += dx; y0 += sy; }
-    }
-}
-
-static void draw_filled_circle(int cx, int cy, int r, uint8_t gray)
-{
-    for (int y = cy - r; y <= cy + r; y++) {
-        for (int x = cx - r; x <= cx + r; x++) {
-            int dx = x - cx, dy = y - cy;
-            if (dx * dx + dy * dy <= r * r)
-                draw_pixel(x, y, gray);
-        }
-    }
-}
-
-/* ── Weather icons ── */
-
-static void draw_weather_icon(int cx, int cy, const char *text)
-{
-    if (!text) return;
-
-    if (strstr(text, "晴")) {
-        draw_filled_circle(cx, cy, 2, COL_ICON);
-        draw_pixel(cx, cy - 5, COL_ICON);
-        draw_pixel(cx, cy + 5, COL_ICON);
-        draw_pixel(cx - 5, cy, COL_ICON);
-        draw_pixel(cx + 5, cy, COL_ICON);
-        draw_pixel(cx - 3, cy - 3, COL_ICON);
-        draw_pixel(cx + 3, cy - 3, COL_ICON);
-        draw_pixel(cx - 3, cy + 3, COL_ICON);
-        draw_pixel(cx + 3, cy + 3, COL_ICON);
-
-    } else if (strstr(text, "云") || strstr(text, "阴")) {
-        draw_filled_circle(cx - 3, cy, 4, COL_ICON);
-        draw_filled_circle(cx + 3, cy - 1, 4, COL_ICON);
-        draw_line(cx - 7, cy + 2, cx + 7, cy + 2, COL_ICON);
-        draw_line(cx - 6, cy + 3, cx + 6, cy + 3, COL_ICON);
-
-    } else if (strstr(text, "雨")) {
-        draw_filled_circle(cx - 3, cy - 1, 4, COL_ICON);
-        draw_filled_circle(cx + 3, cy - 2, 4, COL_ICON);
-        draw_line(cx - 7, cy + 1, cx + 7, cy + 1, COL_ICON);
-        draw_line(cx - 6, cy + 2, cx + 6, cy + 2, COL_ICON);
-        draw_line(cx - 5, cy + 4, cx - 4, cy + 8, COL_ICON);
-        draw_line(cx,     cy + 5, cx + 1, cy + 9, COL_ICON);
-        draw_line(cx + 5, cy + 4, cx + 6, cy + 8, COL_ICON);
-
-    } else if (strstr(text, "雪")) {
-        draw_filled_circle(cx - 3, cy - 1, 4, COL_ICON);
-        draw_filled_circle(cx + 3, cy - 2, 4, COL_ICON);
-        draw_line(cx - 7, cy + 1, cx + 7, cy + 1, COL_ICON);
-        draw_line(cx - 6, cy + 2, cx + 6, cy + 2, COL_ICON);
-        draw_filled_circle(cx - 4, cy + 5, 1, COL_ICON);
-        draw_filled_circle(cx,     cy + 6, 1, COL_ICON);
-        draw_filled_circle(cx + 4, cy + 5, 1, COL_ICON);
-
-    } else if (strstr(text, "雾")) {
-        draw_line(cx - 6, cy - 3, cx + 6, cy - 3, COL_ICON);
-        draw_line(cx - 5, cy,     cx + 5, cy,     COL_ICON);
-        draw_line(cx - 6, cy + 3, cx + 6, cy + 3, COL_ICON);
-
-    } else if (strstr(text, "风")) {
-        draw_line(cx - 5, cy - 3, cx + 5, cy - 1, COL_ICON);
-        draw_line(cx - 4, cy,     cx + 4, cy + 1, COL_ICON);
-        draw_line(cx - 3, cy + 2, cx + 3, cy + 4, COL_ICON);
-
-    } else {
-        draw_filled_circle(cx, cy, 2, COL_ICON);
     }
 }
 
@@ -152,7 +85,7 @@ static void draw_chart(void)
     }
 
     /* ── Right: Weather ── */
-    draw_weather_icon(SEP_X + 18, 9, weather->daily[0].day_text);
+    lv_img_set_src(icon_img, weather_icon_match(weather->daily[0].day_text));
     lv_label_set_text(weather_label, weather->daily[0].day_text);
 
     {
@@ -257,30 +190,35 @@ lv_obj_t *weather_chart_create(lv_obj_t *parent)
     lv_obj_set_size(date_label, TIME_W, 10);
     lv_label_set_text(date_label, "");
 
-    /* ── Weather text (right, next to icon) ── */
+    /* ── Weather icon image (right, left column) ── */
+    icon_img = lv_img_create(container);
+    lv_img_set_src(icon_img, weather_icon_default());
+    lv_obj_set_pos(icon_img, SEP_X + 6, 4);
+
+    /* ── Weather text (right, top) ── */
     weather_label = lv_label_create(container);
     lv_obj_set_style_text_color(weather_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
     lv_obj_set_style_text_font(weather_label, &lv_font_weather, 0);
-    lv_obj_set_pos(weather_label, SEP_X + 34, 5);
-    lv_obj_set_size(weather_label, 110, 14);
+    lv_obj_set_pos(weather_label, SEP_X + 44, 6);
+    lv_obj_set_size(weather_label, 100, 14);
     lv_label_set_text(weather_label, "");
 
-    /* ── Temperature label (right) ── */
+    /* ── Temperature label (right, middle) ── */
     temp_label = lv_label_create(container);
     lv_obj_set_style_text_color(temp_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
     lv_obj_set_style_text_font(temp_label, &lv_font_weather, 0);
     lv_obj_set_style_text_align(temp_label, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_pos(temp_label, SEP_X + 8, 24);
-    lv_obj_set_size(temp_label, 130, 14);
+    lv_obj_set_pos(temp_label, SEP_X + 44, 24);
+    lv_obj_set_size(temp_label, 100, 14);
     lv_label_set_text(temp_label, "");
 
-    /* ── Weather date label (right) ── */
+    /* ── Weather date label (right, bottom) ── */
     weather_date_label = lv_label_create(container);
     lv_obj_set_style_text_color(weather_date_label, lv_color_make(COL_DATE, COL_DATE, COL_DATE), 0);
     lv_obj_set_style_text_font(weather_date_label, &lv_font_weather, 0);
     lv_obj_set_style_text_align(weather_date_label, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_pos(weather_date_label, SEP_X + 8, 40);
-    lv_obj_set_size(weather_date_label, 130, 14);
+    lv_obj_set_pos(weather_date_label, SEP_X + 44, 42);
+    lv_obj_set_size(weather_date_label, 100, 14);
     lv_label_set_text(weather_date_label, "");
 
     return container;
