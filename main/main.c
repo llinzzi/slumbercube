@@ -32,8 +32,9 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL, active=%ds", ACTIVE_DURATION_SECS);
 
-    /* Hold RST high immediately to prevent SSD1322 from seeing a floating RST
-     * during bootloader phase (GPIO20 defaults to input, high-Z). */
+    /* Hold RST low to keep SSD1322 in reset during bootloader and early init.
+     * This prevents the SSD1322 from defaulting to Display ON with garbage
+     * GDDRAM when its RST pin floats during the bootloader phase. */
     gpio_config_t rst_cfg = {
         .pin_bit_mask = (1ULL << PIN_NUM_RST),
         .mode = GPIO_MODE_OUTPUT,
@@ -42,7 +43,7 @@ void app_main(void)
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&rst_cfg);
-    gpio_set_level(PIN_NUM_RST, 1);
+    gpio_set_level(PIN_NUM_RST, 0);
 
     // Initialize SSD1322 driver first (display stays OFF until first frame rendered)
     ESP_ERROR_CHECK(ssd1322_init());

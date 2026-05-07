@@ -2,6 +2,7 @@
 #include "driver/gpio.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <stdlib.h>
@@ -132,11 +133,17 @@ esp_err_t ssd1322_init(void)
     gpio_set_level(PIN_NUM_RST, 0);
     vTaskDelay(pdMS_TO_TICKS(1));  // 保持低电平 1ms
     gpio_set_level(PIN_NUM_RST, 1);
-    vTaskDelay(pdMS_TO_TICKS(5));  // 等待复位完成
+    esp_rom_delay_us(50);          // 仅等 50μs 让 SSD1322 稳定
 
-    // 初始化SSD1322寄存器
+    /* Immediately turn display OFF — SSD1322 defaults to Display ON after
+     * hardware reset, so any delay here causes a visible white flash from
+     * random GDDRAM contents. The unlock + 0xAE completes in <100μs. */
     ssd1322_send_cmd(0xFD); ssd1322_send_data(0x12);
     ssd1322_send_cmd(0xAE);
+
+    vTaskDelay(pdMS_TO_TICKS(5));  // 等待内部初始化完成
+
+    // 初始化SSD1322寄存器
     ssd1322_send_cmd(0xB3); ssd1322_send_data(0x91);
     ssd1322_send_cmd(0xCA); ssd1322_send_data(0x3F);
     ssd1322_send_cmd(0xA2); ssd1322_send_data(0x00);
