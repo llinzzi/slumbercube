@@ -1,9 +1,12 @@
 #pragma once
 
-#include "lvgl.h"
+#include <stdint.h>
 
-/* Look up icon by weather text. Returns pointer to lv_img_dsc_t. */
-const lv_img_dsc_t *weather_icon_match(const char *weather_text);
+#define WEATHER_ICON_W 32
+#define WEATHER_ICON_H 32
+
+/* Look up icon by weather text. Returns pointer to L8 pixel data (1024 bytes). */
+const uint8_t *weather_icon_match(const char *weather_text);
 
 /* Default icon (clear/sunny) for initial display. */
-const lv_img_dsc_t *weather_icon_default(void);
+const uint8_t *weather_icon_default(void);

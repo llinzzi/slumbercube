@@ -1,5 +1,9 @@
 #pragma once
 
-#include "lvgl.h"
+#include <stdint.h>
 
-const lv_img_dsc_t *loading_img_get(void);
+#define LOADING_IMG_W 48
+#define LOADING_IMG_H 52
+
+/* Returns pointer to L8 pixel data. */
+const uint8_t *loading_img_get(void);

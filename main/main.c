@@ -3,8 +3,8 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ssd1322_driver.h"
-#include "lvgl_adapter.h"
-#include "ui.h"
+#include "u8g2_adapter.h"
+#include "main_screen.h"
 #include "wifi.h"
 #include "weather_service.h"
 #include "esp_sleep.h"
@@ -21,7 +21,6 @@ static button_handle_t g_btn = NULL;
 static weather_data_t s_weather;
 static volatile bool s_sleep_pending = false;
 
-/* Lightweight: only set flag. Sleep is deferred to main loop. */
 static void button_press_cb(void *button_handle, void *usr_data)
 {
     ESP_LOGI(TAG, "Button pressed, going to sleep");
@@ -30,28 +29,25 @@ static void button_press_cb(void *button_handle, void *usr_data)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL, active=%ds", ACTIVE_DURATION_SECS);
+    ESP_LOGI(TAG, "Starting SSD1322 OLED with u8g2, active=%ds", ACTIVE_DURATION_SECS);
 
-    /* Hold all control and SPI pins at known levels before SSD1322 init.
-     * CS is hardwired to GND, so the SSD1322 SPI is always selected — any
-     * floating or transitioning MOSI/SCLK during bootloader can be interpreted
-     * as random commands and cause the display to light up with garbage. */
+    /* Hold all control and SPI pins at known levels before SSD1322 init. */
     gpio_config_t early_pins = {
         .pin_bit_mask = (1ULL << PIN_NUM_RST) | (1ULL << PIN_NUM_DC) |
                         (1ULL << PIN_NUM_MOSI) | (1ULL << PIN_NUM_CLK),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_ENABLE, /* RST pull-down ensures SSD1322 stays in reset if GPIO floats during bootloader */
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&early_pins);
-    gpio_set_level(PIN_NUM_RST, 0);   /* Keep SSD1322 in reset */
-    gpio_set_level(PIN_NUM_MOSI, 0);  /* MOSI low */
-    gpio_set_level(PIN_NUM_CLK, 0);   /* SCLK low */
-    gpio_set_level(PIN_NUM_DC, 0);    /* DC low */
+    gpio_set_level(PIN_NUM_RST, 0);
+    gpio_set_level(PIN_NUM_MOSI, 0);
+    gpio_set_level(PIN_NUM_CLK, 0);
+    gpio_set_level(PIN_NUM_DC, 0);
 
-    // Initialize SSD1322 driver first (display stays OFF until first frame rendered)
-    ESP_ERROR_CHECK(ssd1322_init());
+    // Initialize SSD1322 + u8g2 (display stays OFF until first frame rendered)
+    ESP_ERROR_CHECK(u8g2_adapter_init());
 
     // Initialize button (any press triggers sleep)
     button_config_t btn_cfg = {
@@ -70,28 +66,19 @@ void app_main(void)
         ESP_LOGE(TAG, "Failed to init button on GPIO%d: %s", BUTTON_GPIO_NUM, esp_err_to_name(err));
     }
 
-    // Always set timezone after wake (TZ env var is lost during deep sleep)
+    // Always set timezone after wake
     wifi_set_timezone();
 
-    // Initialize LVGL before WiFi (clean heap avoids allocation failures)
-    ESP_ERROR_CHECK(lvgl_adapter_init());
+    // Initialize main screen (renders loading image + time)
+    main_screen_init();
 
-    // Wait for LVGL task to start
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // Turn on display AFTER first frame is in GDDRAM
+    u8g2_adapter_display_on();
 
-    // Create UI (first frame rendered and flushed to GDDRAM inside this call)
-    ESP_ERROR_CHECK(ui_wrapper_init());
-
-    // Turn on display AFTER first frame is in GDDRAM — eliminates white flash on wake
-    ssd1322_display_on();
-
-    // Pass weather data to screens if available (from a previous fetch)
+    // Pass weather data to screen if available (from a previous fetch)
     if (s_weather.valid) {
-        screens_set_weather_data_ptr(&s_weather);
+        main_screen_set_weather_data(&s_weather);
     }
-
-    // Wait for UI to load
-    vTaskDelay(pdMS_TO_TICKS(100));
 
     // Always init TCP/IP stack + start WiFi for button-press weather
     wifi_ensure_netif();
@@ -105,7 +92,7 @@ void app_main(void)
     for (int retry = 0; retry < 5; retry++) {
         esp_err_t err = weather_fetch(&s_weather);
         if (err == ESP_OK) {
-            screens_set_weather_data_ptr(&s_weather);
+            main_screen_set_weather_data(&s_weather);
             break;
         }
         ESP_LOGW(TAG, "Boot weather fetch attempt %d/5 failed", retry + 1);
@@ -114,18 +101,19 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Running for %d seconds before sleep, button wakes", ACTIVE_DURATION_SECS);
 
-    // Main loop: button press or timeout → sleep
+    // Main loop: update time every second, button press or timeout → sleep
     for (int i = 0; i < ACTIVE_DURATION_SECS; i++) {
         if (s_sleep_pending) {
             break;
         }
+        main_screen_tick();
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
     ESP_LOGI(TAG, "Time to sleep, turning off display");
 
     // Turn off display before deep sleep
-    ssd1322_display_off();
+    u8g2_adapter_display_off();
 
     // Configure GPIO3 low-level as wakeup source
     esp_deep_sleep_enable_gpio_wakeup((1ULL << WAKEUP_GPIO_NUM), ESP_GPIO_WAKEUP_GPIO_LOW);

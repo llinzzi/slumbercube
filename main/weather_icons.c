@@ -403,80 +403,20 @@ static const uint8_t wind_power_map[] = {
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
-static const lv_img_dsc_t img_clear_day = {
-    .header = {
-        .cf = LV_COLOR_FORMAT_L8,
-        .w = 32,
-        .h = 32,
-    },
-    .data_size = 1024,
-    .data = clear_day_map,
-};
-
-static const lv_img_dsc_t img_cloudy = {
-    .header = {
-        .cf = LV_COLOR_FORMAT_L8,
-        .w = 32,
-        .h = 32,
-    },
-    .data_size = 1024,
-    .data = cloudy_map,
-};
-
-static const lv_img_dsc_t img_rainy = {
-    .header = {
-        .cf = LV_COLOR_FORMAT_L8,
-        .w = 32,
-        .h = 32,
-    },
-    .data_size = 1024,
-    .data = rainy_map,
-};
-
-static const lv_img_dsc_t img_snowflake = {
-    .header = {
-        .cf = LV_COLOR_FORMAT_L8,
-        .w = 32,
-        .h = 32,
-    },
-    .data_size = 1024,
-    .data = snowflake_map,
-};
-
-static const lv_img_dsc_t img_mist = {
-    .header = {
-        .cf = LV_COLOR_FORMAT_L8,
-        .w = 32,
-        .h = 32,
-    },
-    .data_size = 1024,
-    .data = mist_map,
-};
-
-static const lv_img_dsc_t img_wind_power = {
-    .header = {
-        .cf = LV_COLOR_FORMAT_L8,
-        .w = 32,
-        .h = 32,
-    },
-    .data_size = 1024,
-    .data = wind_power_map,
-};
-
-const lv_img_dsc_t *weather_icon_default(void)
+const uint8_t *weather_icon_default(void)
 {
-    return &img_clear_day;
+    return clear_day_map;
 }
 
-const lv_img_dsc_t *weather_icon_match(const char *weather_text)
+const uint8_t *weather_icon_match(const char *weather_text)
 {
-    if (!weather_text) return &img_clear_day;
-    if (strstr(weather_text, "晴")) return &img_clear_day;
-    if (strstr(weather_text, "云")) return &img_cloudy;
-    if (strstr(weather_text, "阴")) return &img_cloudy;
-    if (strstr(weather_text, "雨")) return &img_rainy;
-    if (strstr(weather_text, "雪")) return &img_snowflake;
-    if (strstr(weather_text, "雾")) return &img_mist;
-    if (strstr(weather_text, "风")) return &img_wind_power;
-    return &img_clear_day;
+    if (!weather_text) return clear_day_map;
+    if (strstr(weather_text, "晴")) return clear_day_map;
+    if (strstr(weather_text, "云")) return cloudy_map;
+    if (strstr(weather_text, "阴")) return cloudy_map;
+    if (strstr(weather_text, "雨")) return rainy_map;
+    if (strstr(weather_text, "雪")) return snowflake_map;
+    if (strstr(weather_text, "雾")) return mist_map;
+    if (strstr(weather_text, "风")) return wind_power_map;
+    return clear_day_map;
 }
