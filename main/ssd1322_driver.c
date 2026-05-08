@@ -133,13 +133,16 @@ esp_err_t ssd1322_init(void)
     gpio_set_level(PIN_NUM_RST, 0);
     vTaskDelay(pdMS_TO_TICKS(1));  // 保持低电平 1ms
     gpio_set_level(PIN_NUM_RST, 1);
-    esp_rom_delay_us(50);          // 仅等 50μs 让 SSD1322 稳定
+    /* Wait ~4ms after RST high before accessing SSD1322 — the chip needs tRES
+     * (~2µs in datasheet) plus internal oscillator startup before it can
+     * reliably accept commands. Matches u8g2 timing. */
+    esp_rom_delay_us(4000);
 
     /* Immediately turn display OFF — SSD1322 defaults to Display ON after
      * hardware reset, so any delay here causes a visible white flash from
-     * random GDDRAM contents. The unlock + 0xAE completes in <100μs. */
-    ssd1322_send_cmd(0xFD); ssd1322_send_data(0x12);
-    ssd1322_send_cmd(0xAE);
+     * random GDDRAM contents. */
+    ssd1322_send_cmd(0xFD); ssd1322_send_data(0x12);  // unlock
+    ssd1322_send_cmd(0xAE);                            // display off
 
     vTaskDelay(pdMS_TO_TICKS(5));  // 等待内部初始化完成
 
@@ -150,15 +153,17 @@ esp_err_t ssd1322_init(void)
     ssd1322_send_cmd(0xA1); ssd1322_send_data(0x00);
     ssd1322_send_cmd(0xA0); ssd1322_send_data(0x14); ssd1322_send_data(0x11);
     ssd1322_send_cmd(0xAB); ssd1322_send_data(0x01);
-    ssd1322_send_cmd(0xB4); ssd1322_send_data(0xA0); ssd1322_send_data(0xFD);
-    ssd1322_send_cmd(0xC1); ssd1322_send_data(0x80);
-    ssd1322_send_cmd(0xC7); ssd1322_send_data(0x01);
+    ssd1322_send_cmd(0xB4); ssd1322_send_data(0xA0); ssd1322_send_data(0x05); ssd1322_send_data(0xFD);
+    ssd1322_send_cmd(0xC1); ssd1322_send_data(0x9F);
+    ssd1322_send_cmd(0xC7); ssd1322_send_data(0x0F);
+    ssd1322_send_cmd(0xB9);                              /* linear grayscale */
     ssd1322_send_cmd(0xB1); ssd1322_send_data(0xE2);
-    ssd1322_send_cmd(0xD1); ssd1322_send_data(0x82); ssd1322_send_data(0x20);
+    ssd1322_send_cmd(0xD1); ssd1322_send_data(0x82 | 0x20); ssd1322_send_data(0x20);
     ssd1322_send_cmd(0xBB); ssd1322_send_data(0x1F);
     ssd1322_send_cmd(0xB6); ssd1322_send_data(0x08);
     ssd1322_send_cmd(0xBE); ssd1322_send_data(0x07);
     ssd1322_send_cmd(0xA6);
+    ssd1322_send_cmd(0xA9);                              /* exit partial display */
 
     /* Clear GDDRAM before turning on display to avoid white flash on wake */
     ssd1322_clear_display();

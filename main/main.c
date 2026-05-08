@@ -41,7 +41,7 @@ void app_main(void)
                         (1ULL << PIN_NUM_MOSI) | (1ULL << PIN_NUM_CLK),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE, /* RST pull-down ensures SSD1322 stays in reset if GPIO floats during bootloader */
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&early_pins);
