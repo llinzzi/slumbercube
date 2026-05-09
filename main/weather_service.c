@@ -1,6 +1,7 @@
 #include "weather_service.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
+#include "esp_crt_bundle.h"
 #include "cJSON.h"
 #include <string.h>
 #include <time.h>
@@ -159,7 +160,7 @@ esp_err_t weather_fetch(weather_data_t *data)
         .url = AMAP_URL,
         .event_handler = http_event_handler,
         .user_data = &rb,
-        .skip_cert_common_name_check = true,
+        .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 15000,
         .buffer_size = 1024,
         .buffer_size_tx = 512,

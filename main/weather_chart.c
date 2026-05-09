@@ -186,7 +186,7 @@ lv_obj_t *weather_chart_create(lv_obj_t *parent)
     /* ── Date label (left, below time) ── */
     date_label = lv_label_create(container);
     lv_obj_set_style_text_color(date_label, lv_color_make(COL_DATE, COL_DATE, COL_DATE), 0);
-    lv_obj_set_style_text_font(date_label, &lv_font_montserrat_8, 0);
+    lv_obj_set_style_text_font(date_label, &lv_font_montserrat_14, 0);
     lv_obj_set_style_text_align(date_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(date_label, 0, 54);
     lv_obj_set_size(date_label, TIME_W, 10);
