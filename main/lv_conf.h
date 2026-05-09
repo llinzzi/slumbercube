@@ -19,10 +19,12 @@
 #define LV_MEM_CUSTOM_REALLOC heap_caps_realloc
 
 /* Fonts */
-#define LV_FONT_MONTSERRAT_8  1
-#define LV_FONT_MONTSERRAT_12 1
-#define LV_FONT_MONTSERRAT_14 1
-#define LV_FONT_MONTSERRAT_48 1
+#define LV_FONT_MONTSERRAT_8  0
+#define LV_FONT_MONTSERRAT_12 0
+#define LV_FONT_MONTSERRAT_14 0
+#define LV_FONT_MONTSERRAT_48 0
+
+#define LV_FONT_DEFAULT &lv_font_weather
 
 /* Widgets used */
 #define LV_USE_LABEL  1
