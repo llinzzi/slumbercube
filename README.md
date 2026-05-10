@@ -13,6 +13,7 @@
 - **按键交互** — 短按刷新天气，长按重新同步 NTP 并刷新天气
 - **深度睡眠** — 10 分钟无操作后自动进入深度睡眠，按键唤醒
 - **防白闪启动** — 上电时等待 LVGL 渲染首帧后再开启显示，避免 OLED 白闪
+- **防白闪唤醒** — 深度睡眠唤醒时同样消除白闪，通过三层防护实现
 - **LVGL v9.4.0** — 基于 LVGL 图形库渲染，EEZ Studio 生成 UI 框架
 - **I4 灰度输出** — 4-bit 灰度 (16 级)，2 像素/字节高效传输
 
@@ -223,6 +224,45 @@ lv_font_conv --size 12 --bpp 1 --format lvgl --no-compress \
 | `fusion-pixel-12px-monospaced-latin.ttf` | 同款字体的拉丁字母版本 |
 | `fusion-pixel-12px-monospaced-zh_hant.ttf.woff2` | 同款字体的繁体中文版本 (WOFF2) |
 | `NotoSansSC-Light.ttf` | 思源黑体 Light 字重 |
+
+### 防白闪机制
+
+深度睡眠唤醒时 OLED 白闪的根本原因是 **LVGL 的默认主题屏幕在用户屏幕加载前被提前渲染**。
+
+**问题链路：**
+
+1. `create_screen_main()` 创建黑色背景的用户屏幕，并含天气等 UI 组件
+2. 该函数调用 `tick_screen_main()` → `lv_refr_now()` 进行首次渲染
+3. 但此时 `lv_screen_active()` 仍然是 **LVGL 默认屏幕**（白色主题背景）
+4. 白色像素被渲染到 SSD1322 GDDRAM 中
+5. 接着 `ssd1322_display_on()` 打开显示 → 用户看到 GDDRAM 中的白色 → **白闪**
+6. 后续 LVGL tick 才会渲染正确的黑色背景，但白闪已经出现
+
+**修复方案：**
+
+```c
+// screens.c — create_screen_main()
+weather_chart_create(obj);
+weather_chart_show();
+
+// ✅ 在 tick_screen_main() 之前加载屏幕，确保 lv_refr_now()
+//    渲染的是黑色背景的用户屏幕，而非默认白色屏幕
+lv_screen_load(objects.main);
+
+tick_screen_main();
+```
+
+**对比 u8g2：** u8g2 在每次刷新前都调用 `u8g2_ClearBuffer()` 将缓冲区填充为黑色，因此不会有白色默认背景的问题。
+
+**辅助防护：**
+
+| 层次 | 措施 | 作用 |
+|------|------|------|
+| 硬件 | 深度睡眠前 GPIO hold 拉低 RST | 防止 SSD1322 在睡眠期间自行启动 |
+| 初始化 | `ssd1322_init()` 复位后立即 `0xAE` | 关闭显示，防止随机 GDDRAM 内容显示 |
+| 清屏 | `ssd1322_clear_display()` 全 128 列 | 清空 GDDRAM，作为最后一道防线 |
+| 渲染 | 首帧渲染后再 `ssd1322_display_on()` | 确保 GDDRAM 中已是正确内容 |
+| **屏幕加载** | **`lv_screen_load()` 在 `lv_refr_now()` 之前** | **消除默认白色主题屏渲染 — 本次修复的关键** |
 
 ## 依赖组件
 
