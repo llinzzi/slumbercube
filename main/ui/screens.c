@@ -31,6 +31,9 @@ void create_screen_main() {
     weather_chart_create(obj);
     weather_chart_show();
 
+    /* Load screen BEFORE tick so lv_refr_now renders the correct (black) screen */
+    lv_screen_load(objects.main);
+
     tick_screen_main();
 }
 
@@ -65,5 +68,4 @@ void tick_screen_by_id(enum ScreensEnum screenId) {
 
 void create_screens() {
     create_screen_main();
-    lv_screen_load(objects.main);
 }
