@@ -1,5 +1,6 @@
 #include "screens.h"
 #include "vars.h"
+#include "ssd1322_driver.h"
 #include "weather_chart.h"
 #include <string.h>
 #include <time.h>
@@ -45,9 +46,12 @@ void tick_screen_main()
         weather_chart_set_data(data);
     }
 
-    /* Keep time display updated — lv_label_set_text() invalidates labels
-     * internally, LVGL tick handler renders dirty areas on next iteration */
+    /* Keep time display updated */
     weather_chart_update_time();
+
+    lv_area_t full_screen = {0, 0, LCD_H_RES - 1, LCD_V_RES - 1};
+    lv_obj_invalidate_area(lv_screen_active(), &full_screen);
+    lv_refr_now(lv_disp_get_default());
 }
 
 
@@ -64,6 +68,4 @@ void tick_screen_by_id(enum ScreensEnum screenId) {
 
 void create_screens() {
     create_screen_main();
-    /* First frame must be rendered before ssd1322_display_on() */
-    lv_refr_now(lv_disp_get_default());
 }

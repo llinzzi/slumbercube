@@ -91,7 +91,7 @@ esp_err_t lvgl_adapter_init(void)
 
     lv_display_set_flush_cb(g_disp, lvgl_flush_cb);
 
-    xTaskCreate(lvgl_task, "lvgl_task", 4096, NULL, 5, NULL);
+    xTaskCreate(lvgl_task, "lvgl_task", 8192, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "LVGL adapter initialized");
     return ESP_OK;
