@@ -32,6 +32,11 @@ void app_main(void)
 {
     ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL, active=%ds", ACTIVE_DURATION_SECS);
 
+    /* Enable GPIO hold through deep sleep, and release any hold left from
+     * previous sleep cycle before reconfiguring pins. */
+    gpio_deep_sleep_hold_en();
+    gpio_hold_dis(PIN_NUM_RST);
+
     /* Hold all control and SPI pins at known levels before SSD1322 init.
      * CS is hardwired to GND, so the SSD1322 SPI is always selected — any
      * floating or transitioning MOSI/SCLK during bootloader can be interpreted
@@ -126,6 +131,11 @@ void app_main(void)
 
     // Turn off display before deep sleep
     ssd1322_display_off();
+
+    // Drive RST low and hold through deep sleep to prevent SSD1322 from
+    // exiting reset during wake transition (which causes white flash)
+    gpio_set_level(PIN_NUM_RST, 0);
+    gpio_hold_en(PIN_NUM_RST);
 
     // Configure GPIO3 low-level as wakeup source
     esp_deep_sleep_enable_gpio_wakeup((1ULL << WAKEUP_GPIO_NUM), ESP_GPIO_WAKEUP_GPIO_LOW);
