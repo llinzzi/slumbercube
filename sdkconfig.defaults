@@ -1,0 +1,2 @@
+# Use external 32.768kHz crystal for RTC clock to preserve time during deep sleep
+CONFIG_RTC_CLK_SRC_EXT_CRYS=y
