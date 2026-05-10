@@ -63,8 +63,6 @@ static void sntp_init_time(void)
 {
     ESP_LOGI(TAG, "Initializing SNTP");
 
-    wifi_set_timezone();
-
     sntp_setservername(0, "pool.ntp.org");
     sntp_setservername(1, "time.nist.gov");
     sntp_setoperatingmode(SNTP_OPMODE_POLL);

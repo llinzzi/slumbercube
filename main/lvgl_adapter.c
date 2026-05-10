@@ -16,12 +16,6 @@ static void lvgl_task(void *arg);
 
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
-    static uint32_t flush_n;
-    flush_n++;
-    if (flush_n % 10 == 1) {
-        ESP_LOGI(TAG, "FLUSH n=%lu", (unsigned long)flush_n);
-    }
-
     int x_start = area->x1;
     int y_start = area->y1;
     int x_end = area->x2;
@@ -97,7 +91,7 @@ esp_err_t lvgl_adapter_init(void)
 
     lv_display_set_flush_cb(g_disp, lvgl_flush_cb);
 
-    xTaskCreate(lvgl_task, "lvgl_task", 8192, NULL, 5, NULL);
+    xTaskCreate(lvgl_task, "lvgl_task", 4096, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "LVGL adapter initialized");
     return ESP_OK;
