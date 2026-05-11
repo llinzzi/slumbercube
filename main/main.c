@@ -16,6 +16,7 @@ static const char *TAG = "MAIN";
 #define ACTIVE_DURATION_SECS 600
 #define WAKEUP_GPIO_NUM       3
 #define BUTTON_GPIO_NUM       3
+#define PIN_NUM_NS4168_CTRL   2   /* NS4168 shutdown control: low = off */
 
 static button_handle_t g_btn = NULL;
 static weather_data_t s_weather;
@@ -36,6 +37,7 @@ void app_main(void)
      * previous sleep cycle before reconfiguring pins. */
     gpio_deep_sleep_hold_en();
     gpio_hold_dis(PIN_NUM_RST);
+    gpio_hold_dis(PIN_NUM_NS4168_CTRL);
 
     /* Hold all control and SPI pins at known levels before SSD1322 init.
      * CS is hardwired to GND, so the SSD1322 SPI is always selected — any
@@ -43,17 +45,19 @@ void app_main(void)
      * as random commands and cause the display to light up with garbage. */
     gpio_config_t early_pins = {
         .pin_bit_mask = (1ULL << PIN_NUM_RST) | (1ULL << PIN_NUM_DC) |
-                        (1ULL << PIN_NUM_MOSI) | (1ULL << PIN_NUM_CLK),
+                        (1ULL << PIN_NUM_MOSI) | (1ULL << PIN_NUM_CLK) |
+                        (1ULL << PIN_NUM_NS4168_CTRL),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_ENABLE, /* RST pull-down ensures SSD1322 stays in reset if GPIO floats during bootloader */
         .intr_type = GPIO_INTR_DISABLE,
     };
     gpio_config(&early_pins);
-    gpio_set_level(PIN_NUM_RST, 0);   /* Keep SSD1322 in reset */
-    gpio_set_level(PIN_NUM_MOSI, 0);  /* MOSI low */
-    gpio_set_level(PIN_NUM_CLK, 0);   /* SCLK low */
-    gpio_set_level(PIN_NUM_DC, 0);    /* DC low */
+    gpio_set_level(PIN_NUM_RST, 0);        /* Keep SSD1322 in reset */
+    gpio_set_level(PIN_NUM_MOSI, 0);       /* MOSI low */
+    gpio_set_level(PIN_NUM_CLK, 0);        /* SCLK low */
+    gpio_set_level(PIN_NUM_DC, 0);         /* DC low */
+    gpio_set_level(PIN_NUM_NS4168_CTRL, 0); /* NS4168 shutdown */
 
     // Initialize SSD1322 driver first (display stays OFF until first frame rendered)
     ESP_ERROR_CHECK(ssd1322_init());
@@ -136,6 +140,10 @@ void app_main(void)
     // exiting reset during wake transition (which causes white flash)
     gpio_set_level(PIN_NUM_RST, 0);
     gpio_hold_en(PIN_NUM_RST);
+
+    // Hold NS4168 CTRL low through deep sleep to keep audio amp off
+    gpio_set_level(PIN_NUM_NS4168_CTRL, 0);
+    gpio_hold_en(PIN_NUM_NS4168_CTRL);
 
     // Configure GPIO3 low-level as wakeup source
     esp_deep_sleep_enable_gpio_wakeup((1ULL << WAKEUP_GPIO_NUM), ESP_GPIO_WAKEUP_GPIO_LOW);
