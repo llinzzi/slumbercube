@@ -53,6 +53,11 @@ void ssd1322_display_on(void)
     ESP_LOGI(TAG, "Display on");
 }
 
+void ssd1322_set_contrast(uint8_t val)
+{
+    ssd1322_send_cmd(0xC1); ssd1322_send_data(val);
+}
+
 void ssd1322_clear_display(void)
 {
     /* Fill GDDRAM with zeros (all black) via SPI */

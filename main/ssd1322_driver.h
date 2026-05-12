@@ -56,4 +56,9 @@ void ssd1322_display_on(void);
  */
 void ssd1322_clear_display(void);
 
+/**
+ * @brief 设置对比度电流 (0xC1)，范围 0x00-0xFF
+ */
+void ssd1322_set_contrast(uint8_t val);
+
 #endif // SSD1322_DRIVER_H

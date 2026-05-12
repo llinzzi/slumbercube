@@ -3,6 +3,7 @@
 #include "loading_img.h"
 #include "font_weather.h"
 #include "font_digital.h"
+#include "ssd1322_driver.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include <string.h>
@@ -135,9 +136,9 @@ static void draw_chart(void)
 /* ── 7-segment digit drawing for night mode (1px-wide strokes) ── */
 
 #define NIGHT_COLOR 0x11
-#define SEG_W 18   /* digit cell width */
-#define SEG_H 34   /* digit cell height */
-#define SEG_GAP 5  /* gap between digits */
+#define SEG_W 22   /* digit cell width */
+#define SEG_H 40   /* digit cell height */
+#define SEG_GAP 6  /* gap between digits */
 #define COLON_W 4  /* colon width */
 
 static const uint8_t seg7_map[10] = {
@@ -153,6 +154,8 @@ static const uint8_t seg7_map[10] = {
     /* 9 */ 0x6F, /* A,F,G,B,C,D */
 };
 
+#define DOT_STRIDE 5  /* draw 1 of every N pixels along each segment */
+
 /* Bit positions: A=0, B=1, C=2, D=3, E=4, F=5, G=6 */
 static void draw_seg7_digit(int ox, int oy, int digit, uint8_t gray)
 {
@@ -160,19 +163,19 @@ static void draw_seg7_digit(int ox, int oy, int digit, uint8_t gray)
     uint8_t seg = seg7_map[digit];
 
     /* A: top horizontal */
-    if (seg & 0x01) draw_line(ox + 2, oy + 0, ox + 14, oy + 0, gray);
+    if (seg & 0x01) for (int x = ox + 2; x <= ox + 18; x += DOT_STRIDE) draw_pixel(x, oy + 0, gray);
     /* B: top-right vertical */
-    if (seg & 0x02) draw_line(ox + 15, oy + 1, ox + 15, oy + 15, gray);
+    if (seg & 0x02) for (int y = oy + 1; y <= oy + 17; y += DOT_STRIDE) draw_pixel(ox + 19, y, gray);
     /* C: bottom-right vertical */
-    if (seg & 0x04) draw_line(ox + 15, oy + 17, ox + 15, oy + 31, gray);
+    if (seg & 0x04) for (int y = oy + 19; y <= oy + 35; y += DOT_STRIDE) draw_pixel(ox + 19, y, gray);
     /* D: bottom horizontal */
-    if (seg & 0x08) draw_line(ox + 2, oy + 32, ox + 14, oy + 32, gray);
+    if (seg & 0x08) for (int x = ox + 2; x <= ox + 18; x += DOT_STRIDE) draw_pixel(x, oy + 36, gray);
     /* E: bottom-left vertical */
-    if (seg & 0x10) draw_line(ox + 1, oy + 17, ox + 1, oy + 31, gray);
+    if (seg & 0x10) for (int y = oy + 19; y <= oy + 35; y += DOT_STRIDE) draw_pixel(ox + 1, y, gray);
     /* F: top-left vertical */
-    if (seg & 0x20) draw_line(ox + 1, oy + 1, ox + 1, oy + 15, gray);
+    if (seg & 0x20) for (int y = oy + 1; y <= oy + 17; y += DOT_STRIDE) draw_pixel(ox + 1, y, gray);
     /* G: middle horizontal */
-    if (seg & 0x40) draw_line(ox + 2, oy + 16, ox + 14, oy + 16, gray);
+    if (seg & 0x40) for (int x = ox + 2; x <= ox + 18; x += DOT_STRIDE) draw_pixel(x, oy + 18, gray);
 }
 
 static void draw_night_clock(void)
@@ -191,29 +194,19 @@ static void draw_night_clock(void)
 
     int total_w = SEG_W * 4 + COLON_W + SEG_GAP * 4;
     int start_x = (CANVAS_W - total_w) / 2;
-    int start_y = 8; /* higher than center */
+    int start_y = 4; /* higher than center */
 
     int x = start_x;
     draw_seg7_digit(x, start_y, h0, NIGHT_COLOR); x += SEG_W + SEG_GAP;
     draw_seg7_digit(x, start_y, h1, NIGHT_COLOR); x += SEG_W + SEG_GAP;
 
-    /* Colon: two 2x2 dots */
-    int cx = x + 1;
-    draw_line(cx, start_y + 10, cx + 1, start_y + 10, NIGHT_COLOR);
-    draw_line(cx, start_y + 11, cx + 1, start_y + 11, NIGHT_COLOR);
-    draw_line(cx, start_y + 22, cx + 1, start_y + 22, NIGHT_COLOR);
-    draw_line(cx, start_y + 23, cx + 1, start_y + 23, NIGHT_COLOR);
+    /* Colon: two single dots */
+    draw_pixel(x + 1, start_y + 12, NIGHT_COLOR);
+    draw_pixel(x + 1, start_y + 24, NIGHT_COLOR);
     x += COLON_W + SEG_GAP;
 
     draw_seg7_digit(x, start_y, m0, NIGHT_COLOR); x += SEG_W + SEG_GAP;
     draw_seg7_digit(x, start_y, m1, NIGHT_COLOR);
-
-    /* Halve pixel count: zero every other pixel (checkerboard) */
-    for (int y = 0; y < CANVAS_H; y++) {
-        for (int x = (y & 1); x < CANVAS_W; x += 2) {
-            canvas_buf[y * CANVAS_W + x] = 0;
-        }
-    }
 
     lv_obj_invalidate(canvas);
 }
@@ -390,6 +383,7 @@ void weather_chart_set_night_mode(bool enable)
     night_mode = enable;
 
     if (enable) {
+        ssd1322_set_contrast(0x10); /* dim contrast current */
         if (canvas) lv_obj_remove_flag(canvas, LV_OBJ_FLAG_HIDDEN);
         if (date_label) lv_obj_add_flag(date_label, LV_OBJ_FLAG_HIDDEN);
         if (time_label) lv_obj_add_flag(time_label, LV_OBJ_FLAG_HIDDEN);
@@ -399,6 +393,7 @@ void weather_chart_set_night_mode(bool enable)
         if (weather_date_label) lv_obj_add_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
         if (loading_img_obj) lv_obj_add_flag(loading_img_obj, LV_OBJ_FLAG_HIDDEN);
     } else {
+        ssd1322_set_contrast(0x9F); /* restore normal contrast */
         if (canvas) lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
         if (date_label) lv_obj_remove_flag(date_label, LV_OBJ_FLAG_HIDDEN);
         if (time_label) lv_obj_remove_flag(time_label, LV_OBJ_FLAG_HIDDEN);
