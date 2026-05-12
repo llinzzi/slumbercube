@@ -39,11 +39,7 @@ void create_screen_main() {
 
 void tick_screen_main()
 {
-    /* Night mode: after 22:00 or before 6:00, dim 1px-wide time only */
-    time_t now = time(NULL);
-    struct tm tm_now = {0};
-    localtime_r(&now, &tm_now);
-    weather_chart_set_night_mode(tm_now.tm_hour >= 22 || tm_now.tm_hour < 6);
+    weather_chart_set_night_mode(weather_chart_is_night_time());
 
     /* Apply pending weather data from non-LVGL context (e.g. button callback) */
     if (pending_weather_data) {

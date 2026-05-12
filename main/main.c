@@ -7,10 +7,10 @@
 #include "ui.h"
 #include "wifi.h"
 #include "weather_service.h"
+#include "weather_chart.h"
 #include "esp_sleep.h"
 #include "iot_button.h"
 #include "button_gpio.h"
-#include <time.h>
 
 static const char *TAG = "MAIN";
 
@@ -103,13 +103,7 @@ void app_main(void)
     // Wait for UI to load
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    // Check night mode (22:00-06:00) — skip network entirely
-    time_t now = time(NULL);
-    struct tm tm_now = {0};
-    localtime_r(&now, &tm_now);
-    bool night = (tm_now.tm_hour >= 22 || tm_now.tm_hour < 6);
-
-    if (!night) {
+    if (!weather_chart_is_night_time()) {
         // Always init TCP/IP stack + start WiFi for button-press weather
         wifi_ensure_netif();
         if (wifi_init_sta() == ESP_OK) {

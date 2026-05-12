@@ -208,6 +208,13 @@ static void draw_night_clock(void)
     draw_seg7_digit(x, start_y, m0, NIGHT_COLOR); x += SEG_W + SEG_GAP;
     draw_seg7_digit(x, start_y, m1, NIGHT_COLOR);
 
+    /* Halve pixel count: zero every other pixel (checkerboard) */
+    for (int y = 0; y < CANVAS_H; y++) {
+        for (int x = (y & 1); x < CANVAS_W; x += 2) {
+            canvas_buf[y * CANVAS_W + x] = 0;
+        }
+    }
+
     lv_obj_invalidate(canvas);
 }
 
@@ -367,6 +374,14 @@ void weather_chart_hide(void)
 bool weather_chart_is_visible(void)
 {
     return visible;
+}
+
+bool weather_chart_is_night_time(void)
+{
+    time_t now = time(NULL);
+    struct tm tm_now = {0};
+    localtime_r(&now, &tm_now);
+    return (tm_now.tm_hour >= 21 || tm_now.tm_hour < 10);
 }
 
 void weather_chart_set_night_mode(bool enable)
