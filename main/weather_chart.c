@@ -36,6 +36,7 @@ static lv_obj_t *loading_img_obj = NULL;
 
 static const weather_data_t *weather = NULL;
 static bool visible = false;
+static bool night_mode = false;
 
 /* ── Canvas drawing helpers ── */
 
@@ -131,9 +132,93 @@ static void draw_chart(void)
     draw_pixel(1, CANVAS_H - 3, COL_SEP);
 }
 
+/* ── 7-segment digit drawing for night mode (1px-wide strokes) ── */
+
+#define NIGHT_COLOR 0x11
+#define SEG_W 18   /* digit cell width */
+#define SEG_H 34   /* digit cell height */
+#define SEG_GAP 5  /* gap between digits */
+#define COLON_W 4  /* colon width */
+
+static const uint8_t seg7_map[10] = {
+    /* 0 */ 0x3F, /* A,B,C,D,E,F */
+    /* 1 */ 0x06, /* B,C */
+    /* 2 */ 0x5B, /* A,B,G,E,D */
+    /* 3 */ 0x4F, /* A,B,G,C,D */
+    /* 4 */ 0x66, /* F,G,B,C */
+    /* 5 */ 0x6D, /* A,F,G,C,D */
+    /* 6 */ 0x7D, /* A,F,G,E,D,C */
+    /* 7 */ 0x07, /* A,B,C */
+    /* 8 */ 0x7F, /* A,B,C,D,E,F,G */
+    /* 9 */ 0x6F, /* A,F,G,B,C,D */
+};
+
+/* Bit positions: A=0, B=1, C=2, D=3, E=4, F=5, G=6 */
+static void draw_seg7_digit(int ox, int oy, int digit, uint8_t gray)
+{
+    if (digit < 0 || digit > 9) return;
+    uint8_t seg = seg7_map[digit];
+
+    /* A: top horizontal */
+    if (seg & 0x01) draw_line(ox + 2, oy + 0, ox + 14, oy + 0, gray);
+    /* B: top-right vertical */
+    if (seg & 0x02) draw_line(ox + 15, oy + 1, ox + 15, oy + 15, gray);
+    /* C: bottom-right vertical */
+    if (seg & 0x04) draw_line(ox + 15, oy + 17, ox + 15, oy + 31, gray);
+    /* D: bottom horizontal */
+    if (seg & 0x08) draw_line(ox + 2, oy + 32, ox + 14, oy + 32, gray);
+    /* E: bottom-left vertical */
+    if (seg & 0x10) draw_line(ox + 1, oy + 17, ox + 1, oy + 31, gray);
+    /* F: top-left vertical */
+    if (seg & 0x20) draw_line(ox + 1, oy + 1, ox + 1, oy + 15, gray);
+    /* G: middle horizontal */
+    if (seg & 0x40) draw_line(ox + 2, oy + 16, ox + 14, oy + 16, gray);
+}
+
+static void draw_night_clock(void)
+{
+    if (!canvas || !canvas_buf) return;
+
+    time_t now = time(NULL);
+    struct tm tm_now = {0};
+    localtime_r(&now, &tm_now);
+    int h0 = tm_now.tm_hour / 10;
+    int h1 = tm_now.tm_hour % 10;
+    int m0 = tm_now.tm_min / 10;
+    int m1 = tm_now.tm_min % 10;
+
+    memset(canvas_buf, 0, CANVAS_W * CANVAS_H);
+
+    int total_w = SEG_W * 4 + COLON_W + SEG_GAP * 4;
+    int start_x = (CANVAS_W - total_w) / 2;
+    int start_y = 8; /* higher than center */
+
+    int x = start_x;
+    draw_seg7_digit(x, start_y, h0, NIGHT_COLOR); x += SEG_W + SEG_GAP;
+    draw_seg7_digit(x, start_y, h1, NIGHT_COLOR); x += SEG_W + SEG_GAP;
+
+    /* Colon: two 2x2 dots */
+    int cx = x + 1;
+    draw_line(cx, start_y + 10, cx + 1, start_y + 10, NIGHT_COLOR);
+    draw_line(cx, start_y + 11, cx + 1, start_y + 11, NIGHT_COLOR);
+    draw_line(cx, start_y + 22, cx + 1, start_y + 22, NIGHT_COLOR);
+    draw_line(cx, start_y + 23, cx + 1, start_y + 23, NIGHT_COLOR);
+    x += COLON_W + SEG_GAP;
+
+    draw_seg7_digit(x, start_y, m0, NIGHT_COLOR); x += SEG_W + SEG_GAP;
+    draw_seg7_digit(x, start_y, m1, NIGHT_COLOR);
+
+    lv_obj_invalidate(canvas);
+}
+
 void weather_chart_update_time(void)
 {
     if (!visible || !time_label) return;
+
+    if (night_mode) {
+        draw_night_clock();
+        return;
+    }
 
     time_t now = time(NULL);
     struct tm tm_now = {0};
@@ -246,6 +331,8 @@ void weather_chart_set_data(const weather_data_t *data)
              weather->daily[0].day_text,
              weather->daily[0].high, weather->daily[0].low);
 
+    if (night_mode) return; /* Don't change visibility during night mode */
+
     /* Hide loading image and show weather data */
     if (loading_img_obj) {
         lv_obj_add_flag(loading_img_obj, LV_OBJ_FLAG_HIDDEN);
@@ -280,4 +367,33 @@ void weather_chart_hide(void)
 bool weather_chart_is_visible(void)
 {
     return visible;
+}
+
+void weather_chart_set_night_mode(bool enable)
+{
+    if (night_mode == enable) return;
+    night_mode = enable;
+
+    if (enable) {
+        if (canvas) lv_obj_remove_flag(canvas, LV_OBJ_FLAG_HIDDEN);
+        if (date_label) lv_obj_add_flag(date_label, LV_OBJ_FLAG_HIDDEN);
+        if (time_label) lv_obj_add_flag(time_label, LV_OBJ_FLAG_HIDDEN);
+        if (icon_img) lv_obj_add_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
+        if (weather_label) lv_obj_add_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
+        if (temp_label) lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
+        if (weather_date_label) lv_obj_add_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
+        if (loading_img_obj) lv_obj_add_flag(loading_img_obj, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        if (canvas) lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
+        if (date_label) lv_obj_remove_flag(date_label, LV_OBJ_FLAG_HIDDEN);
+        if (time_label) lv_obj_remove_flag(time_label, LV_OBJ_FLAG_HIDDEN);
+        if (weather && weather->valid) {
+            if (icon_img) lv_obj_remove_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
+            if (weather_label) lv_obj_remove_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
+            if (temp_label) lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
+            if (weather_date_label) lv_obj_remove_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
+        }
+        draw_chart();
+    }
+    lv_obj_invalidate(container);
 }

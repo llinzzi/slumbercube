@@ -10,6 +10,7 @@
 #include "esp_sleep.h"
 #include "iot_button.h"
 #include "button_gpio.h"
+#include <time.h>
 
 static const char *TAG = "MAIN";
 
@@ -102,23 +103,33 @@ void app_main(void)
     // Wait for UI to load
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    // Always init TCP/IP stack + start WiFi for button-press weather
-    wifi_ensure_netif();
-    if (wifi_init_sta() == ESP_OK) {
-        if (!wifi_is_time_set()) {
-            wifi_mark_time_set();
-        }
-    }
+    // Check night mode (22:00-06:00) — skip network entirely
+    time_t now = time(NULL);
+    struct tm tm_now = {0};
+    localtime_r(&now, &tm_now);
+    bool night = (tm_now.tm_hour >= 22 || tm_now.tm_hour < 6);
 
-    // Initial weather fetch (retries handle async WiFi connection)
-    for (int retry = 0; retry < 5; retry++) {
-        esp_err_t err = weather_fetch(&s_weather);
-        if (err == ESP_OK) {
-            screens_set_weather_data_ptr(&s_weather);
-            break;
+    if (!night) {
+        // Always init TCP/IP stack + start WiFi for button-press weather
+        wifi_ensure_netif();
+        if (wifi_init_sta() == ESP_OK) {
+            if (!wifi_is_time_set()) {
+                wifi_mark_time_set();
+            }
         }
-        ESP_LOGW(TAG, "Boot weather fetch attempt %d/5 failed", retry + 1);
-        vTaskDelay(pdMS_TO_TICKS(2000));
+
+        // Initial weather fetch (retries handle async WiFi connection)
+        for (int retry = 0; retry < 5; retry++) {
+            esp_err_t err = weather_fetch(&s_weather);
+            if (err == ESP_OK) {
+                screens_set_weather_data_ptr(&s_weather);
+                break;
+            }
+            ESP_LOGW(TAG, "Boot weather fetch attempt %d/5 failed", retry + 1);
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
+    } else {
+        ESP_LOGI(TAG, "Night mode, skipping network and weather fetch");
     }
 
     ESP_LOGI(TAG, "Running for %d seconds before sleep, button wakes", ACTIVE_DURATION_SECS);
