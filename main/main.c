@@ -151,9 +151,12 @@ void app_main(void)
     gpio_hold_en(PIN_NUM_NS4168_CTRL);
 
     // Configure GPIO3 low-level as wakeup source
+#if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
     esp_deep_sleep_enable_gpio_wakeup((1ULL << WAKEUP_GPIO_NUM), ESP_GPIO_WAKEUP_GPIO_LOW);
-
     ESP_LOGI(TAG, "Entering deep sleep, GPIO%d will wake on low level", WAKEUP_GPIO_NUM);
+#else
+    ESP_LOGW(TAG, "GPIO deep sleep wakeup not supported on this chip, wake by timer only");
+#endif
 
     // Enter deep sleep
     esp_deep_sleep_start();
