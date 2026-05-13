@@ -136,10 +136,10 @@ static void draw_chart(void)
 /* ── 7-segment digit drawing for night mode (1px-wide strokes) ── */
 
 #define NIGHT_COLOR 0x11
-#define SEG_W 22   /* digit cell width */
-#define SEG_H 40   /* digit cell height */
-#define SEG_GAP 6  /* gap between digits */
-#define COLON_W 4  /* colon width */
+#define SEG_W 20   /* digit cell width (multiple of 4: 0..19, right edge at 16) */
+#define SEG_H 34   /* digit cell height (multiple of 4: 0..33, bottom at 32) */
+#define SEG_GAP 8  /* gap between digits (multiple of 4) */
+#define COLON_W 4  /* colon width (multiple of 4) */
 
 static const uint8_t seg7_map[10] = {
     /* 0 */ 0x3F, /* A,B,C,D,E,F */
@@ -154,28 +154,39 @@ static const uint8_t seg7_map[10] = {
     /* 9 */ 0x6F, /* A,F,G,B,C,D */
 };
 
-#define DOT_STRIDE 5  /* draw 1 of every N pixels along each segment */
+/* 4x4 grid mask: keep only top-left pixel in each 4x4 block (1/16 density) */
+static void apply_grid_mask(void)
+{
+    for (int y = 0; y < CANVAS_H; y++) {
+        for (int x = 0; x < CANVAS_W; x++) {
+            if ((x & 3) || (y & 3)) {
+                canvas_buf[y * CANVAS_W + x] = 0;
+            }
+        }
+    }
+}
 
-/* Bit positions: A=0, B=1, C=2, D=3, E=4, F=5, G=6 */
+/* Bit positions: A=0, B=1, C=2, D=3, E=4, F=5, G=6
+   All coordinates are multiples of 4 so 4x4 grid mask works uniformly. */
 static void draw_seg7_digit(int ox, int oy, int digit, uint8_t gray)
 {
     if (digit < 0 || digit > 9) return;
     uint8_t seg = seg7_map[digit];
 
-    /* A: top horizontal */
-    if (seg & 0x01) for (int x = ox + 2; x <= ox + 18; x += DOT_STRIDE) draw_pixel(x, oy + 0, gray);
-    /* B: top-right vertical */
-    if (seg & 0x02) for (int y = oy + 1; y <= oy + 17; y += DOT_STRIDE) draw_pixel(ox + 19, y, gray);
-    /* C: bottom-right vertical */
-    if (seg & 0x04) for (int y = oy + 19; y <= oy + 35; y += DOT_STRIDE) draw_pixel(ox + 19, y, gray);
-    /* D: bottom horizontal */
-    if (seg & 0x08) for (int x = ox + 2; x <= ox + 18; x += DOT_STRIDE) draw_pixel(x, oy + 36, gray);
-    /* E: bottom-left vertical */
-    if (seg & 0x10) for (int y = oy + 19; y <= oy + 35; y += DOT_STRIDE) draw_pixel(ox + 1, y, gray);
-    /* F: top-left vertical */
-    if (seg & 0x20) for (int y = oy + 1; y <= oy + 17; y += DOT_STRIDE) draw_pixel(ox + 1, y, gray);
-    /* G: middle horizontal */
-    if (seg & 0x40) for (int x = ox + 2; x <= ox + 18; x += DOT_STRIDE) draw_pixel(x, oy + 18, gray);
+    /* A: top horizontal y=0, x=0..16 */
+    if (seg & 0x01) draw_line(ox + 0, oy + 0, ox + 16, oy + 0, gray);
+    /* B: top-right vertical x=16, y=0..16 */
+    if (seg & 0x02) draw_line(ox + 16, oy + 0, ox + 16, oy + 16, gray);
+    /* C: bottom-right vertical x=16, y=16..32 */
+    if (seg & 0x04) draw_line(ox + 16, oy + 16, ox + 16, oy + 32, gray);
+    /* D: bottom horizontal y=32, x=0..16 */
+    if (seg & 0x08) draw_line(ox + 0, oy + 32, ox + 16, oy + 32, gray);
+    /* E: bottom-left vertical x=0, y=16..32 */
+    if (seg & 0x10) draw_line(ox + 0, oy + 16, ox + 0, oy + 32, gray);
+    /* F: top-left vertical x=0, y=0..16 */
+    if (seg & 0x20) draw_line(ox + 0, oy + 0, ox + 0, oy + 16, gray);
+    /* G: middle horizontal y=16, x=0..16 */
+    if (seg & 0x40) draw_line(ox + 0, oy + 16, ox + 16, oy + 16, gray);
 }
 
 static void draw_night_clock(void)
@@ -193,20 +204,22 @@ static void draw_night_clock(void)
     memset(canvas_buf, 0, CANVAS_W * CANVAS_H);
 
     int total_w = SEG_W * 4 + COLON_W + SEG_GAP * 4;
-    int start_x = (CANVAS_W - total_w) / 2;
-    int start_y = 4; /* higher than center */
+    int start_x = ((CANVAS_W - total_w) / 2) & ~3; /* force multiple of 4 */
+    int start_y = 4; /* even */
 
     int x = start_x;
     draw_seg7_digit(x, start_y, h0, NIGHT_COLOR); x += SEG_W + SEG_GAP;
     draw_seg7_digit(x, start_y, h1, NIGHT_COLOR); x += SEG_W + SEG_GAP;
 
-    /* Colon: two single dots */
-    draw_pixel(x + 1, start_y + 12, NIGHT_COLOR);
-    draw_pixel(x + 1, start_y + 24, NIGHT_COLOR);
+    /* Colon: two single dots at even coordinates */
+    draw_pixel(x + 0, start_y + 12, NIGHT_COLOR);
+    draw_pixel(x + 0, start_y + 24, NIGHT_COLOR);
     x += COLON_W + SEG_GAP;
 
     draw_seg7_digit(x, start_y, m0, NIGHT_COLOR); x += SEG_W + SEG_GAP;
     draw_seg7_digit(x, start_y, m1, NIGHT_COLOR);
+
+    apply_grid_mask();
 
     lv_obj_invalidate(canvas);
 }
@@ -374,7 +387,7 @@ bool weather_chart_is_night_time(void)
     time_t now = time(NULL);
     struct tm tm_now = {0};
     localtime_r(&now, &tm_now);
-    return (tm_now.tm_hour >= 21 || tm_now.tm_hour < 10);
+    return (tm_now.tm_hour >= 22 || tm_now.tm_hour < 6);
 }
 
 void weather_chart_set_night_mode(bool enable)
