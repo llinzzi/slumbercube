@@ -7,7 +7,7 @@
 #include "ui.h"
 #include "wifi.h"
 #include "weather_service.h"
-#include "weather_chart.h"
+#include "clock_screen.h"
 #include "esp_sleep.h"
 #include "iot_button.h"
 #include "button_gpio.h"
@@ -100,7 +100,7 @@ void app_main(void)
     // Wait for UI to load
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    if (!weather_chart_is_night_time()) {
+    if (!clock_screen_is_night_time()) {
         // Always init TCP/IP stack + start WiFi for button-press weather
         wifi_ensure_netif();
         if (wifi_init_sta() == ESP_OK) {

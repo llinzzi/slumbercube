@@ -1,4 +1,4 @@
-#include "weather_chart.h"
+#include "clock_screen.h"
 #include "weather_icons.h"
 #include "loading_img.h"
 #include "font_weather.h"
@@ -224,7 +224,7 @@ static void draw_night_clock(void)
     lv_obj_invalidate(canvas);
 }
 
-void weather_chart_update_time(void)
+void clock_screen_update_time(void)
 {
     if (!visible || !time_label) return;
 
@@ -251,7 +251,7 @@ void weather_chart_update_time(void)
 
 /* ── Public API ── */
 
-lv_obj_t *weather_chart_create(lv_obj_t *parent)
+lv_obj_t *clock_screen_create(lv_obj_t *parent)
 {
     container = lv_obj_create(parent);
     lv_obj_set_pos(container, 0, 0);
@@ -333,7 +333,7 @@ lv_obj_t *weather_chart_create(lv_obj_t *parent)
     return container;
 }
 
-void weather_chart_set_data(const weather_data_t *data)
+void clock_screen_set_data(const weather_data_t *data)
 {
     weather = data;
     if (!weather || !weather->valid) {
@@ -359,7 +359,7 @@ void weather_chart_set_data(const weather_data_t *data)
     lv_refr_now(lv_disp_get_default());
 }
 
-void weather_chart_show(void)
+void clock_screen_show(void)
 {
     if (!container) return;
     visible = true;
@@ -370,19 +370,19 @@ void weather_chart_show(void)
     lv_obj_invalidate(container);
 }
 
-void weather_chart_hide(void)
+void clock_screen_hide(void)
 {
     if (!container) return;
     visible = false;
     lv_obj_add_flag(container, LV_OBJ_FLAG_HIDDEN);
 }
 
-bool weather_chart_is_visible(void)
+bool clock_screen_is_visible(void)
 {
     return visible;
 }
 
-bool weather_chart_is_night_time(void)
+bool clock_screen_is_night_time(void)
 {
     time_t now = time(NULL);
     struct tm tm_now = {0};
@@ -390,7 +390,7 @@ bool weather_chart_is_night_time(void)
     return (tm_now.tm_hour >= CONFIG_NIGHT_START_HOUR || tm_now.tm_hour < CONFIG_NIGHT_END_HOUR);
 }
 
-void weather_chart_set_night_mode(bool enable)
+void clock_screen_set_night_mode(bool enable)
 {
     if (night_mode == enable) return;
     night_mode = enable;

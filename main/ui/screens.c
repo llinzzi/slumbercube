@@ -1,7 +1,7 @@
 #include "screens.h"
 #include "vars.h"
 #include "ssd1322_driver.h"
-#include "weather_chart.h"
+#include "clock_screen.h"
 #include <string.h>
 #include <time.h>
 #include <sys/time.h>
@@ -28,8 +28,8 @@ void create_screen_main() {
     lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
 
     /* Create weather chart (home page, always visible) */
-    weather_chart_create(obj);
-    weather_chart_show();
+    clock_screen_create(obj);
+    clock_screen_show();
 
     /* Load screen BEFORE tick so lv_refr_now renders the correct (black) screen */
     lv_screen_load(objects.main);
@@ -39,17 +39,17 @@ void create_screen_main() {
 
 void tick_screen_main()
 {
-    weather_chart_set_night_mode(weather_chart_is_night_time());
+    clock_screen_set_night_mode(clock_screen_is_night_time());
 
     /* Apply pending weather data from non-LVGL context (e.g. button callback) */
     if (pending_weather_data) {
         const weather_data_t *data = pending_weather_data;
         pending_weather_data = NULL;
-        weather_chart_set_data(data);
+        clock_screen_set_data(data);
     }
 
     /* Keep time display updated */
-    weather_chart_update_time();
+    clock_screen_update_time();
 
     lv_area_t full_screen = {0, 0, LCD_H_RES - 1, LCD_V_RES - 1};
     lv_obj_invalidate_area(lv_screen_active(), &full_screen);

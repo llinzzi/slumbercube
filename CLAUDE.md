@@ -36,7 +36,7 @@ app_main()
 ├── Button init (GPIO3)
 ├── wifi_set_timezone()
 ├── lvgl_adapter_init()     — LVGL display adapter, L8→I4 conversion
-├── ui_wrapper_init()       — EEZ Studio generated UI (weather_chart)
+├── ui_wrapper_init()       — EEZ Studio generated UI (clock_screen)
 ├── ssd1322_display_on()    — AFTER first frame rendered (anti-white-flash)
 ├── WiFi STA + SNTP sync
 ├── Weather fetch (AMAP)
@@ -52,7 +52,7 @@ app_main()
 | LVGL adapter | `main/lvgl_adapter.c/h` | LVGL flush callback, L8→I4 DMA transfer |
 | WiFi/SNTP | `main/wifi.c/h` | STA connect, timezone, NTP sync |
 | Weather API | `main/weather_service.c/h` | AMAP HTTPS client, JSON parse |
-| Weather UI | `main/weather_chart.c/h` | Full-screen clock/weather/chart canvas |
+| Weather UI | `main/clock_screen.c/h` | Full-screen clock/weather/chart canvas |
 | UI framework | `main/ui/` | EEZ Studio generated (screens.c, styles.c, ui.c) |
 | Fonts | `main/font_digital.c/h` | digital-7 clock digits |
 | Fonts | `main/font_weather.c/h` | Chinese weather descriptions |
@@ -64,7 +64,7 @@ app_main()
 Anti-white-flash is critical. The wake sequence must guarantee GDDRAM has rendered content before display turns on:
 
 1. `ssd1322_init()` sends `0xAE` (display off) after reset
-2. `ui_wrapper_init()` → `weather_chart_create()` → renders first frame
+2. `ui_wrapper_init()` → `clock_screen_create()` → renders first frame
 3. **Then** `ssd1322_display_on()` — never before
 
 In `main/ui/screens.c`: `lv_screen_load()` must be called **before** `tick_screen_main()` to avoid the default LVGL white screen being flushed.
@@ -87,7 +87,7 @@ ESP32-C3 uses `esp_deep_sleep_enable_gpio_wakeup()` (guarded by `SOC_GPIO_SUPPOR
 
 ## Night mode
 
-`weather_chart_is_night_time()` checks `tm_hour >= CONFIG_NIGHT_START_HOUR || tm_hour < CONFIG_NIGHT_END_HOUR`. In night mode: 4x4 checkerboard dithering, dim contrast (0x10), hides all weather UI, shows minimal digit clock. WiFi and weather fetch are skipped.
+`clock_screen_is_night_time()` checks `tm_hour >= CONFIG_NIGHT_START_HOUR || tm_hour < CONFIG_NIGHT_END_HOUR`. In night mode: 4x4 checkerboard dithering, dim contrast (0x10), hides all weather UI, shows minimal digit clock. WiFi and weather fetch are skipped.
 
 ## Font assets
 
