@@ -14,10 +14,7 @@
 
 static const char *TAG = "MAIN";
 
-#define ACTIVE_DURATION_SECS 600
-#define WAKEUP_GPIO_NUM       3
-#define BUTTON_GPIO_NUM       3
-#define PIN_NUM_NS4168_CTRL   2   /* NS4168 shutdown control: low = off */
+/* 配置项通过 menuconfig 设置 (参见 Kconfig.projbuild) */
 
 static button_handle_t g_btn = NULL;
 static weather_data_t s_weather;
@@ -32,13 +29,13 @@ static void button_press_cb(void *button_handle, void *usr_data)
 
 void app_main(void)
 {
-    ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL, active=%ds", ACTIVE_DURATION_SECS);
+    ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL, active=%ds", CONFIG_ACTIVE_DURATION_SECS);
 
     /* Enable GPIO hold through deep sleep, and release any hold left from
      * previous sleep cycle before reconfiguring pins. */
     gpio_deep_sleep_hold_en();
     gpio_hold_dis(PIN_NUM_RST);
-    gpio_hold_dis(PIN_NUM_NS4168_CTRL);
+    gpio_hold_dis(CONFIG_PIN_NS4168_CTRL);
 
     /* Hold all control and SPI pins at known levels before SSD1322 init.
      * CS is hardwired to GND, so the SSD1322 SPI is always selected — any
@@ -47,7 +44,7 @@ void app_main(void)
     gpio_config_t early_pins = {
         .pin_bit_mask = (1ULL << PIN_NUM_RST) | (1ULL << PIN_NUM_DC) |
                         (1ULL << PIN_NUM_MOSI) | (1ULL << PIN_NUM_CLK) |
-                        (1ULL << PIN_NUM_NS4168_CTRL),
+                        (1ULL << CONFIG_PIN_NS4168_CTRL),
         .mode = GPIO_MODE_OUTPUT,
         .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_ENABLE, /* RST pull-down ensures SSD1322 stays in reset if GPIO floats during bootloader */
@@ -58,7 +55,7 @@ void app_main(void)
     gpio_set_level(PIN_NUM_MOSI, 0);       /* MOSI low */
     gpio_set_level(PIN_NUM_CLK, 0);        /* SCLK low */
     gpio_set_level(PIN_NUM_DC, 0);         /* DC low */
-    gpio_set_level(PIN_NUM_NS4168_CTRL, 0); /* NS4168 shutdown */
+    gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0); /* NS4168 shutdown */
 
     // Initialize SSD1322 driver first (display stays OFF until first frame rendered)
     ESP_ERROR_CHECK(ssd1322_init());
@@ -68,16 +65,16 @@ void app_main(void)
         .short_press_time = 200,
     };
     button_gpio_config_t gpio_cfg = {
-        .gpio_num = BUTTON_GPIO_NUM,
+        .gpio_num = CONFIG_BUTTON_GPIO,
         .active_level = 0,
         .enable_power_save = false,
     };
     esp_err_t err = iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &g_btn);
     if (err == ESP_OK) {
         iot_button_register_cb(g_btn, BUTTON_PRESS_DOWN, NULL, button_press_cb, NULL);
-        ESP_LOGI(TAG, "Button initialized on GPIO%d", BUTTON_GPIO_NUM);
+        ESP_LOGI(TAG, "Button initialized on GPIO%d", CONFIG_BUTTON_GPIO);
     } else {
-        ESP_LOGE(TAG, "Failed to init button on GPIO%d: %s", BUTTON_GPIO_NUM, esp_err_to_name(err));
+        ESP_LOGE(TAG, "Failed to init button on GPIO%d: %s", CONFIG_BUTTON_GPIO, esp_err_to_name(err));
     }
 
     // Always set timezone after wake (TZ env var is lost during deep sleep)
@@ -126,10 +123,10 @@ void app_main(void)
         ESP_LOGI(TAG, "Night mode, skipping network and weather fetch");
     }
 
-    ESP_LOGI(TAG, "Running for %d seconds before sleep, button wakes", ACTIVE_DURATION_SECS);
+    ESP_LOGI(TAG, "Running for %d seconds before sleep, button wakes", CONFIG_ACTIVE_DURATION_SECS);
 
     // Main loop: button press or timeout → sleep
-    for (int i = 0; i < ACTIVE_DURATION_SECS; i++) {
+    for (int i = 0; i < CONFIG_ACTIVE_DURATION_SECS; i++) {
         if (s_sleep_pending) {
             break;
         }
@@ -147,13 +144,13 @@ void app_main(void)
     gpio_hold_en(PIN_NUM_RST);
 
     // Hold NS4168 CTRL low through deep sleep to keep audio amp off
-    gpio_set_level(PIN_NUM_NS4168_CTRL, 0);
-    gpio_hold_en(PIN_NUM_NS4168_CTRL);
+    gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0);
+    gpio_hold_en(CONFIG_PIN_NS4168_CTRL);
 
     // Configure GPIO3 low-level as wakeup source
 #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
-    esp_deep_sleep_enable_gpio_wakeup((1ULL << WAKEUP_GPIO_NUM), ESP_GPIO_WAKEUP_GPIO_LOW);
-    ESP_LOGI(TAG, "Entering deep sleep, GPIO%d will wake on low level", WAKEUP_GPIO_NUM);
+    esp_deep_sleep_enable_gpio_wakeup((1ULL << CONFIG_WAKEUP_GPIO), ESP_GPIO_WAKEUP_GPIO_LOW);
+    ESP_LOGI(TAG, "Entering deep sleep, GPIO%d will wake on low level", CONFIG_WAKEUP_GPIO);
 #else
     ESP_LOGW(TAG, "GPIO deep sleep wakeup not supported on this chip, wake by timer only");
 #endif

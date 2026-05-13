@@ -387,7 +387,7 @@ bool weather_chart_is_night_time(void)
     time_t now = time(NULL);
     struct tm tm_now = {0};
     localtime_r(&now, &tm_now);
-    return (tm_now.tm_hour >= 22 || tm_now.tm_hour < 6);
+    return (tm_now.tm_hour >= CONFIG_NIGHT_START_HOUR || tm_now.tm_hour < CONFIG_NIGHT_END_HOUR);
 }
 
 void weather_chart_set_night_mode(bool enable)

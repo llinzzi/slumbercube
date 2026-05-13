@@ -9,10 +9,8 @@
 
 static const char *TAG = "WEATHER_SVC";
 
-/* 高德天气预报 API (daily forecast, extensions=all returns 4-day forecast) */
-#define AMAP_KEY  "a2dd59be3fc29eded9ac2a4c760871e8"
-#define AMAP_CITY "330100"   /* 杭州 adcode */
-#define AMAP_URL  "https://restapi.amap.com/v3/weather/weatherInfo?city=" AMAP_CITY "&key=" AMAP_KEY "&extensions=all"
+/* 高德天气预报 API — 配置通过 menuconfig 设置 */
+#define AMAP_URL_FMT "https://restapi.amap.com/v3/weather/weatherInfo?city=%s&key=%s&extensions=all"
 
 typedef struct {
     char *buf;
@@ -156,8 +154,12 @@ esp_err_t weather_fetch(weather_data_t *data)
     }
     resp_buf_t rb = { .buf = resp_buf, .len = 0, .cap = 4096 - 1 };
 
+    /* Build API URL from Kconfig values */
+    char api_url[256];
+    snprintf(api_url, sizeof(api_url), AMAP_URL_FMT, CONFIG_AMAP_CITY, CONFIG_AMAP_KEY);
+
     esp_http_client_config_t config = {
-        .url = AMAP_URL,
+        .url = api_url,
         .event_handler = http_event_handler,
         .user_data = &rb,
         .crt_bundle_attach = esp_crt_bundle_attach,

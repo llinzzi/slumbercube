@@ -4,13 +4,13 @@
 #include "driver/spi_master.h"
 #include "esp_err.h"
 
-// GPIO配置
+// GPIO配置 - 通过 menuconfig 配置
 #define LCD_HOST       SPI2_HOST
-#define PIN_NUM_MOSI   10  // IO10: SDA
-#define PIN_NUM_CLK    7   // IO7: SCL
-#define PIN_NUM_CS     -1  // IO0: CS (硬件接地)
-#define PIN_NUM_DC     8   // IO8: DC
-#define PIN_NUM_RST    20  // IO20: RST
+#define PIN_NUM_MOSI   CONFIG_PIN_MOSI
+#define PIN_NUM_CLK    CONFIG_PIN_CLK
+#define PIN_NUM_CS     CONFIG_PIN_CS
+#define PIN_NUM_DC     CONFIG_PIN_DC
+#define PIN_NUM_RST    CONFIG_PIN_RST
 
 // 显示参数
 #define LCD_H_RES      256

@@ -14,8 +14,7 @@
 
 static const char *TAG = "WIFI";
 
-#define WIFI_SSID     "Happy"
-#define WIFI_PASS     "ping8275"
+/* WiFi 配置通过 menuconfig 设置 (参见 Kconfig.projbuild) */
 #define MAX_RETRY     10
 
 static EventGroupHandle_t s_wifi_event_group;
@@ -172,8 +171,8 @@ esp_err_t wifi_init_sta(void)
             .channel = 1,  /* Skip full channel scan, connect faster */
         },
     };
-    strncpy((char *)wifi_config.sta.ssid, WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
-    strncpy((char *)wifi_config.sta.password, WIFI_PASS, sizeof(wifi_config.sta.password) - 1);
+    strncpy((char *)wifi_config.sta.ssid, CONFIG_WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
+    strncpy((char *)wifi_config.sta.password, CONFIG_WIFI_PASS, sizeof(wifi_config.sta.password) - 1);
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
@@ -186,7 +185,7 @@ esp_err_t wifi_init_sta(void)
     s_wifi_inited = true;
 
     if (wifi_wait_connected(30000) == ESP_OK) {
-        ESP_LOGI(TAG, "connected to ap SSID:%s", WIFI_SSID);
+        ESP_LOGI(TAG, "connected to ap SSID:%s", CONFIG_WIFI_SSID);
         sntp_init_time();
         return ESP_OK;
     }
