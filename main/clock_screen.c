@@ -136,10 +136,10 @@ static void draw_chart(void)
 /* ── 7-segment digit drawing for night mode (1px-wide strokes) ── */
 
 #define NIGHT_COLOR 0x11
-#define SEG_W 20   /* digit cell width (multiple of 4: 0..19, right edge at 16) */
-#define SEG_H 34   /* digit cell height (multiple of 4: 0..33, bottom at 32) */
-#define SEG_GAP 8  /* gap between digits (multiple of 4) */
-#define COLON_W 4  /* colon width (multiple of 4) */
+#define SEG_W 24   /* digit cell width (multiple of 8: 0..23, right edge at 16) */
+#define SEG_H 32   /* digit cell height (multiple of 8: 0..31, bottom at 32) */
+#define SEG_GAP 8  /* gap between digits (multiple of 8) */
+#define COLON_W 8  /* colon width (multiple of 8) */
 
 static const uint8_t seg7_map[10] = {
     /* 0 */ 0x3F, /* A,B,C,D,E,F */
@@ -154,12 +154,12 @@ static const uint8_t seg7_map[10] = {
     /* 9 */ 0x6F, /* A,F,G,B,C,D */
 };
 
-/* 4x4 grid mask: keep only top-left pixel in each 4x4 block (1/16 density) */
+/* 8x8 grid mask: keep only top-left pixel in each 8x8 block (1/64 density) */
 static void apply_grid_mask(void)
 {
     for (int y = 0; y < CANVAS_H; y++) {
         for (int x = 0; x < CANVAS_W; x++) {
-            if ((x & 3) || (y & 3)) {
+            if ((x & 7) || (y & 7)) {
                 canvas_buf[y * CANVAS_W + x] = 0;
             }
         }
@@ -167,7 +167,7 @@ static void apply_grid_mask(void)
 }
 
 /* Bit positions: A=0, B=1, C=2, D=3, E=4, F=5, G=6
-   All coordinates are multiples of 4 so 4x4 grid mask works uniformly. */
+   All coordinates are multiples of 8 so 8x8 grid mask works uniformly. */
 static void draw_seg7_digit(int ox, int oy, int digit, uint8_t gray)
 {
     if (digit < 0 || digit > 9) return;
@@ -204,15 +204,15 @@ static void draw_night_clock(void)
     memset(canvas_buf, 0, CANVAS_W * CANVAS_H);
 
     int total_w = SEG_W * 4 + COLON_W + SEG_GAP * 4;
-    int start_x = ((CANVAS_W - total_w) / 2) & ~3; /* force multiple of 4 */
-    int start_y = 4; /* even */
+    int start_x = ((CANVAS_W - total_w) / 2) & ~7; /* force multiple of 8 */
+    int start_y = 0; /* multiple of 8 */
 
     int x = start_x;
     draw_seg7_digit(x, start_y, h0, NIGHT_COLOR); x += SEG_W + SEG_GAP;
     draw_seg7_digit(x, start_y, h1, NIGHT_COLOR); x += SEG_W + SEG_GAP;
 
-    /* Colon: two single dots at even coordinates */
-    draw_pixel(x + 0, start_y + 12, NIGHT_COLOR);
+    /* Colon: two single dots at multiples of 8 */
+    draw_pixel(x + 0, start_y + 16, NIGHT_COLOR);
     draw_pixel(x + 0, start_y + 24, NIGHT_COLOR);
     x += COLON_W + SEG_GAP;
 
@@ -387,7 +387,9 @@ bool clock_screen_is_night_time(void)
     time_t now = time(NULL);
     struct tm tm_now = {0};
     localtime_r(&now, &tm_now);
-    return (tm_now.tm_hour >= CONFIG_NIGHT_START_HOUR || tm_now.tm_hour < CONFIG_NIGHT_END_HOUR);
+    return (tm_now.tm_hour > CONFIG_NIGHT_START_HOUR ||
+            (tm_now.tm_hour == CONFIG_NIGHT_START_HOUR && tm_now.tm_min >= CONFIG_NIGHT_START_MINUTE) ||
+            tm_now.tm_hour < CONFIG_NIGHT_END_HOUR);
 }
 
 void clock_screen_set_night_mode(bool enable)
@@ -396,7 +398,7 @@ void clock_screen_set_night_mode(bool enable)
     night_mode = enable;
 
     if (enable) {
-        ssd1322_set_contrast(0x10); /* dim contrast current */
+        ssd1322_set_contrast(0x01); /* dim contrast current */
         if (canvas) lv_obj_remove_flag(canvas, LV_OBJ_FLAG_HIDDEN);
         if (date_label) lv_obj_add_flag(date_label, LV_OBJ_FLAG_HIDDEN);
         if (time_label) lv_obj_add_flag(time_label, LV_OBJ_FLAG_HIDDEN);
