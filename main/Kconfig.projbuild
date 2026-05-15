@@ -39,10 +39,18 @@ menu "Clock Configuration"
     menu "Sleep Configuration"
         config ACTIVE_DURATION_SECS
             int "Active duration before deep sleep (seconds)"
-            default 600
+            default 1800
         config WAKEUP_GPIO
             int "Wakeup GPIO number"
             default 3
+        config WAKEUP_HOUR
+            int "Auto-wakeup hour (0-23)"
+            range 0 23
+            default 7
+        config WAKEUP_MINUTE
+            int "Auto-wakeup minute (0-59)"
+            range 0 59
+            default 50
     endmenu
 
     menu "GPIO Pin Configuration"
