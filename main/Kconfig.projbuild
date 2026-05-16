@@ -25,11 +25,11 @@ menu "Clock Configuration"
         config NIGHT_START_HOUR
             int "Night mode start hour (0-23)"
             range 0 23
-            default 20
+            default 22
         config NIGHT_START_MINUTE
             int "Night mode start minute (0-59)"
             range 0 59
-            default 30
+            default 0
         config NIGHT_END_HOUR
             int "Night mode end hour (0-23)"
             range 0 23
