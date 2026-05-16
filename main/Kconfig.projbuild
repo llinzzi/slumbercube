@@ -72,9 +72,31 @@ menu "Clock Configuration"
         config PIN_NS4168_CTRL
             int "NS4168 amplifier control pin"
             default 2
+        config PIN_I2S_SDIN
+            int "I2S SDIN pin (NS4168 data)"
+            default 4
+        config PIN_I2S_SCLK
+            int "I2S SCLK pin (NS4168 bit clock)"
+            default 5
+        config PIN_I2S_LROUT
+            int "I2S LROUT pin (NS4168 word select)"
+            default 6
         config BUTTON_GPIO
             int "Button GPIO number"
             default 3
+    endmenu
+
+    menu "Audio Configuration"
+        config AUDIO_ENABLE
+            bool "Enable audio playback on wakeup"
+            default y
+        config AUDIO_MUSIC_URL
+            string "Music URL for wakeup playback"
+            default "http://192.168.8.80:3002/music/BV192gczKELM"
+        config AUDIO_VOLUME_PCT
+            int "Audio volume (0-100)"
+            range 0 100
+            default 60
     endmenu
 
 endmenu

@@ -13,6 +13,10 @@
 #include "iot_button.h"
 #include "button_gpio.h"
 
+#if CONFIG_AUDIO_ENABLE
+#include "audio_player_wrapper.h"
+#endif
+
 static const char *TAG = "MAIN";
 
 /* 配置项通过 menuconfig 设置 (参见 Kconfig.projbuild) */
@@ -124,6 +128,16 @@ void app_main(void)
         ESP_LOGI(TAG, "Night mode, skipping network and weather fetch");
     }
 
+#if CONFIG_AUDIO_ENABLE
+    /* Start audio playback (non-blocking: mixer + decoder + HTTP tasks run in background).
+     * Skip in night mode since WiFi is not available. */
+    if (!clock_screen_is_night_time()) {
+        if (audio_init() == ESP_OK) {
+            audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+        }
+    }
+#endif
+
     ESP_LOGI(TAG, "Running for %d seconds before sleep, button wakes", CONFIG_ACTIVE_DURATION_SECS);
 
     // Main loop: button press or timeout → sleep
@@ -135,6 +149,11 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "Time to sleep, turning off display");
+
+#if CONFIG_AUDIO_ENABLE
+    audio_stop();
+    audio_deinit();
+#endif
 
     // Turn off display before deep sleep
     ssd1322_display_off();

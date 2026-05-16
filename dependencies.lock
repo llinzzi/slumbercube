@@ -1,4 +1,14 @@
 dependencies:
+  chmorgan/esp-libhelix-mp3:
+    component_hash: cbb76089dc2c5749f7b470e2e70aedc44c9da519e04eb9a67d4c7ec275229e53
+    dependencies:
+    - name: idf
+      require: private
+      version: '>=4.1.0'
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.3
   espressif/button:
     component_hash: d0afa32f0e50d60bc0c6fc23f7eea98adc6b02cfe70b590bc52c23c506745287
     dependencies:
@@ -35,9 +45,10 @@ dependencies:
       type: service
     version: 9.4.0
 direct_dependencies:
+- chmorgan/esp-libhelix-mp3
 - espressif/button
 - idf
 - lvgl/lvgl
-manifest_hash: c104da6530867b83880d9082b6bfe7bc02f86fa2d17f4c77210655429f2649da
+manifest_hash: a362656698bc2925b3506dd6e679c631dcf2b737e405f6c11c92e3dae86d3aa9
 target: esp32c3
 version: 2.0.0

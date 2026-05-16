@@ -10,12 +10,9 @@
 - **天气显示** — 通过高德天气 API 获取实时天气及温度，包含程序化绘制的天气图标（晴/阴/雨/雪/雾/风）
 - **NTP 自动校时** — 上电自动连接 WiFi 并同步时间
 - **日进度条** — 底部显示当日时间进度，带四等分刻度标记
-- **按键交互** — 短按刷新天气，长按重新同步 NTP 并刷新天气
-- **深度睡眠** — 10 分钟无操作后自动进入深度睡眠，按键唤醒
-- **防白闪启动** — 上电时等待 LVGL 渲染首帧后再开启显示，避免 OLED 白闪
-- **防白闪唤醒** — 深度睡眠唤醒时同样消除白闪，通过三层防护实现
-- **LVGL v9.4.0** — 基于 LVGL 图形库渲染，EEZ Studio 生成 UI 框架
-- **I4 灰度输出** — 4-bit 灰度 (16 级)，2 像素/字节高效传输
+- **HTTP 音乐播放** — 每次唤醒自动通过 HTTP 流式播放网络音乐（NS4168 I2S 功放）
+- **按键交互** — 短按进入睡眠
+- **深度睡眠** — 可配置时长后自动进入深度睡眠，按键或定时唤醒
 
 ## 硬件规格
 
@@ -81,15 +78,18 @@ app_main()
 ├── 时区设置 (CST-8 / UTC+8)
 ├── LVGL 适配器初始化
 │   └── lvgl_task (FreeRTOS, 每 10ms 调用 lv_timer_handler)
-├── UI 初始化 (EEZ Studio 生成)
-│   └── weather_chart_create() 创建主界面
+├── UI 初始化
+│   └── clock_screen_create() 创建主界面
 ├── 显示开启 (等待首帧渲染完毕)
 ├── WiFi STA 连接 + SNTP 时间同步
-├── 首次天气数据获取
-└── 主循环 (600 秒, 1 秒间隔)
-    ├── 检查短按 → 刷新天气
-    ├── 检查长按 → NTP 重同步 + 刷新天气
-    └── 超时 → 关闭显示 → 深度睡眠
+├── 天气数据获取
+├── HTTP 音乐流播放 (NS4168 I2S 功放)
+│   ├── I2S 初始化 (48kHz/16-bit/立体声)
+│   ├── HTTP 流下载 + 缓冲
+│   └── MP3 解码 → 混音器 → I2S 输出
+└── 主循环 (可配置秒数, 1 秒间隔)
+    ├── 检查按键 → 停止播放 → 进入睡眠
+    └── 超时 → 停止播放 → 关闭显示 → 深度睡眠
 ```
 
 ### 核心模块
@@ -101,11 +101,11 @@ app_main()
 | LVGL 适配 | `lvgl_adapter.c/h` | LVGL 显示适配，L8→I4 格式转换，DMA 刷新 |
 | WiFi/对时 | `wifi.c/h` | WiFi STA 连接、SNTP 时间同步、时区设置 |
 | 天气服务 | `weather_service.c/h` | 高德天气 API 客户端，JSON 解析 |
-| 天气图表 | `weather_chart.c/h` | 全屏 UI 组件：时间、日期、天气图标、温度、进度条 |
+| 天气图表 | `clock_screen.c/h` | 全屏 UI 组件：时间、日期、天气图标、温度、进度条 |
+| 音频播放 | `audio_player_wrapper.c/h` | I2S 初始化、HTTP 流下载、MP3 解码播放 |
 | 字库 | `font_digital.c/h` | digital-7 等宽字体（时钟数字） |
 | 字库 | `font_weather.c/h` | 天气信息字体 |
-| 解压缩 | `miniz.c/h` | miniz 库，用于字体数据解压缩 |
-| UI 框架 | `ui/` | EEZ Studio 生成的 LVGL UI 代码 |
+| UI 框架 | `ui/` | LVGL UI 代码 |
 
 ## 构建与烧录
 
@@ -161,15 +161,16 @@ python read_crash.py            # 专门捕捉 Guru Meditation 崩溃
 
 ## 配置说明
 
-WiFi 和天气 API 相关参数目前硬编码在源码中：
+所有配置项通过 `idf.py menuconfig` → Clock Configuration 设置：
 
-| 参数 | 位置 | 说明 |
+| 菜单 | 配置项 | 说明 |
 |------|------|------|
-| WiFi SSID/密码 | `wifi.c` | 目标 WiFi 网络 |
-| 天气 API Key | `weather_service.c` | 高德天气 API 密钥 |
-| 城市编码 | `weather_service.c` | 330100（杭州） |
-
-如需适配不同网络或城市，请修改对应源码后重新编译。
+| WiFi | SSID / 密码 | 目标 WiFi 网络 |
+| Weather API | API Key / 城市编码 | 高德天气 API |
+| Night Mode | 起始/结束时间 | 夜间模式降低亮度 |
+| Sleep | 活跃时长 / 唤醒 GPIO / 闹钟时间 | 深度睡眠配置 |
+| GPIO Pins | SPI / I2S / NS4168 / 按键 | 引脚映射 |
+| Audio | 启用开关 / 音乐 URL / 音量 | 唤醒音乐播放 |
 
 ## 功耗说明
 
@@ -270,6 +271,8 @@ tick_screen_main();
 |------|------|------|
 | lvgl/lvgl | ^9.4.0 | 图形用户界面库 |
 | espressif/button | ^4.1.6 | GPIO 按键驱动 |
+| chmorgan/esp-libhelix-mp3 | >=1.0.0 | MP3 解码器 (Helix) |
+| llinzzi/esp-audio-player | main | 音频播放框架 (HTTP 流 + 混音器 + I2S) |
 | ESP-IDF | >=5.0 | ESP32 开发框架 |
 
 ---

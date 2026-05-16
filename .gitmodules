@@ -1,0 +1,3 @@
+[submodule "components/esp-audio-player"]
+	path = components/esp-audio-player
+	url = https://github.com/llinzzi/esp-audio-player.git
