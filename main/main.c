@@ -41,6 +41,7 @@ void app_main(void)
     gpio_deep_sleep_hold_en();
     gpio_hold_dis(PIN_NUM_RST);
     gpio_hold_dis(CONFIG_PIN_NS4168_CTRL);
+    gpio_hold_dis(CONFIG_WAKEUP_GPIO);
 
     /* Hold all control and SPI pins at known levels before SSD1322 init.
      * CS is hardwired to GND, so the SSD1322 SPI is always selected — any
@@ -179,6 +180,10 @@ void app_main(void)
     // Hold NS4168 CTRL low through deep sleep to keep audio amp off
     gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0);
     gpio_hold_en(CONFIG_PIN_NS4168_CTRL);
+
+    /* Enable internal pull-up on wakeup GPIO for reliable deep-sleep wake */
+    gpio_set_pull_mode(CONFIG_WAKEUP_GPIO, GPIO_PULLUP_ONLY);
+    gpio_hold_en(CONFIG_WAKEUP_GPIO);
 
     // Configure GPIO3 low-level as wakeup source
 #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP

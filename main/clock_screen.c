@@ -275,7 +275,7 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(time_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
     lv_obj_set_style_text_font(time_label, &lv_font_digital, 0);
     lv_obj_set_style_text_align(time_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(time_label, 0, 4);
+    lv_obj_set_pos(time_label, 0, 2);
     lv_obj_set_size(time_label, TIME_W, 48);
     lv_label_set_text(time_label, "");
 
@@ -284,21 +284,21 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(date_label, lv_color_make(COL_DATE, COL_DATE, COL_DATE), 0);
     lv_obj_set_style_text_font(date_label, &lv_font_weather, 0);
     lv_obj_set_style_text_align(date_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(date_label, 0, 54);
+    lv_obj_set_pos(date_label, 0, 52);
     lv_obj_set_size(date_label, TIME_W, 10);
     lv_label_set_text(date_label, "");
 
     /* ── Weather icon image (right, left column) ── */
     icon_img = lv_img_create(container);
     lv_img_set_src(icon_img, weather_icon_default());
-    lv_obj_set_pos(icon_img, SEP_X + 6, 4);
+    lv_obj_set_pos(icon_img, SEP_X + 6, 2);
     lv_obj_add_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
 
     /* ── Weather text (right, top) ── */
     weather_label = lv_label_create(container);
     lv_obj_set_style_text_color(weather_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
     lv_obj_set_style_text_font(weather_label, &lv_font_weather, 0);
-    lv_obj_set_pos(weather_label, SEP_X + 44, 6);
+    lv_obj_set_pos(weather_label, SEP_X + 44, 4);
     lv_obj_set_size(weather_label, 100, 14);
     lv_label_set_text(weather_label, "");
     lv_obj_add_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
@@ -308,7 +308,7 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(temp_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
     lv_obj_set_style_text_font(temp_label, &lv_font_weather, 0);
     lv_obj_set_style_text_align(temp_label, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_pos(temp_label, SEP_X + 44, 24);
+    lv_obj_set_pos(temp_label, SEP_X + 44, 22);
     lv_obj_set_size(temp_label, 100, 14);
     lv_label_set_text(temp_label, "");
     lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
