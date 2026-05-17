@@ -3,6 +3,7 @@
 #include "loading_img.h"
 #include "font_weather.h"
 #include "font_digital.h"
+#include "font_station.h"
 #include "ssd1322_driver.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -34,6 +35,7 @@ static lv_obj_t *temp_label = NULL;
 static lv_obj_t *weather_date_label = NULL;
 static lv_obj_t *icon_img = NULL;
 static lv_obj_t *loading_img_obj = NULL;
+static lv_obj_t *station_label = NULL;
 
 static const weather_data_t *weather = NULL;
 static bool visible = false;
@@ -325,12 +327,36 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_label_set_text(weather_date_label, "");
     lv_obj_add_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
 
+    /* ── Station name label (right side, same row as weather date) ── */
+    station_label = lv_label_create(container);
+    lv_obj_set_style_text_color(station_label, lv_color_make(0x99, 0x99, 0x99), 0);
+    lv_obj_set_style_text_font(station_label, &lv_font_station, 0);
+    lv_obj_set_style_text_align(station_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_pos(station_label, SEP_X + 4, 42);
+    lv_obj_set_size(station_label, 120, 14);
+    lv_label_set_text(station_label, "");
+    lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
+
     /* ── Loading image (centered in weather area, hidden when data arrives) ── */
     loading_img_obj = lv_img_create(container);
     lv_img_set_src(loading_img_obj, loading_img_get());
     lv_obj_set_pos(loading_img_obj, SEP_X + (128 - 48) / 2, (CANVAS_H - 52) / 2);
 
     return container;
+}
+
+void clock_screen_set_station_name(const char *name)
+{
+    if (!station_label) return;
+    if (night_mode) return;
+
+    if (name && name[0]) {
+        lv_label_set_text(station_label, name);
+    } else {
+        lv_label_set_text(station_label, "Streaming...");
+    }
+    lv_obj_clear_flag(station_label, LV_OBJ_FLAG_HIDDEN);
+    if (weather_date_label) lv_obj_add_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
 }
 
 void clock_screen_set_data(const weather_data_t *data)
@@ -407,6 +433,7 @@ void clock_screen_set_night_mode(bool enable)
         if (temp_label) lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
         if (weather_date_label) lv_obj_add_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
         if (loading_img_obj) lv_obj_add_flag(loading_img_obj, LV_OBJ_FLAG_HIDDEN);
+        if (station_label) lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
     } else {
         ssd1322_set_contrast(0x9F); /* restore normal contrast */
         if (canvas) lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
@@ -417,6 +444,9 @@ void clock_screen_set_night_mode(bool enable)
             if (weather_label) lv_obj_remove_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
             if (temp_label) lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
             if (weather_date_label) lv_obj_remove_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (station_label && lv_label_get_text(station_label)[0]) {
+            lv_obj_remove_flag(station_label, LV_OBJ_FLAG_HIDDEN);
         }
         draw_chart();
     }

@@ -109,7 +109,7 @@ static void lvgl_task(void *arg)
         count++;
         if (count % 100 == 0) {
             ui_tick();
-            ESP_LOGI(TAG, "alive=%lu", (unsigned long)count);
+            /* alive log disabled */
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }

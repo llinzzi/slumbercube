@@ -39,7 +39,7 @@ menu "Clock Configuration"
     menu "Sleep Configuration"
         config ACTIVE_DURATION_SECS
             int "Active duration before deep sleep (seconds)"
-            default 1800
+            default 3600
         config WAKEUP_GPIO
             int "Wakeup GPIO number"
             default 3
@@ -92,7 +92,7 @@ menu "Clock Configuration"
             default y
         config AUDIO_MUSIC_URL
             string "Music URL for wakeup playback"
-            default "http://192.168.8.80:3002/music/BV1e841177cX"
+            default "http://listen.livestreamingservice.com/181-80scountry_128k.mp3"
         config AUDIO_VOLUME_PCT
             int "Audio volume (0-100)"
             range 0 100

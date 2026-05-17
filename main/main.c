@@ -134,6 +134,8 @@ void app_main(void)
     if (!clock_screen_is_night_time()) {
         if (audio_init() == ESP_OK) {
             audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+            /* Show default text immediately, ICY name will replace it when headers arrive */
+            clock_screen_set_station_name(NULL);
         }
     }
 #endif
@@ -145,6 +147,19 @@ void app_main(void)
         if (s_sleep_pending) {
             break;
         }
+
+#if CONFIG_AUDIO_ENABLE
+        /* Poll ICY metadata periodically (song titles may change) */
+        if (i == 2 || (i > 2 && i % 15 == 0)) {
+            char info[64];
+            audio_get_station_text(info, sizeof(info));
+            if (info[0]) {
+                clock_screen_set_station_name(info);
+                ESP_LOGI(TAG, "Station: %s", info);
+            }
+        }
+#endif
+
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 

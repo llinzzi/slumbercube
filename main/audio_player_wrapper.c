@@ -39,9 +39,22 @@ static esp_err_t i2s_write(void *audio_buffer, size_t len,
 }
 
 /* ── I2S clock reconfig for mixer ─────────────────────────── */
+static uint32_t s_last_rate = 0;
+static uint32_t s_last_bits = 0;
+static uint32_t s_last_ch = 0;
+
 static esp_err_t i2s_reconfig_clk(uint32_t rate, uint32_t bits_cfg,
                                   i2s_slot_mode_t ch)
 {
+    /* Skip reconfig if format hasn't changed (avoids I2S glitches) */
+    uint32_t channel_count = (ch == I2S_SLOT_MODE_STEREO) ? 2 : 1;
+    if (rate == s_last_rate && bits_cfg == s_last_bits && channel_count == s_last_ch) {
+        return ESP_OK;
+    }
+    s_last_rate = rate;
+    s_last_bits = bits_cfg;
+    s_last_ch = channel_count;
+
     i2s_channel_disable(s_i2s_tx_chan);
     i2s_std_clk_config_t clk_cfg = {
         .sample_rate_hz = rate,
@@ -89,7 +102,7 @@ esp_err_t audio_init(void)
 
     /* Standard Philips mode: 44.1kHz / 16-bit / stereo */
     i2s_std_config_t std_cfg = {
-        .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(48000),
+        .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(44100),
         .slot_cfg = I2S_STD_PHILIP_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
                                                         I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
@@ -138,7 +151,7 @@ esp_err_t audio_play_url(const char *url)
         .priority   = 5,
         .coreID     = tskNO_AFFINITY,
         .i2s_format = {
-            .sample_rate     = 48000,
+            .sample_rate     = 44100,
             .bits_per_sample = 16,
             .channels        = 2,
         },
@@ -211,6 +224,35 @@ esp_err_t audio_stop(void)
     }
     ESP_LOGI(TAG, "Playback stopped");
     return ESP_OK;
+}
+
+void audio_get_station_text(char *buf, size_t size)
+{
+    if (!s_http_stream) {
+        buf[0] = '\0';
+        return;
+    }
+    const char *title = audio_http_stream_get_stream_title(s_http_stream);
+    const char *name = audio_http_stream_get_icy_name(s_http_stream);
+    const char *genre = audio_http_stream_get_icy_genre(s_http_stream);
+    int br = audio_http_stream_get_icy_bitrate(s_http_stream);
+
+    if (title) {
+        int len = snprintf(buf, size, "%s", title);
+        if (br > 0 && len < (int)size) {
+            snprintf(buf + len, size - len, " [%dkbps]", br);
+        }
+    } else if (name) {
+        int len = snprintf(buf, size, "%s", name);
+        if (genre && len < (int)size) {
+            len += snprintf(buf + len, size - len, " / %s", genre);
+        }
+        if (br > 0 && len < (int)size) {
+            snprintf(buf + len, size - len, " / %dkbps", br);
+        }
+    } else {
+        buf[0] = '\0';
+    }
 }
 
 void audio_deinit(void)
