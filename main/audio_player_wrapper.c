@@ -69,9 +69,13 @@ static esp_err_t i2s_reconfig_clk(uint32_t rate, uint32_t bits_cfg,
         .mclk_multiple = I2S_MCLK_MULTIPLE_256,
     };
     esp_err_t err = i2s_channel_reconfig_std_clock(s_i2s_tx_chan, &clk_cfg);
-    esp_err_t err2 = i2s_channel_enable(s_i2s_tx_chan);
-    if (err == ESP_OK) err = err2;
-    return err;
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Clock reconfig failed for %lu Hz, keeping old rate", rate);
+        /* Restore old rate in mixer config */
+        s_last_rate = 0; /* force reconfig next time */
+    }
+    i2s_channel_enable(s_i2s_tx_chan);
+    return ESP_OK; /* Don't block playback on clock error */
 }
 
 /* ── Mute/unmute: control NS4168 CTL pin ──────────────────── */
