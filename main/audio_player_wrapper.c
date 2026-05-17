@@ -16,10 +16,24 @@ static audio_http_stream_handle_t s_http_stream = NULL;
 static bool s_i2s_ready = false;
 static bool s_mixer_ready = false;
 
+/* ── Software volume scale (16-bit stereo PCM) ──────────────── */
+static void apply_volume(void *buf, size_t len)
+{
+    int vol = CONFIG_AUDIO_VOLUME_PCT;
+    if (vol >= 100) return;
+
+    int16_t *samples = (int16_t *)buf;
+    size_t count = len / sizeof(int16_t);
+    for (size_t i = 0; i < count; i++) {
+        samples[i] = (int16_t)((int32_t)samples[i] * vol / 100);
+    }
+}
+
 /* ── I2S write callback for mixer ─────────────────────────── */
 static esp_err_t i2s_write(void *audio_buffer, size_t len,
                            size_t *bytes_written, uint32_t timeout_ms)
 {
+    apply_volume(audio_buffer, len);
     return i2s_channel_write(s_i2s_tx_chan, audio_buffer, len,
                              bytes_written, timeout_ms);
 }

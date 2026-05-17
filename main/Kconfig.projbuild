@@ -92,11 +92,11 @@ menu "Clock Configuration"
             default y
         config AUDIO_MUSIC_URL
             string "Music URL for wakeup playback"
-            default "http://192.168.8.80:3002/music/BV192gczKELM"
+            default "http://192.168.8.80:3002/music/BV1e841177cX"
         config AUDIO_VOLUME_PCT
             int "Audio volume (0-100)"
             range 0 100
-            default 60
+            default 10
     endmenu
 
 endmenu
