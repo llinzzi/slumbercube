@@ -144,7 +144,7 @@ esp_err_t wifi_init_sta(void)
     s_wifi_event_group = xEventGroupCreate();
 
     esp_netif_t *netif = esp_netif_create_default_wifi_sta();
-    ESP_ERROR_CHECK(esp_netif_set_hostname(netif, "oled_clock"));
+    ESP_ERROR_CHECK(esp_netif_set_hostname(netif, "ssd1322"));
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
