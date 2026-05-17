@@ -92,7 +92,7 @@ menu "Clock Configuration"
             default y
         config AUDIO_MUSIC_URL
             string "Music URL for wakeup playback"
-            default "http://listen.livestreamingservice.com/181-80scountry_128k.mp3"
+            default "http://lhttp.qingting.fm/live/4518/64k.mp3"
         config AUDIO_VOLUME_PCT
             int "Audio volume (0-100)"
             range 0 100

@@ -1,6 +1,5 @@
 #include "clock_screen.h"
 #include "weather_icons.h"
-#include "loading_img.h"
 #include "font_weather.h"
 #include "font_digital.h"
 #include "font_station.h"
@@ -32,9 +31,7 @@ static lv_obj_t *time_label = NULL;
 static lv_obj_t *date_label = NULL;
 static lv_obj_t *weather_label = NULL;
 static lv_obj_t *temp_label = NULL;
-static lv_obj_t *weather_date_label = NULL;
 static lv_obj_t *icon_img = NULL;
-static lv_obj_t *loading_img_obj = NULL;
 static lv_obj_t *station_label = NULL;
 
 static const weather_data_t *weather = NULL;
@@ -104,7 +101,6 @@ static void draw_chart(void)
         char buf[8];
         snprintf(buf, sizeof(buf), "%02d-%02d",
                  weather->daily[0].month, weather->daily[0].day);
-        lv_label_set_text(weather_date_label, buf);
     }
 
     /* ── Bottom progress bar (time-of-day) ── */
@@ -317,16 +313,6 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_label_set_text(temp_label, "");
     lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
 
-    /* ── Weather date label (right, bottom) ── */
-    weather_date_label = lv_label_create(container);
-    lv_obj_set_style_text_color(weather_date_label, lv_color_make(COL_DATE, COL_DATE, COL_DATE), 0);
-    lv_obj_set_style_text_font(weather_date_label, &lv_font_weather, 0);
-    lv_obj_set_style_text_align(weather_date_label, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_pos(weather_date_label, SEP_X + 44, 42);
-    lv_obj_set_size(weather_date_label, 100, 14);
-    lv_label_set_text(weather_date_label, "");
-    lv_obj_add_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
-
     /* ── Station name label (right side, same row as weather date) ── */
     station_label = lv_label_create(container);
     lv_obj_set_style_text_color(station_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
@@ -338,11 +324,6 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_label_set_long_mode(station_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(station_label, "");
     lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
-
-    /* ── Loading image (centered in weather area, hidden when data arrives) ── */
-    loading_img_obj = lv_img_create(container);
-    lv_img_set_src(loading_img_obj, loading_img_get());
-    lv_obj_set_pos(loading_img_obj, SEP_X + (128 - 48) / 2, (CANVAS_H - 52) / 2);
 
     return container;
 }
@@ -358,7 +339,6 @@ void clock_screen_set_station_name(const char *name)
         lv_label_set_text(station_label, "Streaming...");
     }
     lv_obj_clear_flag(station_label, LV_OBJ_FLAG_HIDDEN);
-    if (weather_date_label) lv_obj_add_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
 }
 
 void clock_screen_set_data(const weather_data_t *data)
@@ -374,14 +354,10 @@ void clock_screen_set_data(const weather_data_t *data)
 
     if (night_mode) return; /* Don't change visibility during night mode */
 
-    /* Hide loading image and show weather data */
-    if (loading_img_obj) {
-        lv_obj_add_flag(loading_img_obj, LV_OBJ_FLAG_HIDDEN);
-    }
+    /* Show weather data */
     if (icon_img) lv_obj_remove_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
     if (weather_label) lv_obj_remove_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
     if (temp_label) lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
-    if (weather_date_label) lv_obj_remove_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
     draw_chart();
     lv_obj_invalidate(container);
     lv_refr_now(lv_disp_get_default());
@@ -433,8 +409,6 @@ void clock_screen_set_night_mode(bool enable)
         if (icon_img) lv_obj_add_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
         if (weather_label) lv_obj_add_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
         if (temp_label) lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
-        if (weather_date_label) lv_obj_add_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
-        if (loading_img_obj) lv_obj_add_flag(loading_img_obj, LV_OBJ_FLAG_HIDDEN);
         if (station_label) lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
     } else {
         ssd1322_set_contrast(0x9F); /* restore normal contrast */
@@ -445,7 +419,6 @@ void clock_screen_set_night_mode(bool enable)
             if (icon_img) lv_obj_remove_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
             if (weather_label) lv_obj_remove_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
             if (temp_label) lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
-            if (weather_date_label) lv_obj_remove_flag(weather_date_label, LV_OBJ_FLAG_HIDDEN);
         }
         if (station_label && lv_label_get_text(station_label)[0]) {
             lv_obj_remove_flag(station_label, LV_OBJ_FLAG_HIDDEN);

@@ -107,6 +107,7 @@ void app_main(void)
 
     if (!clock_screen_is_night_time()) {
         // Always init TCP/IP stack + start WiFi for button-press weather
+        clock_screen_set_station_name("Connecting WiFi...");
         wifi_ensure_netif();
         if (wifi_init_sta() == ESP_OK) {
             if (!wifi_is_time_set()) {
@@ -115,6 +116,7 @@ void app_main(void)
         }
 
         // Initial weather fetch (retries handle async WiFi connection)
+        clock_screen_set_station_name("Fetching weather...");
         for (int retry = 0; retry < 5; retry++) {
             esp_err_t err = weather_fetch(&s_weather);
             if (err == ESP_OK) {
