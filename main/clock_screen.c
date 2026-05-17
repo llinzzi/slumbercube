@@ -18,12 +18,12 @@ static const char *TAG = "WEATHER_CHART";
 #define TIME_W   128
 #define SEP_X    TIME_W
 
-#define COL_DATE   0x44
-#define COL_TEMP   0xCC
-#define COL_LOW    0x66
-#define COL_SEP    0x33
+#define COL_DATE   0xFF
+#define COL_TEMP   0xFF
+#define COL_LOW    0xFF
+#define COL_SEP    0xFF
 #define COL_PROGBG 0x22
-#define COL_PROGFG 0xAA
+#define COL_PROGFG 0xFF
 
 static lv_obj_t *container = NULL;
 static lv_obj_t *canvas = NULL;
@@ -329,11 +329,13 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
 
     /* ── Station name label (right side, same row as weather date) ── */
     station_label = lv_label_create(container);
-    lv_obj_set_style_text_color(station_label, lv_color_make(0x99, 0x99, 0x99), 0);
+    lv_obj_set_style_text_color(station_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
     lv_obj_set_style_text_font(station_label, &lv_font_station, 0);
-    lv_obj_set_style_text_align(station_label, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_pos(station_label, SEP_X + 4, 42);
-    lv_obj_set_size(station_label, 120, 14);
+    lv_obj_set_style_text_align(station_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(station_label, 0, 42);
+    lv_obj_set_size(station_label, 256, 10);
+    lv_obj_set_style_bg_opa(station_label, LV_OPA_TRANSP, 0);
+    lv_label_set_long_mode(station_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(station_label, "");
     lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
 

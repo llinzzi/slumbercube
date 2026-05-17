@@ -171,12 +171,19 @@ esp_err_t audio_play_url(const char *url)
         return ESP_FAIL;
     }
 
+    /* Request ICY metadata from Shoutcast servers */
+    static const char *extra_headers[] = {
+        "Icy-MetaData: 1",
+        NULL
+    };
+
     /* Open HTTP stream (minimal buffers to fit limited C3 DRAM) */
     audio_http_stream_config_t http_cfg = DEFAULT_AUDIO_HTTP_STREAM_CONFIG(url);
     http_cfg.buffer_size      = 8 * 1024;
     http_cfg.high_watermark   = 6 * 1024;
     http_cfg.low_watermark    = 2 * 1024;
     http_cfg.task_stack_size  = 3 * 1024;
+    http_cfg.additional_headers = extra_headers;
     s_http_stream = audio_http_stream_open(&http_cfg);
     if (!s_http_stream) {
         ESP_LOGE(TAG, "http_stream_open failed");
@@ -226,33 +233,11 @@ esp_err_t audio_stop(void)
     return ESP_OK;
 }
 
-void audio_get_station_text(char *buf, size_t size)
+const char *audio_get_station_name(void)
 {
-    if (!s_http_stream) {
-        buf[0] = '\0';
-        return;
-    }
-    const char *title = audio_http_stream_get_stream_title(s_http_stream);
-    const char *name = audio_http_stream_get_icy_name(s_http_stream);
-    const char *genre = audio_http_stream_get_icy_genre(s_http_stream);
-    int br = audio_http_stream_get_icy_bitrate(s_http_stream);
-
-    if (title) {
-        int len = snprintf(buf, size, "%s", title);
-        if (br > 0 && len < (int)size) {
-            snprintf(buf + len, size - len, " [%dkbps]", br);
-        }
-    } else if (name) {
-        int len = snprintf(buf, size, "%s", name);
-        if (genre && len < (int)size) {
-            len += snprintf(buf + len, size - len, " / %s", genre);
-        }
-        if (br > 0 && len < (int)size) {
-            snprintf(buf + len, size - len, " / %dkbps", br);
-        }
-    } else {
-        buf[0] = '\0';
-    }
+    if (!s_http_stream) return NULL;
+    const char *t = audio_http_stream_get_stream_title(s_http_stream);
+    return t ? t : audio_http_stream_get_icy_name(s_http_stream);
 }
 
 void audio_deinit(void)

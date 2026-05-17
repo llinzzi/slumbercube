@@ -151,9 +151,8 @@ void app_main(void)
 #if CONFIG_AUDIO_ENABLE
         /* Poll ICY metadata periodically (song titles may change) */
         if (i == 2 || (i > 2 && i % 15 == 0)) {
-            char info[64];
-            audio_get_station_text(info, sizeof(info));
-            if (info[0]) {
+            const char *info = audio_get_station_name();
+            if (info) {
                 clock_screen_set_station_name(info);
                 ESP_LOGI(TAG, "Station: %s", info);
             }
