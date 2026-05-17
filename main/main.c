@@ -134,8 +134,6 @@ void app_main(void)
     if (!clock_screen_is_night_time()) {
         if (audio_init() == ESP_OK) {
             audio_play_url(CONFIG_AUDIO_MUSIC_URL);
-            /* Show default text immediately, ICY name will replace it when headers arrive */
-            clock_screen_set_station_name(NULL);
         }
     }
 #endif
@@ -149,12 +147,11 @@ void app_main(void)
         }
 
 #if CONFIG_AUDIO_ENABLE
-        /* Poll ICY metadata periodically (song titles may change) */
-        if (i == 2 || (i > 2 && i % 15 == 0)) {
+        /* Poll status quickly at start (every 1s for first 10s), then every 15s */
+        if (i < 10 || i % 15 == 0) {
             const char *info = audio_get_station_name();
             if (info) {
                 clock_screen_set_station_name(info);
-                ESP_LOGI(TAG, "Station: %s", info);
             }
         }
 #endif

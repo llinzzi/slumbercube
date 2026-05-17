@@ -15,6 +15,7 @@ static audio_stream_handle_t s_stream = NULL;
 static audio_http_stream_handle_t s_http_stream = NULL;
 static bool s_i2s_ready = false;
 static bool s_mixer_ready = false;
+static const char *s_status = NULL;
 
 /* ── Software volume scale (16-bit stereo PCM) ──────────────── */
 static void apply_volume(void *buf, size_t len)
@@ -34,8 +35,14 @@ static esp_err_t i2s_write(void *audio_buffer, size_t len,
                            size_t *bytes_written, uint32_t timeout_ms)
 {
     apply_volume(audio_buffer, len);
-    return i2s_channel_write(s_i2s_tx_chan, audio_buffer, len,
-                             bytes_written, timeout_ms);
+    /* Cap timeout to prevent watchdog reset if I2S stalls */
+    if (timeout_ms > 100) timeout_ms = 100;
+    esp_err_t err = i2s_channel_write(s_i2s_tx_chan, audio_buffer, len,
+                                      bytes_written, timeout_ms);
+    if (*bytes_written == 0) {
+        vTaskDelay(pdMS_TO_TICKS(50));
+    }
+    return err;
 }
 
 /* ── I2S clock reconfig for mixer ─────────────────────────── */
@@ -62,9 +69,8 @@ static esp_err_t i2s_reconfig_clk(uint32_t rate, uint32_t bits_cfg,
         .mclk_multiple = I2S_MCLK_MULTIPLE_256,
     };
     esp_err_t err = i2s_channel_reconfig_std_clock(s_i2s_tx_chan, &clk_cfg);
-    if (err == ESP_OK) {
-        err = i2s_channel_enable(s_i2s_tx_chan);
-    }
+    esp_err_t err2 = i2s_channel_enable(s_i2s_tx_chan);
+    if (err == ESP_OK) err = err2;
     return err;
 }
 
@@ -131,17 +137,13 @@ esp_err_t audio_init(void)
     return ESP_OK;
 }
 
-esp_err_t audio_play_url(const char *url)
+static esp_err_t audio_play_url_inner(const char *url)
 {
-    if (!s_i2s_ready) {
-        ESP_LOGE(TAG, "I2S not initialized");
-        return ESP_ERR_INVALID_STATE;
-    }
-
     /* Stop any existing playback first */
     audio_stop();
 
-    ESP_LOGI(TAG, "Starting audio: %s", url);
+    s_status = "Connecting...";
+    ESP_LOGI(TAG, "Trying: %s", url);
 
     /* Init mixer (safe to call repeatedly — no-op if already running) */
     audio_mixer_config_t mixer_cfg = {
@@ -171,26 +173,18 @@ esp_err_t audio_play_url(const char *url)
         return ESP_FAIL;
     }
 
-    /* Request ICY metadata from Shoutcast servers */
-    static const char *extra_headers[] = {
-        "Icy-MetaData: 1",
-        NULL
-    };
-
-    /* Open HTTP stream (minimal buffers to fit limited C3 DRAM) */
+    /* Open HTTP stream */
     audio_http_stream_config_t http_cfg = DEFAULT_AUDIO_HTTP_STREAM_CONFIG(url);
     http_cfg.buffer_size      = 8 * 1024;
     http_cfg.high_watermark   = 6 * 1024;
     http_cfg.low_watermark    = 2 * 1024;
     http_cfg.task_stack_size  = 3 * 1024;
-    http_cfg.additional_headers = extra_headers;
     s_http_stream = audio_http_stream_open(&http_cfg);
     if (!s_http_stream) {
         ESP_LOGE(TAG, "http_stream_open failed");
         return ESP_FAIL;
     }
 
-    /* Wire HTTP stream → decoder stream */
     audio_stream_io_handle_t io;
     err = audio_http_stream_get_io(s_http_stream, &io);
     if (err != ESP_OK) {
@@ -198,24 +192,49 @@ esp_err_t audio_play_url(const char *url)
         return err;
     }
 
-    /* Wait for HTTP download to buffer initial data before starting decoder.
-     * The MP3 type detector needs to read the first few bytes, but the HTTP
-     * ring buffer may be empty if the connection hasn't completed yet. */
-    ESP_LOGI(TAG, "Waiting for initial buffer...");
+    /* Wait for initial buffer — timeout means connection failed */
     for (int wait = 0; wait < 50; wait++) {
         size_t buffered = audio_http_stream_get_buffered_bytes(s_http_stream);
-        if (buffered >= 4096) break;
+        if (buffered >= 4096) {
+            err = audio_stream_play_io(s_stream, io);
+            if (err == ESP_OK) {
+                ESP_LOGI(TAG, "Playback started OK");
+            }
+            return err;
+        }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    err = audio_stream_play_io(s_stream, io);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "stream_play_io: %s", esp_err_to_name(err));
-        return err;
+    ESP_LOGW(TAG, "Timeout waiting for buffer, closing");
+    audio_stop();
+    s_status = "Network error";
+    return ESP_ERR_TIMEOUT;
+}
+
+esp_err_t audio_play_url(const char *url)
+{
+    if (!s_i2s_ready) {
+        ESP_LOGE(TAG, "I2S not initialized");
+        return ESP_ERR_INVALID_STATE;
     }
 
-    ESP_LOGI(TAG, "Playback started OK");
-    return ESP_OK;
+    s_status = "Connecting...";
+
+    /* Try primary URL, fall back to secondary */
+    if (audio_play_url_inner(url) == ESP_OK) {
+        s_status = "Streaming...";
+        return ESP_OK;
+    }
+
+    s_status = "Switching...";
+    ESP_LOGW(TAG, "Primary failed, trying fallback...");
+    if (audio_play_url_inner("https://strm112.1.fm/80s_90s_mobile_mp3") == ESP_OK) {
+        s_status = "Streaming...";
+        return ESP_OK;
+    }
+
+    s_status = "Network error";
+    return ESP_ERR_TIMEOUT;
 }
 
 esp_err_t audio_stop(void)
@@ -235,9 +254,13 @@ esp_err_t audio_stop(void)
 
 const char *audio_get_station_name(void)
 {
-    if (!s_http_stream) return NULL;
-    const char *t = audio_http_stream_get_stream_title(s_http_stream);
-    return t ? t : audio_http_stream_get_icy_name(s_http_stream);
+    if (s_http_stream) {
+        const char *t = audio_http_stream_get_stream_title(s_http_stream);
+        if (t) return t;
+        const char *n = audio_http_stream_get_icy_name(s_http_stream);
+        if (n) return n;
+    }
+    return s_status;
 }
 
 void audio_deinit(void)
