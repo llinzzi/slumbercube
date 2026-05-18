@@ -10,7 +10,7 @@
 - **天气显示** — 通过高德天气 API 获取实时天气及温度，包含程序化绘制的天气图标（晴/阴/雨/雪/雾/风）
 - **NTP 自动校时** — 上电自动连接 WiFi 并同步时间
 - **日进度条** — 底部显示当日时间进度，带四等分刻度标记
-- **HTTP 音乐播放** — 每次唤醒自动播放网络电台流（NS4168 I2S 功放），支持 ICY 元数据，主 URL 失败自动切换备用流
+- **HTTP 音乐播放** — 每次唤醒自动播放网络电台流（NS4168 I2S 功放），支持 ICY 元数据
 - **按键交互** — 短按进入睡眠，按键唤醒
 - **深度睡眠** — 可配置时长后自动进入深度睡眠，支持按键 + 定时闹钟唤醒
 
@@ -87,7 +87,7 @@ app_main()
 ├── HTTP 音乐流播放 (NS4168 I2S 功放)
 │   ├── I2S 初始化 (44.1kHz/16-bit/立体声)
 │   ├── HTTP 流下载 + 缓冲 (8KB/6KB/2KB watermark)
-│   ├── 尝试主 URL → 失败则切换备用 URL (1.FM 80s/90s)
+│   ├── 尝试主 URL 播放
 │   ├── ICY 元数据解析 (电台名、歌曲标题)
 │   └── MP3 解码 → 混音器 → I2S 输出
 └── 主循环 (可配置秒数, 1 秒间隔)
@@ -105,7 +105,7 @@ app_main()
 | WiFi/对时 | `wifi.c/h` | WiFi STA 连接、SNTP 时间同步、时区设置 |
 | 天气服务 | `weather_service.c/h` | 高德天气 API 客户端，JSON 解析 |
 | 天气图表 | `clock_screen.c/h` | 全屏 UI 组件：时间、日期、天气图标、温度、进度条 |
-| 音频播放 | `audio_player_wrapper.c/h` | I2S 初始化、HTTP 流下载、主备 URL 切换、ICY 元数据、MP3 解码 |
+| 音频播放 | `audio_player_wrapper.c/h` | I2S 初始化、HTTP 流下载、ICY 元数据、MP3 解码 |
 | 字库 | `font_digital.c/h` | digital-7 等宽字体（时钟数字） |
 | 字库 | `font_weather.c/h` | 天气信息字体 |
 | UI 框架 | `ui/` | LVGL UI 代码 |
@@ -160,7 +160,7 @@ python read_crash.py            # 专门捕捉 Guru Meditation 崩溃
 | Night Mode | 起始/结束时间 | 夜间模式降低亮度 |
 | Sleep | 活跃时长 / 唤醒 GPIO / 闹钟时间 | 深度睡眠配置 |
 | GPIO Pins | SPI / I2S / NS4168 / 按键 | 引脚映射 |
-| Audio | 启用开关 / 音乐流 URL / 音量 (0-100) | 唤醒电台播放，连接失败自动切换备用流 |
+| Audio | 启用开关 / 音乐流 URL / 音量 (0-100) | 唤醒电台播放 |
 
 ## 功耗说明
 

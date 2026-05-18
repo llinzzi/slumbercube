@@ -224,15 +224,7 @@ esp_err_t audio_play_url(const char *url)
 
     s_status = "Connecting...";
 
-    /* Try primary URL, fall back to secondary */
     if (audio_play_url_inner(url) == ESP_OK) {
-        s_status = "Streaming...";
-        return ESP_OK;
-    }
-
-    s_status = "Switching...";
-    ESP_LOGW(TAG, "Primary failed, trying fallback...");
-    if (audio_play_url_inner("https://strm112.1.fm/80s_90s_mobile_mp3") == ESP_OK) {
         s_status = "Streaming...";
         return ESP_OK;
     }
