@@ -33,6 +33,7 @@ static lv_obj_t *weather_label = NULL;
 static lv_obj_t *temp_label = NULL;
 static lv_obj_t *icon_img = NULL;
 static lv_obj_t *station_label = NULL;
+static bool s_indicator_on = false;
 
 static const weather_data_t *weather = NULL;
 static bool visible = false;
@@ -219,6 +220,13 @@ static void draw_night_clock(void)
 
     apply_grid_mask();
 
+    /* Audio indicator — drawn after grid mask, top-left 4x4 dot */
+    if (s_indicator_on) {
+        for (int y = 0; y < 4; y++)
+            for (int x = 0; x < 4; x++)
+                canvas_buf[y * CANVAS_W + x] = NIGHT_COLOR;
+    }
+
     lv_obj_invalidate(canvas);
 }
 
@@ -318,8 +326,8 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(station_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
     lv_obj_set_style_text_font(station_label, &lv_font_station, 0);
     lv_obj_set_style_text_align(station_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(station_label, 0, 42);
-    lv_obj_set_size(station_label, 256, 10);
+    lv_obj_set_pos(station_label, 0, 37);
+    lv_obj_set_size(station_label, 256, 18);
     lv_obj_set_style_bg_opa(station_label, LV_OPA_TRANSP, 0);
     lv_label_set_long_mode(station_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(station_label, "");
@@ -339,6 +347,12 @@ void clock_screen_set_station_name(const char *name)
         lv_label_set_text(station_label, "Streaming...");
     }
     lv_obj_clear_flag(station_label, LV_OBJ_FLAG_HIDDEN);
+}
+
+void clock_screen_set_audio_indicator(bool on)
+{
+    s_indicator_on = on;
+    if (canvas) lv_obj_invalidate(canvas);
 }
 
 void clock_screen_set_data(const weather_data_t *data)

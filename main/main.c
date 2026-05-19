@@ -25,11 +25,27 @@ static button_handle_t g_btn = NULL;
 static weather_data_t s_weather;
 static volatile bool s_sleep_pending = false;
 
-/* Lightweight: only set flag. Sleep is deferred to main loop. */
-static void button_press_cb(void *button_handle, void *usr_data)
+static volatile bool s_audio_playing = false;
+static volatile bool s_audio_toggle_request = false;
+
+/* Short click: sleep */
+static void button_short_click_cb(void *button_handle, void *usr_data)
 {
-    ESP_LOGI(TAG, "Button pressed, going to sleep");
+    ESP_LOGI(TAG, "Short click, going to sleep");
     s_sleep_pending = true;
+}
+
+/* Long press: request audio toggle. Main loop handles WiFi + playback. */
+static void button_long_press_cb(void *button_handle, void *usr_data)
+{
+    ESP_LOGI(TAG, "Long press");
+#if CONFIG_AUDIO_ENABLE
+    s_audio_toggle_request = true;
+    /* Show indicator immediately when starting, hide when stopping */
+    clock_screen_set_audio_indicator(!s_audio_playing);
+#else
+    ESP_LOGI(TAG, "Audio disabled, ignoring long press");
+#endif
 }
 
 void app_main(void)
@@ -66,9 +82,10 @@ void app_main(void)
     // Initialize SSD1322 driver first (display stays OFF until first frame rendered)
     ESP_ERROR_CHECK(ssd1322_init());
 
-    // Initialize button (any press triggers sleep)
+    // Initialize button with short/long press distinction
     button_config_t btn_cfg = {
         .short_press_time = 200,
+        .long_press_time = 1500,
     };
     button_gpio_config_t gpio_cfg = {
         .gpio_num = CONFIG_BUTTON_GPIO,
@@ -77,8 +94,9 @@ void app_main(void)
     };
     esp_err_t err = iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &g_btn);
     if (err == ESP_OK) {
-        iot_button_register_cb(g_btn, BUTTON_PRESS_DOWN, NULL, button_press_cb, NULL);
-        ESP_LOGI(TAG, "Button initialized on GPIO%d", CONFIG_BUTTON_GPIO);
+        iot_button_register_cb(g_btn, BUTTON_SINGLE_CLICK, NULL, button_short_click_cb, NULL);
+        iot_button_register_cb(g_btn, BUTTON_LONG_PRESS_START, NULL, button_long_press_cb, NULL);
+        ESP_LOGI(TAG, "Button initialized on GPIO%d (short=toggle audio, long=sleep)", CONFIG_BUTTON_GPIO);
     } else {
         ESP_LOGE(TAG, "Failed to init button on GPIO%d: %s", CONFIG_BUTTON_GPIO, esp_err_to_name(err));
     }
@@ -137,6 +155,7 @@ void app_main(void)
     if (!clock_screen_is_night_time()) {
         if (audio_init() == ESP_OK) {
             audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+            s_audio_playing = true;
         }
     }
 #endif
@@ -150,7 +169,42 @@ void app_main(void)
         }
 
 #if CONFIG_AUDIO_ENABLE
-        /* Poll status quickly at start (every 1s for first 10s), then every 15s */
+        /* Handle long-press audio toggle request */
+        if (s_audio_toggle_request) {
+            s_audio_toggle_request = false;
+            if (s_audio_playing) {
+                audio_stop();
+                clock_screen_set_audio_indicator(false);
+                clock_screen_set_station_name("Paused");
+                s_audio_playing = false;
+            } else {
+                clock_screen_set_station_name("Connecting WiFi...");
+                wifi_ensure_netif();
+                if (wifi_init_sta() == ESP_OK) {
+                    clock_screen_set_station_name("Starting audio...");
+                    if (audio_init() == ESP_OK) {
+                        audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+                        clock_screen_set_audio_indicator(true);
+                        s_audio_playing = true;
+                    }
+                } else {
+                    /* wifi_init_sta timed out — check if it connected just after timeout */
+                    if (wifi_is_connected()) {
+                        clock_screen_set_station_name("Starting audio...");
+                        if (audio_init() == ESP_OK) {
+                            audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+                            clock_screen_set_audio_indicator(true);
+                            s_audio_playing = true;
+                        }
+                    } else {
+                        clock_screen_set_audio_indicator(false);
+                        clock_screen_set_station_name("WiFi failed");
+                    }
+                }
+            }
+        }
+
+        /* Poll station name from audio stream */
         if (i < 10 || i % 15 == 0) {
             const char *info = audio_get_station_name();
             if (info) {

@@ -12,3 +12,4 @@ bool clock_screen_is_visible(void);
 bool clock_screen_is_night_time(void);
 void clock_screen_set_night_mode(bool enable);
 void clock_screen_set_station_name(const char *name);
+void clock_screen_set_audio_indicator(bool on);
