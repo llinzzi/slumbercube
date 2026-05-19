@@ -170,7 +170,7 @@ python read_crash.py            # 专门捕捉 Guru Meditation 崩溃
 
 ## 字体
 
-项目使用两个编译后的 LVGL 字体，分别对应时间显示和天气信息。
+项目使用三个编译后的 LVGL 字体，分别对应时钟数字、天气信息、电台名称。
 
 ### 数字字体 (`font_digital.c`)
 
@@ -190,7 +190,7 @@ lv_font_conv --size 48 --bpp 4 --format lvgl --no-compress \
 
 ### 天气字体 (`font_weather.c`)
 
-- **源文件**: `main/fusion-pixel-12px-monospaced-zh_hans.ttf`
+- **源文件**: `assets/fonts/fusion-pixel-12px-monospaced-zh_hans.ttf`
 - **用途**: 天气文字、日期、温度显示
 - **字符子集**: `0123456789°/-:AMPM严中云伴冰冷冻劲卷和多大天夹小少尘带平并度强微扬晴暴有未极毛气沙浓浮清烈热爆特狂疾知端细重间阴阵降雨雪雷雹雾霾静风飓龙转到`
 - **编译参数**: size=12, bpp=1
@@ -205,6 +205,22 @@ lv_font_conv --size 12 --bpp 1 --format lvgl --no-compress \
 ```
 
 > 如需增删天气描述文字，需同步更新 `--symbols` 中的字符子集并重新编译字体。
+
+### 电台名字体 (`font_station.c`)
+
+- **源文件**: `assets/fonts/ark-pixel-10px-monospaced-zh_cn.ttf`
+- **用途**: 电台名称 / ICY 元数据滚动显示（屏幕底部 marquee）
+- **字符子集**: `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.-_广播中`
+- **编译参数**: size=10, bpp=2
+
+编译命令：
+
+```bash
+lv_font_conv --size 10 --bpp 2 --format lvgl --no-compress \
+  --font assets/fonts/ark-pixel-10px-monospaced-zh_cn.ttf \
+  --symbols "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.-_广播中" \
+  --output main/font_station.c --lv-font-name lv_font_station
+```
 
 ### 未使用的字体文件
 
