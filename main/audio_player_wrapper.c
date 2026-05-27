@@ -323,9 +323,6 @@ static esp_err_t audio_play_url_inner(const char *url)
      * before sending, so allow up to 15s. 2KB is enough for MP3 format detection. */
     for (int wait = 0; wait < 150; wait++) {
         size_t buffered = audio_http_stream_get_buffered_bytes(s_http_stream);
-        if (wait == 0 || wait % 20 == 0) {
-            ESP_LOGI(TAG, "Buffering... %d bytes", (int)buffered);
-        }
         if (buffered >= 2048) {
             err = audio_stream_play_io(s_stream, io);
             if (err == ESP_OK) {
