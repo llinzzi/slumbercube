@@ -205,7 +205,7 @@ void app_main(void)
         }
 
         /* Poll station name from audio stream */
-        if (i < 10 || i % 15 == 0) {
+        if (i < 10 || i % 5 == 0) {
             const char *info = audio_get_station_name();
             if (info) {
                 clock_screen_set_station_name(info);
@@ -218,13 +218,16 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Time to sleep, turning off display");
 
+    /* Kill display and amp instantly so user sees/hears immediate shutdown.
+     * Audio cleanup (stopping the HTTP download task) takes a few seconds
+     * and must happen after these to avoid visible delay. */
+    ssd1322_display_off();
+    gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0);
+
 #if CONFIG_AUDIO_ENABLE
     audio_stop();
     audio_deinit();
 #endif
-
-    // Turn off display before deep sleep
-    ssd1322_display_off();
 
     // Drive RST low and hold through deep sleep to prevent SSD1322 from
     // exiting reset during wake transition (which causes white flash)
@@ -232,7 +235,6 @@ void app_main(void)
     gpio_hold_en(PIN_NUM_RST);
 
     // Hold NS4168 CTRL low through deep sleep to keep audio amp off
-    gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0);
     gpio_hold_en(CONFIG_PIN_NS4168_CTRL);
 
     /* Enable internal pull-up on wakeup GPIO for reliable deep-sleep wake */

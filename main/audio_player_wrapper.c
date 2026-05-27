@@ -3,10 +3,13 @@
 #include "audio_stream.h"
 #include "audio_http_stream.h"
 #include "esp_log.h"
+#include "esp_http_client.h"
+#include "cJSON.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <string.h>
 
 static const char *TAG = "AUDIO";
 
@@ -17,10 +20,18 @@ static bool s_i2s_ready = false;
 static bool s_mixer_ready = false;
 static const char *s_status = NULL;
 
+/* ── Radio config from /radio JSON API ─────────────────────── */
+static char s_radio_url[256] = {0};
+static char s_radio_station[64] = {0};
+static char s_radio_song[128] = {0};
+static int s_radio_volume_pct = -1;  /* -1 = not set, fallback to CONFIG */
+
+#define RADIO_API_URL "http://192.168.8.105:3000/radio"
+
 /* ── Software volume scale (16-bit stereo PCM) ──────────────── */
 static void apply_volume(void *buf, size_t len)
 {
-    int vol = CONFIG_AUDIO_VOLUME_PCT;
+    int vol = (s_radio_volume_pct >= 0) ? s_radio_volume_pct : CONFIG_AUDIO_VOLUME_PCT;
     if (vol >= 100) return;
 
     int16_t *samples = (int16_t *)buf;
@@ -87,7 +98,116 @@ static esp_err_t mute_fn(AUDIO_PLAYER_MUTE_SETTING setting)
 }
 
 /* ══════════════════════════════════════════════════════════════
- * Public API
+ * Radio JSON API
+ * ══════════════════════════════════════════════════════════════ */
+
+static esp_err_t audio_radio_fetch(void)
+{
+    char *resp_buf = malloc(1024);
+    if (!resp_buf) return ESP_ERR_NO_MEM;
+
+    int resp_len = 0;
+    esp_http_client_config_t cfg = {
+        .url = RADIO_API_URL,
+        .timeout_ms = 5000,
+        .buffer_size = 512,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        free(resp_buf);
+        ESP_LOGW(TAG, "Radio: HTTP init failed");
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Radio: HTTP open failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        free(resp_buf);
+        return err;
+    }
+
+    int ret = esp_http_client_fetch_headers(client);
+    if (ret < 0 && ret != -1) {
+        ESP_LOGW(TAG, "Radio: fetch headers failed");
+        esp_http_client_cleanup(client);
+        free(resp_buf);
+        return ESP_FAIL;
+    }
+
+    /* Read response body */
+    while (resp_len < 1023) {
+        int r = esp_http_client_read(client, resp_buf + resp_len, 1023 - resp_len);
+        if (r <= 0) break;
+        resp_len += r;
+    }
+    resp_buf[resp_len] = '\0';
+
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (status != 200 || resp_len == 0) {
+        ESP_LOGW(TAG, "Radio: HTTP %d, body=%d bytes", status, resp_len);
+        free(resp_buf);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Radio JSON: %s", resp_buf);
+
+    /* Parse JSON */
+    cJSON *root = cJSON_Parse(resp_buf);
+    if (!root) {
+        ESP_LOGW(TAG, "Radio: JSON parse failed");
+        free(resp_buf);
+        return ESP_FAIL;
+    }
+
+    cJSON *j_url    = cJSON_GetObjectItem(root, "url");
+    cJSON *j_name   = cJSON_GetObjectItem(root, "name");
+    cJSON *j_song   = cJSON_GetObjectItem(root, "song");
+    cJSON *j_volume = cJSON_GetObjectItem(root, "volume");
+
+    if (j_url && cJSON_IsString(j_url) && j_url->valuestring[0]) {
+        strncpy(s_radio_url, j_url->valuestring, sizeof(s_radio_url) - 1);
+        s_radio_url[sizeof(s_radio_url) - 1] = '\0';
+    }
+    if (j_name && cJSON_IsString(j_name)) {
+        strncpy(s_radio_station, j_name->valuestring, sizeof(s_radio_station) - 1);
+    }
+    if (j_song && cJSON_IsString(j_song)) {
+        strncpy(s_radio_song, j_song->valuestring, sizeof(s_radio_song) - 1);
+    }
+    if (j_volume && cJSON_IsNumber(j_volume)) {
+        double v = cJSON_GetNumberValue(j_volume);
+        /* Support both 0.0-1.0 (float) and 0-100 (integer/percentage) */
+        if (v >= 0.0 && v <= 1.0) {
+            s_radio_volume_pct = (int)(v * 100.0 + 0.5);
+        } else if (v > 1.0 && v <= 100.0) {
+            s_radio_volume_pct = (int)(v + 0.5);
+        } else {
+            s_radio_volume_pct = (int)v;
+        }
+        if (s_radio_volume_pct < 0)  s_radio_volume_pct = 0;
+        if (s_radio_volume_pct > 100) s_radio_volume_pct = 100;
+        ESP_LOGI(TAG, "Radio: volume=%.2f -> %d%%", v, s_radio_volume_pct);
+    }
+
+    cJSON_Delete(root);
+    free(resp_buf);
+
+    if (s_radio_url[0] == '\0') {
+        ESP_LOGW(TAG, "Radio: no URL in response");
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Radio: '%s' — '%s' -> %s",
+             s_radio_station, s_radio_song, s_radio_url);
+    return ESP_OK;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * Audio playback
  * ══════════════════════════════════════════════════════════════ */
 
 esp_err_t audio_init(void)
@@ -179,10 +299,13 @@ static esp_err_t audio_play_url_inner(const char *url)
 
     /* Open HTTP stream */
     audio_http_stream_config_t http_cfg = DEFAULT_AUDIO_HTTP_STREAM_CONFIG(url);
-    http_cfg.buffer_size      = 8 * 1024;
-    http_cfg.high_watermark   = 6 * 1024;
-    http_cfg.low_watermark    = 2 * 1024;
-    http_cfg.task_stack_size  = 3 * 1024;
+    http_cfg.buffer_size          = 6 * 1024;
+    http_cfg.high_watermark       = 4 * 1024;
+    http_cfg.low_watermark        = 1 * 1024;
+    http_cfg.task_stack_size      = 5 * 1024;
+    http_cfg.read_timeout_ms      = 5000;
+    http_cfg.reconnect_timeout_ms = 3000;
+    http_cfg.enable_auto_reconnect = true;
     s_http_stream = audio_http_stream_open(&http_cfg);
     if (!s_http_stream) {
         ESP_LOGE(TAG, "http_stream_open failed");
@@ -196,35 +319,55 @@ static esp_err_t audio_play_url_inner(const char *url)
         return err;
     }
 
-    /* Wait for initial buffer — timeout means connection failed */
-    for (int wait = 0; wait < 50; wait++) {
+    /* Wait for initial buffer — Icecast servers may burst-buffer for a few seconds
+     * before sending, so allow up to 15s. 2KB is enough for MP3 format detection. */
+    for (int wait = 0; wait < 150; wait++) {
         size_t buffered = audio_http_stream_get_buffered_bytes(s_http_stream);
-        if (buffered >= 4096) {
+        if (wait == 0 || wait % 20 == 0) {
+            ESP_LOGI(TAG, "Buffering... %d bytes", (int)buffered);
+        }
+        if (buffered >= 2048) {
             err = audio_stream_play_io(s_stream, io);
             if (err == ESP_OK) {
-                ESP_LOGI(TAG, "Playback started OK");
+                ESP_LOGI(TAG, "Playback started OK (%d bytes buffered)", (int)buffered);
             }
             return err;
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 
-    ESP_LOGW(TAG, "Timeout waiting for buffer, closing");
+    ESP_LOGW(TAG, "Timeout waiting for buffer (last: %d bytes)", (int)audio_http_stream_get_buffered_bytes(s_http_stream));
     audio_stop();
     s_status = "Network error";
     return ESP_ERR_TIMEOUT;
 }
 
-esp_err_t audio_play_url(const char *url)
+esp_err_t audio_play_url(const char *fallback_url)
 {
     if (!s_i2s_ready) {
         ESP_LOGE(TAG, "I2S not initialized");
         return ESP_ERR_INVALID_STATE;
     }
 
+    s_status = "Fetching radio...";
+
+    /* Fetch radio config from /radio API; fall back to fallback_url on failure */
+    if (audio_radio_fetch() != ESP_OK) {
+        ESP_LOGW(TAG, "Radio fetch failed, using fallback URL");
+        if (fallback_url && fallback_url[0]) {
+            strncpy(s_radio_url, fallback_url, sizeof(s_radio_url) - 1);
+        }
+    }
+
+    const char *play_url = s_radio_url[0] ? s_radio_url : fallback_url;
+    if (!play_url || !play_url[0]) {
+        ESP_LOGE(TAG, "No URL to play");
+        return ESP_ERR_INVALID_STATE;
+    }
+
     s_status = "Connecting...";
 
-    if (audio_play_url_inner(url) == ESP_OK) {
+    if (audio_play_url_inner(play_url) == ESP_OK) {
         s_status = "Streaming...";
         return ESP_OK;
     }
@@ -250,12 +393,15 @@ esp_err_t audio_stop(void)
 
 const char *audio_get_station_name(void)
 {
+    /* Priority: ICY stream title (live) > radio song (initial) > radio station > ICY name > status */
     if (s_http_stream) {
         const char *t = audio_http_stream_get_stream_title(s_http_stream);
         if (t) return t;
+        if (s_radio_song[0]) return s_radio_song;
         const char *n = audio_http_stream_get_icy_name(s_http_stream);
         if (n) return n;
     }
+    if (s_radio_station[0]) return s_radio_station;
     return s_status;
 }
 
