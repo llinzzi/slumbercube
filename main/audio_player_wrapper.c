@@ -210,23 +210,39 @@ static esp_err_t audio_radio_fetch(void)
 /* ── Poll /api/status for live song & volume ────────────────── */
 void audio_poll_status(void)
 {
+    static int fail_count = 0;
+    static int skip_until  = 0;
+
+    /* Back off on repeated failures to avoid log spam */
+    if (skip_until > 0) { skip_until--; return; }
+
     static char resp_buf[512];
     int resp_len = 0;
 
     esp_http_client_config_t cfg = {
         .url = STATUS_API_URL,
-        .timeout_ms = 3000,
+        .timeout_ms = 2000,
         .buffer_size = 256,
         .buffer_size_tx = 256,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) return;
+    if (!client) { fail_count++; return; }
 
     esp_err_t err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) { esp_http_client_cleanup(client); return; }
+    if (err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        fail_count++;
+        if (fail_count >= 3) skip_until = 6;  /* skip ~60s */
+        return;
+    }
 
     int ret = esp_http_client_fetch_headers(client);
-    if (ret < 0 && ret != -1) { esp_http_client_cleanup(client); return; }
+    if (ret < 0 && ret != -1) {
+        esp_http_client_cleanup(client);
+        fail_count++;
+        if (fail_count >= 3) skip_until = 6;
+        return;
+    }
 
     while (resp_len < (int)sizeof(resp_buf) - 1) {
         int r = esp_http_client_read(client, resp_buf + resp_len,
@@ -240,7 +256,13 @@ void audio_poll_status(void)
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
-    if (status != 200 || resp_len == 0) return;
+    if (status != 200 || resp_len == 0) {
+        fail_count++;
+        if (fail_count >= 3) skip_until = 6;
+        return;
+    }
+
+    fail_count = 0;  /* success resets counter */
 
     cJSON *root = cJSON_Parse(resp_buf);
     if (!root) return;
@@ -333,7 +355,7 @@ static esp_err_t audio_play_url_inner(const char *url)
         .mute_fn    = mute_fn,
         .clk_set_fn = i2s_reconfig_clk,
         .write_fn   = i2s_write,
-        .priority   = 5,
+        .priority   = 3,
         .coreID     = tskNO_AFFINITY,
         .i2s_format = {
             .sample_rate     = 44100,
@@ -362,6 +384,7 @@ static esp_err_t audio_play_url_inner(const char *url)
     http_cfg.high_watermark       = 4 * 1024;
     http_cfg.low_watermark        = 1 * 1024;
     http_cfg.task_stack_size      = 5 * 1024;
+    http_cfg.task_priority        = 4;
     http_cfg.read_timeout_ms      = 5000;
     http_cfg.reconnect_timeout_ms = 1000;
     http_cfg.enable_auto_reconnect = true;
