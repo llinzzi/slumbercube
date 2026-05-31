@@ -101,7 +101,7 @@ static esp_err_t mute_fn(AUDIO_PLAYER_MUTE_SETTING setting)
  * Radio JSON API
  * ══════════════════════════════════════════════════════════════ */
 
-static esp_err_t audio_radio_fetch(void)
+esp_err_t audio_radio_refresh(void)
 {
     char *resp_buf = malloc(1024);
     if (!resp_buf) return ESP_ERR_NO_MEM;
@@ -305,7 +305,7 @@ static esp_err_t audio_play_url_inner(const char *url)
     http_cfg.task_stack_size      = 5 * 1024;
     http_cfg.read_timeout_ms      = 5000;
     http_cfg.reconnect_timeout_ms = 1000;
-    http_cfg.enable_auto_reconnect = true;
+    http_cfg.enable_auto_reconnect = false;
     s_http_stream = audio_http_stream_open(&http_cfg);
     if (!s_http_stream) {
         ESP_LOGE(TAG, "http_stream_open failed");
@@ -349,7 +349,7 @@ esp_err_t audio_play_url(const char *fallback_url)
     s_status = "Fetching radio...";
 
     /* Fetch radio config from /radio API; fall back to fallback_url on failure */
-    if (audio_radio_fetch() != ESP_OK) {
+    if (audio_radio_refresh() != ESP_OK) {
         ESP_LOGW(TAG, "Radio fetch failed, using fallback URL");
         if (fallback_url && fallback_url[0]) {
             strncpy(s_radio_url, fallback_url, sizeof(s_radio_url) - 1);
@@ -392,9 +392,14 @@ bool audio_is_playing(void)
 {
     if (!s_http_stream) return false;
     audio_http_stream_state_t st = audio_http_stream_get_state(s_http_stream);
-    /* Treat ERROR as still alive — auto_reconnect will recover it */
     return (st != AUDIO_HTTP_STREAM_STATE_IDLE &&
             st != AUDIO_HTTP_STREAM_STATE_FINISHED);
+}
+
+bool audio_stream_ended(void)
+{
+    if (!s_http_stream) return false;
+    return audio_http_stream_get_state(s_http_stream) == AUDIO_HTTP_STREAM_STATE_FINISHED;
 }
 
 const char *audio_get_station_name(void)

@@ -204,7 +204,7 @@ void app_main(void)
             }
         }
 
-        /* Poll station name from audio stream */
+        /* Poll station name + refresh radio metadata */
         if (i < 10 || i % 5 == 0) {
             const char *info = audio_get_station_name();
             if (info) {
@@ -212,23 +212,13 @@ void app_main(void)
             }
         }
 
-        /* Re-fetch /radio + restart when stream dies.
-         * Wait 3 seconds of continuous "not playing" before restarting,
-         * to let the decoder drain its buffer after the HTTP download finishes. */
-        {
-            static int dead_since = -1;
-            if (s_audio_playing && !audio_is_playing()) {
-                if (dead_since < 0) dead_since = i;
-                if (i - dead_since >= 3) {
-                    ESP_LOGI(TAG, "Stream ended (%ds dead), fetching next song", i - dead_since);
-                    audio_stop();
-                    audio_play_url(CONFIG_AUDIO_MUSIC_URL);
-                    clock_screen_set_audio_indicator(true);
-                    dead_since = -1;
-                }
-            } else {
-                dead_since = -1;
-            }
+        /* When stream ends normally (FINISHED), re-fetch /radio for next song.
+         * Requires at least 30s of play time to avoid rapid cycling. */
+        if (s_audio_playing && audio_stream_ended() && i > 30) {
+            ESP_LOGI(TAG, "Stream finished, fetching next from /radio");
+            audio_stop();
+            audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+            clock_screen_set_audio_indicator(true);
         }
 #endif
 
