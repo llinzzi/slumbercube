@@ -9,6 +9,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/ringbuf.h"
+#include "lwip/sockets.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -17,14 +18,15 @@ static const char *TAG = "AUDIO";
 static i2s_chan_handle_t s_i2s_tx_chan = NULL;
 static audio_stream_handle_t s_stream = NULL;
 static audio_stream_io_handle_t s_io = NULL;
-static esp_http_client_handle_t s_http_client = NULL;
+static int s_http_sock = -1;
 static RingbufHandle_t s_data_rb = NULL;
 static bool s_i2s_ready = false;
 static bool s_mixer_ready = false;
 static volatile bool s_track_done = false;
 static volatile bool s_http_eof = false;
 static bool s_play_attempted = false;
-static int s_content_length = -1;
+static TaskHandle_t s_feeder_task = NULL;
+static void feeder_task(void *arg);
 
 /* ── Playlist state ──────────────────────────────────────────── */
 #define MAX_TRACKS 80
@@ -262,7 +264,7 @@ void audio_deinit(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
- * Track download + playback via esp_http_client directly
+ * Track download via raw TCP socket (HTTP/1.0, no chunked)
  * ══════════════════════════════════════════════════════════════ */
 
 static esp_err_t track_open(const char *url)
@@ -271,65 +273,116 @@ static esp_err_t track_open(const char *url)
 
     ESP_LOGI(TAG, "Open: %s", url);
 
-    /* Ring buffer between HTTP read and audio decoder */
-    s_data_rb = xRingbufferCreate(8 * 1024, RINGBUF_TYPE_BYTEBUF);
-    if (!s_data_rb) return ESP_ERR_NO_MEM;
+    /* Parse host + path from URL like http://host:port/path */
+    const char *host_start = strstr(url, "://");
+    if (!host_start) return ESP_FAIL;
+    host_start += 3;
+    const char *port_start = strchr(host_start, ':');
+    const char *path_start = strchr(host_start, '/');
+    char host[64] = {0};
+    int port = 80;
 
-    esp_http_client_config_t cfg = {
-        .url = url,
-        .timeout_ms = 10000,
-        .keep_alive_enable = false,
-    };
-    s_http_client = esp_http_client_init(&cfg);
-    if (!s_http_client) { vRingbufferDelete(s_data_rb); s_data_rb = NULL; return ESP_FAIL; }
+    if (port_start && (!path_start || port_start < path_start)) {
+        size_t hlen = port_start - host_start;
+        if (hlen >= sizeof(host)) hlen = sizeof(host) - 1;
+        memcpy(host, host_start, hlen);
+        port = atoi(port_start + 1);
+    } else if (path_start) {
+        size_t hlen = path_start - host_start;
+        if (hlen >= sizeof(host)) hlen = sizeof(host) - 1;
+        memcpy(host, host_start, hlen);
+    } else {
+        strncpy(host, host_start, sizeof(host) - 1);
+    }
+    if (!path_start) path_start = "/";
 
-    esp_err_t err = esp_http_client_open(s_http_client, 0);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "HTTP open failed: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(s_http_client); s_http_client = NULL;
-        vRingbufferDelete(s_data_rb); s_data_rb = NULL;
-        return err;
+    ESP_LOGI(TAG, "Connecting to %s:%d", host, port);
+
+    /* TCP connect */
+    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(port) };
+    inet_aton(host, &addr.sin_addr);
+    s_http_sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (s_http_sock < 0) { ESP_LOGE(TAG, "socket failed"); return ESP_FAIL; }
+
+    struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
+    setsockopt(s_http_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
+    if (connect(s_http_sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
+        ESP_LOGE(TAG, "connect failed");
+        close(s_http_sock); s_http_sock = -1;
+        return ESP_FAIL;
     }
 
-    int clen = esp_http_client_fetch_headers(s_http_client);
-    s_content_length = clen;
+    /* Send HTTP/1.0 request (no chunked encoding in response) */
+    char req[512];
+    int reqlen = snprintf(req, sizeof(req),
+        "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",
+        path_start, host);
+    send(s_http_sock, req, reqlen, 0);
+
+    /* Read response headers to skip them */
+    char header_buf[1024] = {0};
+    int hdr_len = 0;
+    while (hdr_len < 1023) {
+        int r = recv(s_http_sock, header_buf + hdr_len, 1, 0);
+        if (r <= 0) { close(s_http_sock); s_http_sock = -1; ESP_LOGE(TAG, "header read fail"); return ESP_FAIL; }
+        hdr_len++;
+        if (hdr_len >= 4 && memcmp(header_buf + hdr_len - 4, "\r\n\r\n", 4) == 0) break;
+    }
+    header_buf[hdr_len] = 0;
+
+    /* Log first line of response */
+    char *first_line_end = strstr(header_buf, "\r\n");
+    if (first_line_end) *first_line_end = 0;
+    ESP_LOGI(TAG, "HTTP: %s", header_buf);
+
+    /* Create ring buffer */
+    s_data_rb = xRingbufferCreate(6 * 1024, RINGBUF_TYPE_BYTEBUF);
+    if (!s_data_rb) { close(s_http_sock); s_http_sock = -1; return ESP_ERR_NO_MEM; }
+
     s_http_eof = false;
     s_play_attempted = false;
-    ESP_LOGI(TAG, "HTTP connected, Content-Length=%d", clen);
+
+    /* Spawn feeder task to read socket -> ring buffer */
+    xTaskCreatePinnedToCore(feeder_task, "audio_feed", 3*1024, NULL, 6, &s_feeder_task, tskNO_AFFINITY);
 
     return ESP_OK;
 }
 
 static void track_close(void)
 {
-    if (s_http_client) {
-        esp_http_client_close(s_http_client);
-        esp_http_client_cleanup(s_http_client);
-        s_http_client = NULL;
-    }
     s_http_eof = true;
-    s_content_length = -1;
+    if (s_feeder_task) { vTaskDelay(pdMS_TO_TICKS(50)); s_feeder_task = NULL; }
+    if (s_http_sock >= 0) { close(s_http_sock); s_http_sock = -1; }
 }
 
-/* Feed data from HTTP client into ring buffer. Returns true if data was read. */
-static bool track_feed(void)
+/* Feeder task: read from socket, write to ring buffer (pure MP3, no chunked) */
+static void feeder_task(void *arg)
 {
-    if (!s_http_client || s_http_eof) return false;
-
-    uint8_t buf[1024];
-    int r = esp_http_client_read(s_http_client, (char *)buf, sizeof(buf));
-    if (r > 0) {
-        xRingbufferSend(s_data_rb, buf, r, pdMS_TO_TICKS(100));
-        return true;
-    } else if (r == 0) {
-        ESP_LOGI(TAG, "Track download complete (%d bytes)", s_content_length);
-        track_close();
-        return false;
-    } else {
-        ESP_LOGW(TAG, "HTTP read error: %d", r);
-        track_close();
-        return false;
+    while (s_http_sock >= 0 && !s_http_eof) {
+        uint8_t buf[1024];
+        int r = recv(s_http_sock, buf, sizeof(buf), 0);
+        if (r > 0) {
+            /* Block until space available — never drop data */
+            while (xRingbufferSend(s_data_rb, buf, r, pdMS_TO_TICKS(500)) != pdTRUE) {
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+        } else if (r == 0) {
+            ESP_LOGI(TAG, "Download complete");
+            s_http_eof = true;
+            break;
+        } else {
+            if (errno != EAGAIN && errno != EWOULDBLOCK) {
+                ESP_LOGW(TAG, "recv error: %d", errno);
+                s_http_eof = true;
+                break;
+            }
+        }
+        vTaskDelay(pdMS_TO_TICKS(5));
     }
+    if (s_http_sock >= 0) { close(s_http_sock); s_http_sock = -1; }
+    s_feeder_task = NULL;
+    vTaskDelete(NULL);
 }
 
 static esp_err_t track_play(void)
@@ -380,42 +433,32 @@ esp_err_t audio_play_url(const char *url)
 
 void audio_service(void)
 {
-    /* Feed data from HTTP to ring buffer while downloading */
-    if (s_http_client && !s_http_eof) {
-        int fed = 0;
-        while (fed < 8) {  /* read up to 8KB per service call */
-            if (!track_feed()) break;
-            fed++;
-        }
-    }
-
     /* Try to start playback once enough data is buffered */
-    if (s_data_rb && !s_play_attempted && !s_http_eof) {
+    if (s_data_rb && !s_play_attempted) {
         UBaseType_t bytes_avail = 0;
         vRingbufferGetInfo(s_data_rb, NULL, NULL, NULL, NULL, &bytes_avail);
         if (bytes_avail >= 2048) {
             s_play_attempted = true;
             if (track_play() != ESP_OK) {
-                ESP_LOGE(TAG, "track_play failed, will retry next track");
+                ESP_LOGE(TAG, "track_play failed, skip");
+                s_track_done = true;  /* force skip to next */
             }
         }
     }
 
-    /* Track end (EOF + decoder drained) */
+    /* Track ended normally (EOF + decoder drained) or play failed */
     if (s_track_done) {
         s_track_done = false;
         audio_stop();
         s_current_track++;
         vTaskDelay(pdMS_TO_TICKS(300));
     } else if (s_http_eof && !s_stream && !s_track_done) {
-        /* HTTP download finished but decoder never started or stopped */
-        /* Skip to next track */
         s_track_retry = 0;
         audio_stop();
         s_current_track++;
         vTaskDelay(pdMS_TO_TICKS(300));
     } else {
-        return;  /* nothing to do */
+        return;
     }
 
     if (s_current_track >= s_track_count) {
@@ -446,5 +489,5 @@ const char *audio_get_station_name(void)
 
 bool audio_is_playing(void)
 {
-    return s_http_client != NULL || s_stream != NULL;
+    return s_http_sock >= 0 || s_stream != NULL;
 }
