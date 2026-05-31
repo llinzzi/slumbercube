@@ -1,6 +1,7 @@
 #include "audio_player_wrapper.h"
 #include "audio_mixer.h"
 #include "audio_stream.h"
+#include "audio_http_stream.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "cJSON.h"
@@ -9,7 +10,6 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/ringbuf.h"
-#include "lwip/sockets.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -17,16 +17,9 @@ static const char *TAG = "AUDIO";
 
 static i2s_chan_handle_t s_i2s_tx_chan = NULL;
 static audio_stream_handle_t s_stream = NULL;
-static audio_stream_io_handle_t s_io = NULL;
-static int s_http_sock = -1;
-static RingbufHandle_t s_data_rb = NULL;
 static bool s_i2s_ready = false;
 static bool s_mixer_ready = false;
 static volatile bool s_track_done = false;
-static volatile bool s_http_eof = false;
-static bool s_play_attempted = false;
-static TaskHandle_t s_feeder_task = NULL;
-static void feeder_task(void *arg);
 
 /* ── Playlist state ──────────────────────────────────────────── */
 #define MAX_TRACKS 80
@@ -39,7 +32,6 @@ typedef struct {
 static track_t *s_tracks = NULL;
 static int s_track_count = 0;
 static int s_current_track = -1;
-static int s_track_retry = 0;
 static char s_playlist_url[256] = {0};
 static char s_radio_name[64] = {0};
 
@@ -76,6 +68,8 @@ static uint32_t s_last_rate = 0, s_last_bits = 0, s_last_ch = 0;
 static esp_err_t i2s_reconfig_clk(uint32_t rate, uint32_t bits_cfg, i2s_slot_mode_t ch)
 {
     uint32_t nch = (ch == I2S_SLOT_MODE_STEREO) ? 2 : 1;
+    /* Ignore invalid sample rates from false MP3 frame headers */
+    if (rate < 8000 || rate > 96000) return ESP_OK;
     if (rate == s_last_rate && bits_cfg == s_last_bits && nch == s_last_ch) return ESP_OK;
     s_last_rate = rate; s_last_bits = bits_cfg; s_last_ch = nch;
     i2s_channel_disable(s_i2s_tx_chan);
@@ -98,41 +92,6 @@ static void mixer_callback(audio_player_cb_ctx_t *ctx)
     if (ctx && ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_IDLE)
         s_track_done = true;
 }
-
-/* ── Stream I/O: read from ring buffer ───────────────────────── */
-static size_t rb_read(void *ctx, void *buf, size_t size)
-{
-    RingbufHandle_t rb = (RingbufHandle_t)ctx;
-    size_t got = 0;
-    void *item = xRingbufferReceiveUpTo(rb, &got, pdMS_TO_TICKS(200), size);
-    if (item && got > 0) {
-        memcpy(buf, item, got);
-        vRingbufferReturnItem(rb, item);
-        return got;
-    }
-    if (item) vRingbufferReturnItem(rb, item);
-    if (s_http_eof && got == 0) return 0;  /* true EOF */
-    return got;
-}
-
-static int rb_eof(void *ctx)
-{
-    (void)ctx;
-    /* Only report EOF when HTTP finished AND ring buffer is empty */
-    if (!s_http_eof) return 0;
-    UBaseType_t waiting = 0;
-    vRingbufferGetInfo(s_data_rb, NULL, NULL, NULL, NULL, &waiting);
-    return waiting == 0;
-}
-
-static int rb_seek(void *ctx, long offset, int whence) { return -1; }
-static long rb_tell(void *ctx) { return -1; }
-static void rb_close(void *ctx) { }
-
-static const audio_stream_io_ops_t s_rb_ops = {
-    .read = rb_read, .seek = rb_seek, .tell = rb_tell,
-    .eof = rb_eof, .close = rb_close
-};
 
 /* ══════════════════════════════════════════════════════════════
  * Radio JSON API
@@ -264,131 +223,80 @@ void audio_deinit(void)
 }
 
 /* ══════════════════════════════════════════════════════════════
- * Track download via raw TCP socket (HTTP/1.0, no chunked)
+ * Track playback: esp_http_client in main task + feeder task
  * ══════════════════════════════════════════════════════════════ */
+
+static esp_http_client_handle_t s_http_client = NULL;
+static RingbufHandle_t s_data_rb = NULL;
+static volatile bool s_http_eof = false;
+static TaskHandle_t s_feeder_task = NULL;
+
+static void feeder_task(void *arg);
+
+/* Stream I/O: decoder reads from ring buffer */
+static size_t rb_read(void *ctx, void *buf, size_t size)
+{
+    RingbufHandle_t rb = (RingbufHandle_t)ctx;
+    size_t got = 0;
+    void *item = xRingbufferReceiveUpTo(rb, &got, pdMS_TO_TICKS(200), size);
+    if (item) { memcpy(buf, item, got); vRingbufferReturnItem(rb, item); return got; }
+    return 0;
+}
+static int rb_eof(void *ctx) { (void)ctx; return s_http_eof; }
+static int rb_seek(void *ctx, long o, int w) { return -1; }
+static long rb_tell(void *ctx) { return -1; }
+static void rb_close(void *ctx) {}
+static const audio_stream_io_ops_t s_rb_ops = {
+    .read = rb_read, .seek = rb_seek, .tell = rb_tell, .eof = rb_eof, .close = rb_close
+};
 
 static esp_err_t track_open(const char *url)
 {
     audio_stop();
 
-    ESP_LOGI(TAG, "Open: %s", url);
+    ESP_LOGI(TAG, "Stream: %s", url);
 
-    /* Parse host + path from URL like http://host:port/path */
-    const char *host_start = strstr(url, "://");
-    if (!host_start) return ESP_FAIL;
-    host_start += 3;
-    const char *port_start = strchr(host_start, ':');
-    const char *path_start = strchr(host_start, '/');
-    char host[64] = {0};
-    int port = 80;
+    /* Connect via esp_http_client in main task (works on all APs) */
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .timeout_ms = 10000,
+        .keep_alive_enable = false,
+    };
+    s_http_client = esp_http_client_init(&cfg);
+    if (!s_http_client) return ESP_FAIL;
 
-    if (port_start && (!path_start || port_start < path_start)) {
-        size_t hlen = port_start - host_start;
-        if (hlen >= sizeof(host)) hlen = sizeof(host) - 1;
-        memcpy(host, host_start, hlen);
-        port = atoi(port_start + 1);
-    } else if (path_start) {
-        size_t hlen = path_start - host_start;
-        if (hlen >= sizeof(host)) hlen = sizeof(host) - 1;
-        memcpy(host, host_start, hlen);
-    } else {
-        strncpy(host, host_start, sizeof(host) - 1);
+    esp_err_t err = esp_http_client_open(s_http_client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "HTTP open: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(s_http_client); s_http_client = NULL;
+        return err;
     }
-    if (!path_start) path_start = "/";
 
-    ESP_LOGI(TAG, "Connecting to %s:%d", host, port);
+    int clen = esp_http_client_fetch_headers(s_http_client);
+    ESP_LOGI(TAG, "HTTP connected, len=%d", clen);
 
-    /* TCP connect */
-    struct sockaddr_in addr = { .sin_family = AF_INET, .sin_port = htons(port) };
-    inet_aton(host, &addr.sin_addr);
-    s_http_sock = socket(AF_INET, SOCK_STREAM, 0);
-    if (s_http_sock < 0) { ESP_LOGE(TAG, "socket failed"); return ESP_FAIL; }
-
-    struct timeval tv = { .tv_sec = 10, .tv_usec = 0 };
-    setsockopt(s_http_sock, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
-
-    if (connect(s_http_sock, (struct sockaddr *)&addr, sizeof(addr)) != 0) {
-        ESP_LOGE(TAG, "connect failed");
-        close(s_http_sock); s_http_sock = -1;
+    /* Create audio decoder FIRST (largest alloc, needs heap room) */
+    audio_stream_config_t scfg = DEFAULT_AUDIO_STREAM_CONFIG("track");
+    s_stream = audio_stream_new(&scfg);
+    if (!s_stream) {
+        ESP_LOGE(TAG, "stream_new failed");
+        esp_http_client_close(s_http_client);
+        esp_http_client_cleanup(s_http_client);
+        s_http_client = NULL;
         return ESP_FAIL;
     }
 
-    /* Send HTTP/1.0 request (no chunked encoding in response) */
-    char req[512];
-    int reqlen = snprintf(req, sizeof(req),
-        "GET %s HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n",
-        path_start, host);
-    send(s_http_sock, req, reqlen, 0);
-
-    /* Read response headers to skip them */
-    char header_buf[1024] = {0};
-    int hdr_len = 0;
-    while (hdr_len < 1023) {
-        int r = recv(s_http_sock, header_buf + hdr_len, 1, 0);
-        if (r <= 0) { close(s_http_sock); s_http_sock = -1; ESP_LOGE(TAG, "header read fail"); return ESP_FAIL; }
-        hdr_len++;
-        if (hdr_len >= 4 && memcmp(header_buf + hdr_len - 4, "\r\n\r\n", 4) == 0) break;
-    }
-    header_buf[hdr_len] = 0;
-
-    /* Log first line of response */
-    char *first_line_end = strstr(header_buf, "\r\n");
-    if (first_line_end) *first_line_end = 0;
-    ESP_LOGI(TAG, "HTTP: %s", header_buf);
-
-    /* Create ring buffer */
+    /* Ring buffer: HTTP read → decoder */
     s_data_rb = xRingbufferCreate(6 * 1024, RINGBUF_TYPE_BYTEBUF);
-    if (!s_data_rb) { close(s_http_sock); s_http_sock = -1; return ESP_ERR_NO_MEM; }
-
-    s_http_eof = false;
-    s_play_attempted = false;
-
-    /* Spawn feeder task to read socket -> ring buffer */
-    xTaskCreatePinnedToCore(feeder_task, "audio_feed", 3*1024, NULL, 6, &s_feeder_task, tskNO_AFFINITY);
-
-    return ESP_OK;
-}
-
-static void track_close(void)
-{
-    s_http_eof = true;
-    if (s_feeder_task) { vTaskDelay(pdMS_TO_TICKS(50)); s_feeder_task = NULL; }
-    if (s_http_sock >= 0) { close(s_http_sock); s_http_sock = -1; }
-}
-
-/* Feeder task: read from socket, write to ring buffer (pure MP3, no chunked) */
-static void feeder_task(void *arg)
-{
-    while (s_http_sock >= 0 && !s_http_eof) {
-        uint8_t buf[1024];
-        int r = recv(s_http_sock, buf, sizeof(buf), 0);
-        if (r > 0) {
-            /* Block until space available — never drop data */
-            while (xRingbufferSend(s_data_rb, buf, r, pdMS_TO_TICKS(500)) != pdTRUE) {
-                vTaskDelay(pdMS_TO_TICKS(10));
-            }
-        } else if (r == 0) {
-            ESP_LOGI(TAG, "Download complete");
-            s_http_eof = true;
-            break;
-        } else {
-            if (errno != EAGAIN && errno != EWOULDBLOCK) {
-                ESP_LOGW(TAG, "recv error: %d", errno);
-                s_http_eof = true;
-                break;
-            }
-        }
-        vTaskDelay(pdMS_TO_TICKS(5));
+    if (!s_data_rb) {
+        audio_stream_delete(s_stream); s_stream = NULL;
+        esp_http_client_close(s_http_client);
+        esp_http_client_cleanup(s_http_client);
+        s_http_client = NULL;
+        return ESP_ERR_NO_MEM;
     }
-    if (s_http_sock >= 0) { close(s_http_sock); s_http_sock = -1; }
-    s_feeder_task = NULL;
-    vTaskDelete(NULL);
-}
 
-static esp_err_t track_play(void)
-{
-    if (!s_data_rb) return ESP_ERR_INVALID_STATE;
-
+    /* Init mixer */
     audio_mixer_config_t mixer_cfg = {
         .mute_fn = mute_fn, .clk_set_fn = i2s_reconfig_clk, .write_fn = i2s_write,
         .priority = 5, .coreID = tskNO_AFFINITY,
@@ -398,17 +306,54 @@ static esp_err_t track_play(void)
     s_mixer_ready = true;
     audio_mixer_callback_register(mixer_callback);
 
-    audio_stream_config_t scfg = DEFAULT_AUDIO_STREAM_CONFIG("track");
-    s_stream = audio_stream_new(&scfg);
-    if (!s_stream) return ESP_FAIL;
+    /* Create stream IO wrapping the ring buffer */
+    audio_stream_io_handle_t io = audio_stream_io_create(&s_rb_ops, s_data_rb);
+    if (!io) {
+        ESP_LOGE(TAG, "io_create failed");
+        audio_stop();
+        return ESP_FAIL;
+    }
 
-    s_io = audio_stream_io_create(&s_rb_ops, s_data_rb);
-    if (!s_io) return ESP_FAIL;
-
+    /* Start playback immediately — decoder will wait for data */
     s_track_done = false;
-    esp_err_t err = audio_stream_play_io(s_stream, s_io);
-    if (err == ESP_OK) ESP_LOGI(TAG, "Track playing");
-    return err;
+    if (audio_stream_play_io(s_stream, io) != ESP_OK) {
+        ESP_LOGE(TAG, "play_io failed");
+        audio_stop();
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "Track playing");
+
+    s_http_eof = false;
+
+    /* Background feeder: esp_http_client_read → ring buffer */
+    xTaskCreatePinnedToCore(feeder_task, "audio_feed", 3*1024, NULL, 6, &s_feeder_task, tskNO_AFFINITY);
+
+    return ESP_OK;
+}
+
+static void feeder_task(void *arg)
+{
+    while (!s_http_eof && s_http_client) {
+        uint8_t buf[1024];
+        int r = esp_http_client_read(s_http_client, (char *)buf, sizeof(buf));
+        if (r > 0) {
+            while (xRingbufferSend(s_data_rb, buf, r, pdMS_TO_TICKS(500)) != pdTRUE) {
+                if (s_http_eof) break;
+                vTaskDelay(pdMS_TO_TICKS(10));
+            }
+        } else if (r == 0) {
+            s_http_eof = true;
+        } else {
+            s_http_eof = true;
+        }
+    }
+    if (s_http_client) {
+        esp_http_client_close(s_http_client);
+        esp_http_client_cleanup(s_http_client);
+        s_http_client = NULL;
+    }
+    s_feeder_task = NULL;
+    vTaskDelete(NULL);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -433,27 +378,9 @@ esp_err_t audio_play_url(const char *url)
 
 void audio_service(void)
 {
-    /* Try to start playback once enough data is buffered */
-    if (s_data_rb && !s_play_attempted) {
-        UBaseType_t bytes_avail = 0;
-        vRingbufferGetInfo(s_data_rb, NULL, NULL, NULL, NULL, &bytes_avail);
-        if (bytes_avail >= 2048) {
-            s_play_attempted = true;
-            if (track_play() != ESP_OK) {
-                ESP_LOGE(TAG, "track_play failed, skip");
-                s_track_done = true;  /* force skip to next */
-            }
-        }
-    }
-
-    /* Track ended normally (EOF + decoder drained) or play failed */
+    /* Track ended normally (EOF from mixer callback) */
     if (s_track_done) {
         s_track_done = false;
-        audio_stop();
-        s_current_track++;
-        vTaskDelay(pdMS_TO_TICKS(300));
-    } else if (s_http_eof && !s_stream && !s_track_done) {
-        s_track_retry = 0;
         audio_stop();
         s_current_track++;
         vTaskDelay(pdMS_TO_TICKS(300));
@@ -466,28 +393,29 @@ void audio_service(void)
         if (radio_fetch() == ESP_OK && playlist_fetch() == ESP_OK) s_current_track = 0;
         else s_current_track = 0;
     }
-    ESP_LOGI(TAG, "Next [%d/%d]: %s", s_current_track+1, s_track_count, s_tracks[s_current_track].name);
+    ESP_LOGI(TAG, "Next [%d/%d]", s_current_track+1, s_track_count);
     track_open(s_tracks[s_current_track].url);
 }
 
 esp_err_t audio_stop(void)
 {
-    track_close();
-    if (s_io) { audio_stream_io_close(s_io); s_io = NULL; }
+    s_http_eof = true;
     if (s_stream) { audio_stream_stop(s_stream); audio_stream_delete(s_stream); s_stream = NULL; }
+    for (int i = 0; i < 50; i++) { if (!s_feeder_task) break; vTaskDelay(pdMS_TO_TICKS(10)); }
+    if (s_http_client) { esp_http_client_close(s_http_client); esp_http_client_cleanup(s_http_client); s_http_client = NULL; }
     if (s_data_rb) { vRingbufferDelete(s_data_rb); s_data_rb = NULL; }
     return ESP_OK;
 }
 
 const char *audio_get_station_name(void)
 {
-    if (s_current_track >= 0 && s_current_track < s_track_count)
+    if (s_current_track >= 0 && s_current_track < s_track_count && s_tracks[s_current_track].name)
         return s_tracks[s_current_track].name;
     if (s_radio_name[0]) return s_radio_name;
-    return NULL;
+    return s_tracks[s_current_track].url;
 }
 
 bool audio_is_playing(void)
 {
-    return s_http_sock >= 0 || s_stream != NULL;
+    return s_http_client != NULL || s_stream != NULL;
 }
