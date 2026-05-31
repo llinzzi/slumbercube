@@ -150,9 +150,11 @@ void app_main(void)
     }
 
 #if CONFIG_AUDIO_ENABLE
-    /* Start radio playlist playback (non-blocking). Skip in night mode. */
+    /* Start audio playback (non-blocking: mixer + decoder + HTTP tasks run in background).
+     * Skip in night mode since WiFi is not available. */
     if (!clock_screen_is_night_time()) {
-        if (audio_init() == ESP_OK && audio_play_radio() == ESP_OK) {
+        if (audio_init() == ESP_OK) {
+            audio_play_url(CONFIG_AUDIO_MUSIC_URL);
             s_audio_playing = true;
         }
     }
@@ -180,14 +182,17 @@ void app_main(void)
                 wifi_ensure_netif();
                 if (wifi_init_sta() == ESP_OK) {
                     clock_screen_set_station_name("Starting audio...");
-                    if (audio_init() == ESP_OK && audio_play_radio() == ESP_OK) {
+                    if (audio_init() == ESP_OK) {
+                        audio_play_url(CONFIG_AUDIO_MUSIC_URL);
                         clock_screen_set_audio_indicator(true);
                         s_audio_playing = true;
                     }
                 } else {
+                    /* wifi_init_sta timed out — check if it connected just after timeout */
                     if (wifi_is_connected()) {
                         clock_screen_set_station_name("Starting audio...");
-                        if (audio_init() == ESP_OK && audio_play_radio() == ESP_OK) {
+                        if (audio_init() == ESP_OK) {
+                            audio_play_url(CONFIG_AUDIO_MUSIC_URL);
                             clock_screen_set_audio_indicator(true);
                             s_audio_playing = true;
                         }
@@ -199,9 +204,12 @@ void app_main(void)
             }
         }
 
-        /* Service audio: advance tracks, update display */
-        audio_service();
+        /* Poll /api/status for live song & volume */
+        if (i >= 2 && i % 10 == 0) {
+            audio_poll_status();
+        }
 
+        /* Poll station name from audio stream */
         if (i < 10 || i % 5 == 0) {
             const char *info = audio_get_station_name();
             if (info) {
