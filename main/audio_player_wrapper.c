@@ -210,34 +210,27 @@ static esp_err_t audio_radio_fetch(void)
 /* ── Poll /api/status for live song & volume ────────────────── */
 void audio_poll_status(void)
 {
-    char *resp_buf = malloc(1024);
-    if (!resp_buf) return;
-
+    static char resp_buf[512];
     int resp_len = 0;
+
     esp_http_client_config_t cfg = {
         .url = STATUS_API_URL,
         .timeout_ms = 3000,
-        .buffer_size = 512,
+        .buffer_size = 256,
+        .buffer_size_tx = 256,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) { free(resp_buf); return; }
+    if (!client) return;
 
     esp_err_t err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) {
-        esp_http_client_cleanup(client);
-        free(resp_buf);
-        return;
-    }
+    if (err != ESP_OK) { esp_http_client_cleanup(client); return; }
 
     int ret = esp_http_client_fetch_headers(client);
-    if (ret < 0 && ret != -1) {
-        esp_http_client_cleanup(client);
-        free(resp_buf);
-        return;
-    }
+    if (ret < 0 && ret != -1) { esp_http_client_cleanup(client); return; }
 
-    while (resp_len < 1023) {
-        int r = esp_http_client_read(client, resp_buf + resp_len, 1023 - resp_len);
+    while (resp_len < (int)sizeof(resp_buf) - 1) {
+        int r = esp_http_client_read(client, resp_buf + resp_len,
+                                     sizeof(resp_buf) - 1 - resp_len);
         if (r <= 0) break;
         resp_len += r;
     }
@@ -247,10 +240,10 @@ void audio_poll_status(void)
     esp_http_client_close(client);
     esp_http_client_cleanup(client);
 
-    if (status != 200 || resp_len == 0) { free(resp_buf); return; }
+    if (status != 200 || resp_len == 0) return;
 
     cJSON *root = cJSON_Parse(resp_buf);
-    if (!root) { free(resp_buf); return; }
+    if (!root) return;
 
     cJSON *j_song   = cJSON_GetObjectItem(root, "song");
     cJSON *j_volume = cJSON_GetObjectItem(root, "volume");
@@ -270,7 +263,6 @@ void audio_poll_status(void)
     }
 
     cJSON_Delete(root);
-    free(resp_buf);
 }
 
 /* ══════════════════════════════════════════════════════════════
