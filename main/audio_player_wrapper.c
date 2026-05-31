@@ -392,9 +392,9 @@ bool audio_is_playing(void)
 {
     if (!s_http_stream) return false;
     audio_http_stream_state_t st = audio_http_stream_get_state(s_http_stream);
-    return (st == AUDIO_HTTP_STREAM_STATE_CONNECTING ||
-            st == AUDIO_HTTP_STREAM_STATE_BUFFERING ||
-            st == AUDIO_HTTP_STREAM_STATE_PLAYING);
+    /* Treat ERROR as still alive — auto_reconnect will recover it */
+    return (st != AUDIO_HTTP_STREAM_STATE_IDLE &&
+            st != AUDIO_HTTP_STREAM_STATE_FINISHED);
 }
 
 const char *audio_get_station_name(void)

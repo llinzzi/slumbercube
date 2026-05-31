@@ -212,15 +212,22 @@ void app_main(void)
             }
         }
 
-        /* Re-fetch /radio + restart when stream dies (with 30s cooldown) */
+        /* Re-fetch /radio + restart when stream dies.
+         * Wait 3 seconds of continuous "not playing" before restarting,
+         * to let the decoder drain its buffer after the HTTP download finishes. */
         {
-            static int restart_at = 0;
-            if (s_audio_playing && !audio_is_playing() && i >= restart_at) {
-                ESP_LOGI(TAG, "Stream ended, fetching next song");
-                audio_stop();
-                audio_play_url(CONFIG_AUDIO_MUSIC_URL);
-                clock_screen_set_audio_indicator(true);
-                restart_at = i + 30;  /* at least 30s cooldown before next restart */
+            static int dead_since = -1;
+            if (s_audio_playing && !audio_is_playing()) {
+                if (dead_since < 0) dead_since = i;
+                if (i - dead_since >= 3) {
+                    ESP_LOGI(TAG, "Stream ended (%ds dead), fetching next song", i - dead_since);
+                    audio_stop();
+                    audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+                    clock_screen_set_audio_indicator(true);
+                    dead_since = -1;
+                }
+            } else {
+                dead_since = -1;
             }
         }
 #endif
