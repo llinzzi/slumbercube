@@ -204,21 +204,15 @@ void app_main(void)
             }
         }
 
-        /* Poll station name + refresh radio metadata */
+        /* Poll station name + refresh radio metadata every 60s */
+        if (i % 60 == 0 && i > 0) {
+            audio_radio_refresh();
+        }
         if (i < 10 || i % 5 == 0) {
             const char *info = audio_get_station_name();
             if (info) {
                 clock_screen_set_station_name(info);
             }
-        }
-
-        /* When stream ends normally (FINISHED), re-fetch /radio for next song.
-         * Requires at least 30s of play time to avoid rapid cycling. */
-        if (s_audio_playing && audio_stream_ended() && i > 30) {
-            ESP_LOGI(TAG, "Stream finished, fetching next from /radio");
-            audio_stop();
-            audio_play_url(CONFIG_AUDIO_MUSIC_URL);
-            clock_screen_set_audio_indicator(true);
         }
 #endif
 

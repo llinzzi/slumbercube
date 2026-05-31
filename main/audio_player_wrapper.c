@@ -305,7 +305,7 @@ static esp_err_t audio_play_url_inner(const char *url)
     http_cfg.task_stack_size      = 5 * 1024;
     http_cfg.read_timeout_ms      = 5000;
     http_cfg.reconnect_timeout_ms = 1000;
-    http_cfg.enable_auto_reconnect = false;
+    http_cfg.enable_auto_reconnect = true;
     s_http_stream = audio_http_stream_open(&http_cfg);
     if (!s_http_stream) {
         ESP_LOGE(TAG, "http_stream_open failed");
