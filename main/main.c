@@ -150,11 +150,9 @@ void app_main(void)
     }
 
 #if CONFIG_AUDIO_ENABLE
-    /* Start audio playback (non-blocking: mixer + decoder + HTTP tasks run in background).
-     * Skip in night mode since WiFi is not available. */
+    /* Start radio playlist playback (non-blocking). Skip in night mode. */
     if (!clock_screen_is_night_time()) {
-        if (audio_init() == ESP_OK) {
-            audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+        if (audio_init() == ESP_OK && audio_play_radio() == ESP_OK) {
             s_audio_playing = true;
         }
     }
@@ -182,17 +180,14 @@ void app_main(void)
                 wifi_ensure_netif();
                 if (wifi_init_sta() == ESP_OK) {
                     clock_screen_set_station_name("Starting audio...");
-                    if (audio_init() == ESP_OK) {
-                        audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+                    if (audio_init() == ESP_OK && audio_play_radio() == ESP_OK) {
                         clock_screen_set_audio_indicator(true);
                         s_audio_playing = true;
                     }
                 } else {
-                    /* wifi_init_sta timed out — check if it connected just after timeout */
                     if (wifi_is_connected()) {
                         clock_screen_set_station_name("Starting audio...");
-                        if (audio_init() == ESP_OK) {
-                            audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+                        if (audio_init() == ESP_OK && audio_play_radio() == ESP_OK) {
                             clock_screen_set_audio_indicator(true);
                             s_audio_playing = true;
                         }
@@ -204,7 +199,9 @@ void app_main(void)
             }
         }
 
-        /* Poll station name from audio stream */
+        /* Service audio: advance tracks, update display */
+        audio_service();
+
         if (i < 10 || i % 5 == 0) {
             const char *info = audio_get_station_name();
             if (info) {

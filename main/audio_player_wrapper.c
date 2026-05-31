@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
+#include <stdlib.h>
 
 static const char *TAG = "AUDIO";
 
@@ -18,12 +19,26 @@ static audio_stream_handle_t s_stream = NULL;
 static audio_http_stream_handle_t s_http_stream = NULL;
 static bool s_i2s_ready = false;
 static bool s_mixer_ready = false;
-static const char *s_status = NULL;
 
-/* ── Radio config from /radio JSON API ─────────────────────── */
-static char s_radio_url[256] = {0};
-static char s_radio_station[64] = {0};
-static char s_radio_song[128] = {0};
+/* ── Playlist state ──────────────────────────────────────────── */
+#define MAX_TRACKS 80
+
+typedef struct {
+    char *url;
+    char *name;
+} track_t;
+
+static track_t *s_tracks = NULL;
+static int s_track_count = 0;
+static int s_current_track = -1;
+static int s_track_retry = 0;
+static int s_track_connect_wait = 0;
+static char s_playlist_url[256] = {0};
+static char s_radio_name[64] = {0};
+static volatile bool s_track_done = false;
+static bool s_track_pending = false;  /* play_track_url called, waiting for buffer */
+static const char *s_pending_url = NULL;
+
 static int s_radio_volume_pct = -1;  /* -1 = not set, fallback to CONFIG */
 
 #define RADIO_API_URL "http://192.168.8.105:3000/radio"
@@ -46,7 +61,6 @@ static esp_err_t i2s_write(void *audio_buffer, size_t len,
                            size_t *bytes_written, uint32_t timeout_ms)
 {
     apply_volume(audio_buffer, len);
-    /* Cap timeout to prevent watchdog reset if I2S stalls */
     if (timeout_ms > 100) timeout_ms = 100;
     esp_err_t err = i2s_channel_write(s_i2s_tx_chan, audio_buffer, len,
                                       bytes_written, timeout_ms);
@@ -64,7 +78,6 @@ static uint32_t s_last_ch = 0;
 static esp_err_t i2s_reconfig_clk(uint32_t rate, uint32_t bits_cfg,
                                   i2s_slot_mode_t ch)
 {
-    /* Skip reconfig if format hasn't changed (avoids I2S glitches) */
     uint32_t channel_count = (ch == I2S_SLOT_MODE_STEREO) ? 2 : 1;
     if (rate == s_last_rate && bits_cfg == s_last_bits && channel_count == s_last_ch) {
         return ESP_OK;
@@ -81,12 +94,11 @@ static esp_err_t i2s_reconfig_clk(uint32_t rate, uint32_t bits_cfg,
     };
     esp_err_t err = i2s_channel_reconfig_std_clock(s_i2s_tx_chan, &clk_cfg);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Clock reconfig failed for %lu Hz, keeping old rate", rate);
-        /* Restore old rate in mixer config */
-        s_last_rate = 0; /* force reconfig next time */
+        ESP_LOGW(TAG, "Clock reconfig failed for %lu Hz", rate);
+        s_last_rate = 0;
     }
     i2s_channel_enable(s_i2s_tx_chan);
-    return ESP_OK; /* Don't block playback on clock error */
+    return ESP_OK;
 }
 
 /* ── Mute/unmute: control NS4168 CTL pin ──────────────────── */
@@ -97,11 +109,19 @@ static esp_err_t mute_fn(AUDIO_PLAYER_MUTE_SETTING setting)
     return ESP_OK;
 }
 
+/* ── Mixer callback: detect track end ─────────────────────── */
+static void mixer_callback(audio_player_cb_ctx_t *ctx)
+{
+    if (ctx && ctx->audio_event == AUDIO_PLAYER_CALLBACK_EVENT_IDLE) {
+        s_track_done = true;
+    }
+}
+
 /* ══════════════════════════════════════════════════════════════
  * Radio JSON API
  * ══════════════════════════════════════════════════════════════ */
 
-static esp_err_t audio_radio_fetch(void)
+static esp_err_t radio_fetch(void)
 {
     char *resp_buf = malloc(1024);
     if (!resp_buf) return ESP_ERR_NO_MEM;
@@ -113,29 +133,16 @@ static esp_err_t audio_radio_fetch(void)
         .buffer_size = 512,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) {
-        free(resp_buf);
-        ESP_LOGW(TAG, "Radio: HTTP init failed");
-        return ESP_FAIL;
-    }
+    if (!client) { free(resp_buf); return ESP_FAIL; }
 
     esp_err_t err = esp_http_client_open(client, 0);
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Radio: HTTP open failed: %s", esp_err_to_name(err));
         esp_http_client_cleanup(client);
         free(resp_buf);
         return err;
     }
 
-    int ret = esp_http_client_fetch_headers(client);
-    if (ret < 0 && ret != -1) {
-        ESP_LOGW(TAG, "Radio: fetch headers failed");
-        esp_http_client_cleanup(client);
-        free(resp_buf);
-        return ESP_FAIL;
-    }
-
-    /* Read response body */
+    esp_http_client_fetch_headers(client);
     while (resp_len < 1023) {
         int r = esp_http_client_read(client, resp_buf + resp_len, 1023 - resp_len);
         if (r <= 0) break;
@@ -148,46 +155,30 @@ static esp_err_t audio_radio_fetch(void)
     esp_http_client_cleanup(client);
 
     if (status != 200 || resp_len == 0) {
-        ESP_LOGW(TAG, "Radio: HTTP %d, body=%d bytes", status, resp_len);
+        ESP_LOGW(TAG, "Radio: HTTP %d, %d bytes", status, resp_len);
         free(resp_buf);
         return ESP_FAIL;
     }
 
     ESP_LOGI(TAG, "Radio JSON: %s", resp_buf);
-
-    /* Parse JSON */
     cJSON *root = cJSON_Parse(resp_buf);
-    if (!root) {
-        ESP_LOGW(TAG, "Radio: JSON parse failed");
-        free(resp_buf);
-        return ESP_FAIL;
-    }
+    if (!root) { free(resp_buf); return ESP_FAIL; }
 
-    cJSON *j_url    = cJSON_GetObjectItem(root, "url");
-    cJSON *j_name   = cJSON_GetObjectItem(root, "name");
-    cJSON *j_song   = cJSON_GetObjectItem(root, "song");
-    cJSON *j_volume = cJSON_GetObjectItem(root, "volume");
+    cJSON *j_playlist = cJSON_GetObjectItem(root, "playlist");
+    cJSON *j_name     = cJSON_GetObjectItem(root, "name");
+    cJSON *j_volume   = cJSON_GetObjectItem(root, "volume");
 
-    if (j_url && cJSON_IsString(j_url) && j_url->valuestring[0]) {
-        strncpy(s_radio_url, j_url->valuestring, sizeof(s_radio_url) - 1);
-        s_radio_url[sizeof(s_radio_url) - 1] = '\0';
+    if (j_playlist && cJSON_IsString(j_playlist)) {
+        strncpy(s_playlist_url, j_playlist->valuestring, sizeof(s_playlist_url) - 1);
     }
     if (j_name && cJSON_IsString(j_name)) {
-        strncpy(s_radio_station, j_name->valuestring, sizeof(s_radio_station) - 1);
-    }
-    if (j_song && cJSON_IsString(j_song)) {
-        strncpy(s_radio_song, j_song->valuestring, sizeof(s_radio_song) - 1);
+        strncpy(s_radio_name, j_name->valuestring, sizeof(s_radio_name) - 1);
     }
     if (j_volume && cJSON_IsNumber(j_volume)) {
         double v = cJSON_GetNumberValue(j_volume);
-        /* Support both 0.0-1.0 (float) and 0-100 (integer/percentage) */
-        if (v >= 0.0 && v <= 1.0) {
-            s_radio_volume_pct = (int)(v * 100.0 + 0.5);
-        } else if (v > 1.0 && v <= 100.0) {
-            s_radio_volume_pct = (int)(v + 0.5);
-        } else {
-            s_radio_volume_pct = (int)v;
-        }
+        if (v >= 0.0 && v <= 1.0)      s_radio_volume_pct = (int)(v * 100.0 + 0.5);
+        else if (v > 1.0 && v <= 100.0) s_radio_volume_pct = (int)(v + 0.5);
+        else                            s_radio_volume_pct = (int)v;
         if (s_radio_volume_pct < 0)  s_radio_volume_pct = 0;
         if (s_radio_volume_pct > 100) s_radio_volume_pct = 100;
         ESP_LOGI(TAG, "Radio: volume=%.2f -> %d%%", v, s_radio_volume_pct);
@@ -196,18 +187,136 @@ static esp_err_t audio_radio_fetch(void)
     cJSON_Delete(root);
     free(resp_buf);
 
-    if (s_radio_url[0] == '\0') {
-        ESP_LOGW(TAG, "Radio: no URL in response");
+    if (s_playlist_url[0] == '\0') {
+        ESP_LOGW(TAG, "Radio: no playlist URL");
         return ESP_FAIL;
     }
-
-    ESP_LOGI(TAG, "Radio: '%s' — '%s' -> %s",
-             s_radio_station, s_radio_song, s_radio_url);
+    ESP_LOGI(TAG, "Radio: '%s' playlist=%s", s_radio_name, s_playlist_url);
     return ESP_OK;
 }
 
 /* ══════════════════════════════════════════════════════════════
- * Audio playback
+ * M3U Playlist
+ * ══════════════════════════════════════════════════════════════ */
+
+/*
+ * Parse #EXTINF line: "#EXTINF:292,🎵 宫崎骏-出发 (魔女宅急便 水晶音乐)"
+ * Extract everything after "🎵 " (or after ",🎵" then skip the space).
+ */
+static void parse_extinf(const char *line, char *name_out, size_t name_size)
+{
+    name_out[0] = '\0';
+    const char *p = strchr(line, ',');
+    if (!p) return;
+    p++;  /* skip comma */
+    /* Skip "🎵 " prefix (4 UTF-8 bytes + space = 5 chars) */
+    if ((unsigned char)p[0] == 0xF0 && (unsigned char)p[1] == 0x9F &&
+        (unsigned char)p[2] == 0x8E && (unsigned char)p[3] == 0xB5) {
+        p += 4;
+        if (*p == ' ') p++;
+    }
+    strncpy(name_out, p, name_size - 1);
+    name_out[name_size - 1] = '\0';
+}
+
+static esp_err_t playlist_fetch(void)
+{
+    if (s_playlist_url[0] == '\0') {
+        ESP_LOGW(TAG, "No playlist URL");
+        return ESP_FAIL;
+    }
+
+    char *resp_buf = malloc(12288);
+    if (!resp_buf) return ESP_ERR_NO_MEM;
+
+    int resp_len = 0;
+    esp_http_client_config_t cfg = {
+        .url = s_playlist_url,
+        .timeout_ms = 10000,
+        .buffer_size = 1024,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) { free(resp_buf); return ESP_FAIL; }
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        esp_http_client_cleanup(client);
+        free(resp_buf);
+        return err;
+    }
+
+    esp_http_client_fetch_headers(client);
+    while (resp_len < 12287) {
+        int r = esp_http_client_read(client, resp_buf + resp_len, 12287 - resp_len);
+        if (r <= 0) break;
+        resp_len += r;
+    }
+    resp_buf[resp_len] = '\0';
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (resp_len == 0) {
+        ESP_LOGW(TAG, "M3U empty");
+        free(resp_buf);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "M3U: %d bytes", resp_len);
+
+    /* Allocate track array (dynamic to save BSS) */
+    if (s_tracks) {
+        for (int i = 0; i < s_track_count; i++) {
+            free(s_tracks[i].url);
+            free(s_tracks[i].name);
+        }
+        free(s_tracks);
+    }
+    s_tracks = calloc(MAX_TRACKS, sizeof(track_t));
+    if (!s_tracks) { free(resp_buf); return ESP_ERR_NO_MEM; }
+    s_track_count = 0;
+
+    /* Parse M3U lines */
+    char *saveptr;
+    char *line = strtok_r(resp_buf, "\r\n", &saveptr);
+    char pending_name[128] = {0};
+
+    while (line && s_track_count < MAX_TRACKS) {
+        if (line[0] == '\0' || (line[0] == '#' && strncmp(line, "#EXTINF:", 8) != 0)) {
+            line = strtok_r(NULL, "\r\n", &saveptr);
+            continue;
+        }
+
+        if (strncmp(line, "#EXTINF:", 8) == 0) {
+            parse_extinf(line, pending_name, sizeof(pending_name));
+        } else if (line[0] == 'h' && strncmp(line, "http", 4) == 0) {
+            s_tracks[s_track_count].url = strdup(line);
+            if (pending_name[0]) {
+                s_tracks[s_track_count].name = strdup(pending_name);
+            } else {
+                char tmp[32];
+                snprintf(tmp, sizeof(tmp), "Track %d", s_track_count + 1);
+                s_tracks[s_track_count].name = strdup(tmp);
+            }
+            ESP_LOGI(TAG, "  [%d] '%s'", s_track_count, s_tracks[s_track_count].name);
+            s_track_count++;
+            pending_name[0] = '\0';
+        }
+
+        line = strtok_r(NULL, "\r\n", &saveptr);
+    }
+
+    free(resp_buf);
+
+    if (s_track_count == 0) {
+        ESP_LOGW(TAG, "M3U: no tracks found");
+        return ESP_FAIL;
+    }
+    ESP_LOGI(TAG, "M3U: %d tracks", s_track_count);
+    return ESP_OK;
+}
+
+/* ══════════════════════════════════════════════════════════════
+ * Audio playback — single track
  * ══════════════════════════════════════════════════════════════ */
 
 esp_err_t audio_init(void)
@@ -217,24 +326,17 @@ esp_err_t audio_init(void)
     ESP_LOGI(TAG, "Init I2S (SDIN=%d SCLK=%d WS=%d)",
              CONFIG_PIN_I2S_SDIN, CONFIG_PIN_I2S_SCLK, CONFIG_PIN_I2S_LROUT);
 
-    /* Power on NS4168 and let it settle */
     gpio_set_level(CONFIG_PIN_NS4168_CTRL, 1);
     vTaskDelay(pdMS_TO_TICKS(15));
 
-    /* Create I2S TX channel */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
     esp_err_t err = i2s_new_channel(&chan_cfg, &s_i2s_tx_chan, NULL);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "i2s_new_channel: %s", esp_err_to_name(err));
-        return err;
-    }
+    if (err != ESP_OK) { ESP_LOGE(TAG, "i2s_new_channel: %s", esp_err_to_name(err)); return err; }
 
-    /* Standard Philips mode: 44.1kHz / 16-bit / stereo */
     i2s_std_config_t std_cfg = {
         .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(44100),
-        .slot_cfg = I2S_STD_PHILIP_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT,
-                                                        I2S_SLOT_MODE_STEREO),
+        .slot_cfg = I2S_STD_PHILIP_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
             .bclk = CONFIG_PIN_I2S_SCLK,
@@ -245,67 +347,49 @@ esp_err_t audio_init(void)
         },
     };
     err = i2s_channel_init_std_mode(s_i2s_tx_chan, &std_cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "i2s_init_std_mode: %s", esp_err_to_name(err));
-        return err;
-    }
+    if (err != ESP_OK) { ESP_LOGE(TAG, "i2s_init_std_mode: %s", esp_err_to_name(err)); return err; }
 
     err = i2s_channel_enable(s_i2s_tx_chan);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "i2s_channel_enable: %s", esp_err_to_name(err));
-        return err;
-    }
+    if (err != ESP_OK) { ESP_LOGE(TAG, "i2s_channel_enable: %s", esp_err_to_name(err)); return err; }
 
     s_i2s_ready = true;
     ESP_LOGI(TAG, "I2S initialized OK");
     return ESP_OK;
 }
 
-static esp_err_t audio_play_url_inner(const char *url)
+static esp_err_t play_track_url(const char *url)
 {
-    /* Stop any existing playback first */
     audio_stop();
 
-    s_status = "Connecting...";
-    ESP_LOGI(TAG, "Trying: %s", url);
+    ESP_LOGI(TAG, "Track: %s", url);
 
-    /* Init mixer (safe to call repeatedly — no-op if already running) */
     audio_mixer_config_t mixer_cfg = {
         .mute_fn    = mute_fn,
         .clk_set_fn = i2s_reconfig_clk,
         .write_fn   = i2s_write,
         .priority   = 5,
         .coreID     = tskNO_AFFINITY,
-        .i2s_format = {
-            .sample_rate     = 44100,
-            .bits_per_sample = 16,
-            .channels        = 2,
-        },
+        .i2s_format = { .sample_rate = 44100, .bits_per_sample = 16, .channels = 2 },
     };
     esp_err_t err = audio_mixer_init(&mixer_cfg);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "mixer_init: %s", esp_err_to_name(err));
-        return err;
-    }
+    if (err != ESP_OK) { ESP_LOGE(TAG, "mixer_init: %s", esp_err_to_name(err)); return err; }
     s_mixer_ready = true;
 
-    /* Create decoder stream */
+    /* Register callback to detect track end */
+    audio_mixer_callback_register(mixer_callback);
+
     audio_stream_config_t stream_cfg = DEFAULT_AUDIO_STREAM_CONFIG("music");
     s_stream = audio_stream_new(&stream_cfg);
-    if (!s_stream) {
-        ESP_LOGE(TAG, "stream_new failed");
-        return ESP_FAIL;
-    }
+    if (!s_stream) { ESP_LOGE(TAG, "stream_new failed"); return ESP_FAIL; }
 
-    /* Open HTTP stream */
     audio_http_stream_config_t http_cfg = DEFAULT_AUDIO_HTTP_STREAM_CONFIG(url);
     http_cfg.buffer_size          = 6 * 1024;
     http_cfg.high_watermark       = 4 * 1024;
     http_cfg.low_watermark        = 1 * 1024;
     http_cfg.task_stack_size      = 5 * 1024;
-    http_cfg.read_timeout_ms      = 5000;
-    http_cfg.reconnect_timeout_ms = 1000;
-    http_cfg.enable_auto_reconnect = true;
+    http_cfg.task_priority        = 7;
+    http_cfg.read_timeout_ms      = 15000;
+    http_cfg.enable_auto_reconnect = false;
     s_http_stream = audio_http_stream_open(&http_cfg);
     if (!s_http_stream) {
         ESP_LOGE(TAG, "http_stream_open failed");
@@ -316,61 +400,122 @@ static esp_err_t audio_play_url_inner(const char *url)
     err = audio_http_stream_get_io(s_http_stream, &io);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "http_stream_get_io: %s", esp_err_to_name(err));
+        audio_stop();
         return err;
     }
 
-    /* Wait for initial buffer — Icecast servers may burst-buffer for a few seconds
-     * before sending, so allow up to 15s. 2KB is enough for MP3 format detection. */
-    for (int wait = 0; wait < 150; wait++) {
-        size_t buffered = audio_http_stream_get_buffered_bytes(s_http_stream);
-        if (buffered >= 2048) {
-            err = audio_stream_play_io(s_stream, io);
-            if (err == ESP_OK) {
-                ESP_LOGI(TAG, "Playback started OK (%d bytes buffered)", (int)buffered);
-            }
-            return err;
-        }
-        vTaskDelay(pdMS_TO_TICKS(100));
-    }
-
-    ESP_LOGW(TAG, "Timeout waiting for buffer (last: %d bytes)", (int)audio_http_stream_get_buffered_bytes(s_http_stream));
-    audio_stop();
-    s_status = "Network error";
-    return ESP_ERR_TIMEOUT;
+    /* Non-blocking: return immediately. audio_service() will poll for buffer. */
+    s_track_done = false;
+    s_track_pending = true;
+    s_track_connect_wait = 0;
+    s_pending_url = url;
+    return ESP_OK;
 }
 
-esp_err_t audio_play_url(const char *fallback_url)
+/* ══════════════════════════════════════════════════════════════
+ * Playlist player
+ * ══════════════════════════════════════════════════════════════ */
+
+esp_err_t audio_play_radio(void)
 {
     if (!s_i2s_ready) {
         ESP_LOGE(TAG, "I2S not initialized");
         return ESP_ERR_INVALID_STATE;
     }
 
-    s_status = "Fetching radio...";
+    /* Fetch /radio JSON to get playlist URL (only on first call or replay) */
+    if (s_track_count == 0 || s_current_track >= s_track_count) {
+        ESP_LOGI(TAG, "Fetching /radio...");
+        if (radio_fetch() != ESP_OK) {
+            ESP_LOGW(TAG, "/radio failed");
+            return ESP_FAIL;
+        }
 
-    /* Fetch radio config from /radio API; fall back to fallback_url on failure */
-    if (audio_radio_fetch() != ESP_OK) {
-        ESP_LOGW(TAG, "Radio fetch failed, using fallback URL");
-        if (fallback_url && fallback_url[0]) {
-            strncpy(s_radio_url, fallback_url, sizeof(s_radio_url) - 1);
+        ESP_LOGI(TAG, "Fetching playlist...");
+        if (playlist_fetch() != ESP_OK) {
+            ESP_LOGW(TAG, "Playlist fetch failed");
+            return ESP_FAIL;
+        }
+        s_current_track = 0;
+    }
+
+    return play_track_url(s_tracks[s_current_track].url);
+}
+
+esp_err_t audio_play_url(const char *url)
+{
+    if (!s_i2s_ready) return ESP_ERR_INVALID_STATE;
+    /* Legacy: play a single URL directly */
+    return play_track_url(url);
+}
+
+void audio_service(void)
+{
+    /* Track playing normally — check for EOF */
+    if (!s_track_done && s_http_stream && !s_track_pending) {
+        return;
+    }
+
+    /* Waiting for buffer to fill after play_track_url() */
+    if (s_track_pending && s_http_stream) {
+        size_t buffered = audio_http_stream_get_buffered_bytes(s_http_stream);
+        if (buffered >= 2048) {
+            audio_stream_io_handle_t io;
+            if (audio_http_stream_get_io(s_http_stream, &io) == ESP_OK) {
+                esp_err_t err = audio_stream_play_io(s_stream, io);
+                if (err == ESP_OK) {
+                    ESP_LOGI(TAG, "Track started (%d bytes buffered)", (int)buffered);
+                    s_track_pending = false;
+                    s_track_retry = 0;
+                }
+            }
+            return;
+        }
+        s_track_connect_wait++;
+        if (s_track_connect_wait > 25) {
+            ESP_LOGW(TAG, "Track connect timeout (%d bytes buffered)", (int)buffered);
+            s_track_pending = false;
+            audio_stop();
+        }
+        return;
+    }
+
+    /* Track ended (EOF from mixer callback) */
+    if (s_track_done) {
+        s_track_done = false;
+        s_track_pending = false;
+        audio_stop();
+        s_current_track++;
+        vTaskDelay(pdMS_TO_TICKS(300));
+    } else if (!s_http_stream && !s_track_pending) {
+        /* Connection failed before any data arrived */
+        if (s_track_retry < 1) {
+            s_track_retry++;
+            ESP_LOGW(TAG, "Retry [%d/%d]: '%s'", s_current_track + 1, s_track_count,
+                     s_tracks[s_current_track].name);
+        } else {
+            ESP_LOGW(TAG, "Track failed, skipping");
+            s_track_retry = 0;
+            s_current_track++;
+        }
+        vTaskDelay(pdMS_TO_TICKS(300));
+    } else {
+        return;
+    }
+
+    /* Check if playlist exhausted */
+    if (s_current_track >= s_track_count) {
+        ESP_LOGI(TAG, "Playlist done, re-fetching...");
+        if (radio_fetch() == ESP_OK && playlist_fetch() == ESP_OK) {
+            s_current_track = 0;
+        } else {
+            s_current_track = 0;
         }
     }
 
-    const char *play_url = s_radio_url[0] ? s_radio_url : fallback_url;
-    if (!play_url || !play_url[0]) {
-        ESP_LOGE(TAG, "No URL to play");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    s_status = "Connecting...";
-
-    if (audio_play_url_inner(play_url) == ESP_OK) {
-        s_status = "Streaming...";
-        return ESP_OK;
-    }
-
-    s_status = "Network error";
-    return ESP_ERR_TIMEOUT;
+    ESP_LOGI(TAG, "Next [%d/%d]: '%s'", s_current_track + 1, s_track_count,
+             s_tracks[s_current_track].name);
+    play_track_url(s_tracks[s_current_track].url);
 }
 
 esp_err_t audio_stop(void)
@@ -384,22 +529,22 @@ esp_err_t audio_stop(void)
         audio_http_stream_close(s_http_stream);
         s_http_stream = NULL;
     }
-    ESP_LOGI(TAG, "Playback stopped");
     return ESP_OK;
 }
 
 const char *audio_get_station_name(void)
 {
-    /* Priority: ICY stream title (live) > radio song (initial) > radio station > ICY name > status */
-    if (s_http_stream) {
-        const char *t = audio_http_stream_get_stream_title(s_http_stream);
-        if (t) return t;
-        if (s_radio_song[0]) return s_radio_song;
-        const char *n = audio_http_stream_get_icy_name(s_http_stream);
-        if (n) return n;
+    /* Show current track name from playlist */
+    if (s_current_track >= 0 && s_current_track < s_track_count) {
+        return s_tracks[s_current_track].name;
     }
-    if (s_radio_station[0]) return s_radio_station;
-    return s_status;
+    if (s_radio_name[0]) return s_radio_name;
+    return NULL;
+}
+
+bool audio_is_playing(void)
+{
+    return s_http_stream != NULL && s_current_track >= 0;
 }
 
 void audio_deinit(void)
@@ -417,9 +562,7 @@ void audio_deinit(void)
         s_i2s_tx_chan = NULL;
     }
 
-    /* Shut down NS4168 for power saving */
     gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0);
     s_i2s_ready = false;
-
     ESP_LOGI(TAG, "Deinitialized");
 }
