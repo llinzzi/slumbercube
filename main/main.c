@@ -204,16 +204,23 @@ void app_main(void)
             }
         }
 
-        /* Poll /api/status for live song & volume */
-        if (i >= 2 && i % 10 == 0) {
-            audio_poll_status();
-        }
-
         /* Poll station name from audio stream */
         if (i < 10 || i % 5 == 0) {
             const char *info = audio_get_station_name();
             if (info) {
                 clock_screen_set_station_name(info);
+            }
+        }
+
+        /* Re-fetch /radio + restart when stream dies (with 30s cooldown) */
+        {
+            static int restart_at = 0;
+            if (s_audio_playing && !audio_is_playing() && i >= restart_at) {
+                ESP_LOGI(TAG, "Stream ended, fetching next song");
+                audio_stop();
+                audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+                clock_screen_set_audio_indicator(true);
+                restart_at = i + 30;  /* at least 30s cooldown before next restart */
             }
         }
 #endif

@@ -26,8 +26,7 @@ static char s_radio_station[64] = {0};
 static char s_radio_song[128] = {0};
 static int s_radio_volume_pct = -1;  /* -1 = not set, fallback to CONFIG */
 
-#define RADIO_API_URL     "http://192.168.8.105:3000/radio"
-#define STATUS_API_URL    "http://192.168.8.105:3000/api/status"
+#define RADIO_API_URL "http://192.168.8.105:3000/radio"
 
 /* ── Software volume scale (16-bit stereo PCM) ──────────────── */
 static void apply_volume(void *buf, size_t len)
@@ -207,86 +206,6 @@ static esp_err_t audio_radio_fetch(void)
     return ESP_OK;
 }
 
-/* ── Poll /api/status for live song & volume ────────────────── */
-void audio_poll_status(void)
-{
-    static int fail_count = 0;
-    static int skip_until  = 0;
-
-    /* Back off on repeated failures to avoid log spam */
-    if (skip_until > 0) { skip_until--; return; }
-
-    static char resp_buf[512];
-    int resp_len = 0;
-
-    esp_http_client_config_t cfg = {
-        .url = STATUS_API_URL,
-        .timeout_ms = 2000,
-        .buffer_size = 256,
-        .buffer_size_tx = 256,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) { fail_count++; return; }
-
-    esp_err_t err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) {
-        esp_http_client_cleanup(client);
-        fail_count++;
-        if (fail_count >= 3) skip_until = 6;  /* skip ~60s */
-        return;
-    }
-
-    int ret = esp_http_client_fetch_headers(client);
-    if (ret < 0 && ret != -1) {
-        esp_http_client_cleanup(client);
-        fail_count++;
-        if (fail_count >= 3) skip_until = 6;
-        return;
-    }
-
-    while (resp_len < (int)sizeof(resp_buf) - 1) {
-        int r = esp_http_client_read(client, resp_buf + resp_len,
-                                     sizeof(resp_buf) - 1 - resp_len);
-        if (r <= 0) break;
-        resp_len += r;
-    }
-    resp_buf[resp_len] = '\0';
-
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-
-    if (status != 200 || resp_len == 0) {
-        fail_count++;
-        if (fail_count >= 3) skip_until = 6;
-        return;
-    }
-
-    fail_count = 0;  /* success resets counter */
-
-    cJSON *root = cJSON_Parse(resp_buf);
-    if (!root) return;
-
-    cJSON *j_song   = cJSON_GetObjectItem(root, "song");
-    cJSON *j_volume = cJSON_GetObjectItem(root, "volume");
-
-    if (j_song && cJSON_IsString(j_song) && j_song->valuestring[0]) {
-        strncpy(s_radio_song, j_song->valuestring, sizeof(s_radio_song) - 1);
-    }
-    if (j_volume && cJSON_IsNumber(j_volume)) {
-        double v = cJSON_GetNumberValue(j_volume);
-        if (v >= 0.0 && v <= 1.0) {
-            s_radio_volume_pct = (int)(v * 100.0 + 0.5);
-        } else if (v > 1.0 && v <= 100.0) {
-            s_radio_volume_pct = (int)(v + 0.5);
-        }
-        if (s_radio_volume_pct < 0)  s_radio_volume_pct = 0;
-        if (s_radio_volume_pct > 100) s_radio_volume_pct = 100;
-    }
-
-    cJSON_Delete(root);
-}
-
 /* ══════════════════════════════════════════════════════════════
  * Audio playback
  * ══════════════════════════════════════════════════════════════ */
@@ -355,7 +274,7 @@ static esp_err_t audio_play_url_inner(const char *url)
         .mute_fn    = mute_fn,
         .clk_set_fn = i2s_reconfig_clk,
         .write_fn   = i2s_write,
-        .priority   = 3,
+        .priority   = 5,
         .coreID     = tskNO_AFFINITY,
         .i2s_format = {
             .sample_rate     = 44100,
@@ -384,7 +303,6 @@ static esp_err_t audio_play_url_inner(const char *url)
     http_cfg.high_watermark       = 4 * 1024;
     http_cfg.low_watermark        = 1 * 1024;
     http_cfg.task_stack_size      = 5 * 1024;
-    http_cfg.task_priority        = 4;
     http_cfg.read_timeout_ms      = 5000;
     http_cfg.reconnect_timeout_ms = 1000;
     http_cfg.enable_auto_reconnect = true;
@@ -468,6 +386,15 @@ esp_err_t audio_stop(void)
     }
     ESP_LOGI(TAG, "Playback stopped");
     return ESP_OK;
+}
+
+bool audio_is_playing(void)
+{
+    if (!s_http_stream) return false;
+    audio_http_stream_state_t st = audio_http_stream_get_state(s_http_stream);
+    return (st == AUDIO_HTTP_STREAM_STATE_CONNECTING ||
+            st == AUDIO_HTTP_STREAM_STATE_BUFFERING ||
+            st == AUDIO_HTTP_STREAM_STATE_PLAYING);
 }
 
 const char *audio_get_station_name(void)

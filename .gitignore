@@ -7,3 +7,4 @@ managed_components
 .minimax/
 .DS_Store
 *.swp
+.DS_Store
