@@ -26,7 +26,7 @@ static char s_radio_station[64] = {0};
 static char s_radio_song[128] = {0};
 static int s_radio_volume_pct = -1;  /* -1 = not set, fallback to CONFIG */
 
-#define RADIO_API_URL "http://192.168.8.105:3000/radio"
+#define RADIO_API_URL "http://192.168.8.105:3000/api/esp"
 
 /* ── Software volume scale (16-bit stereo PCM) ──────────────── */
 static void apply_volume(void *buf, size_t len)
@@ -206,56 +206,6 @@ static esp_err_t audio_radio_fetch(void)
     return ESP_OK;
 }
 
-/* ── Poll /api/status for song name + volume updates (continuous stream) ─── */
-void audio_poll_status(void)
-{
-    char *resp_buf = malloc(512);
-    if (!resp_buf) return;
-
-    int resp_len = 0;
-    esp_http_client_config_t cfg = {
-        .url = "http://192.168.8.105:3000/api/status",
-        .timeout_ms = 3000,
-        .buffer_size = 256,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) { free(resp_buf); return; }
-
-    if (esp_http_client_open(client, 0) != ESP_OK) {
-        esp_http_client_cleanup(client); free(resp_buf); return;
-    }
-    esp_http_client_fetch_headers(client);
-    while (resp_len < 511) {
-        int r = esp_http_client_read(client, resp_buf + resp_len, 511 - resp_len);
-        if (r <= 0) break;
-        resp_len += r;
-    }
-    resp_buf[resp_len] = '\0';
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-
-    if (status != 200 || resp_len == 0) { free(resp_buf); return; }
-
-    cJSON *root = cJSON_Parse(resp_buf);
-    if (!root) { free(resp_buf); return; }
-
-    cJSON *j_song   = cJSON_GetObjectItem(root, "song");
-    cJSON *j_vol    = cJSON_GetObjectItem(root, "volume");
-    cJSON *j_prog   = cJSON_GetObjectItem(root, "progress");
-
-    if (j_song && cJSON_IsString(j_song) && j_song->valuestring[0]) {
-        strncpy(s_radio_song, j_song->valuestring, sizeof(s_radio_song) - 1);
-    }
-    if (j_vol && cJSON_IsNumber(j_vol)) {
-        double v = cJSON_GetNumberValue(j_vol);
-        s_radio_volume_pct = (v >= 0 && v <= 100) ? (int)(v + 0.5) : s_radio_volume_pct;
-    }
-
-    cJSON_Delete(root);
-    free(resp_buf);
-}
-
 /* ══════════════════════════════════════════════════════════════
  * Audio playback
  * ══════════════════════════════════════════════════════════════ */
@@ -389,7 +339,7 @@ static esp_err_t audio_play_url_inner(const char *url)
     return ESP_ERR_TIMEOUT;
 }
 
-esp_err_t audio_play_url(const char *fallback_url)
+esp_err_t audio_play_url(void)
 {
     if (!s_i2s_ready) {
         ESP_LOGE(TAG, "I2S not initialized");
@@ -398,15 +348,13 @@ esp_err_t audio_play_url(const char *fallback_url)
 
     s_status = "Fetching radio...";
 
-    /* Fetch radio config from /radio API; fall back to fallback_url on failure */
+    /* Fetch radio config from /radio API; if it fails, don't play */
     if (audio_radio_fetch() != ESP_OK) {
-        ESP_LOGW(TAG, "Radio fetch failed, using fallback URL");
-        if (fallback_url && fallback_url[0]) {
-            strncpy(s_radio_url, fallback_url, sizeof(s_radio_url) - 1);
-        }
+        ESP_LOGW(TAG, "Radio fetch failed, no fallback URL configured");
+        return ESP_FAIL;
     }
 
-    const char *play_url = s_radio_url[0] ? s_radio_url : fallback_url;
+    const char *play_url = s_radio_url;
     if (!play_url || !play_url[0]) {
         ESP_LOGE(TAG, "No URL to play");
         return ESP_ERR_INVALID_STATE;

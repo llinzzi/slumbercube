@@ -90,9 +90,6 @@ menu "Clock Configuration"
         config AUDIO_ENABLE
             bool "Enable audio playback on wakeup"
             default y
-        config AUDIO_MUSIC_URL
-            string "Music URL for wakeup playback"
-            default "http://hestia2.cdnstream.com/1258_128"
         config AUDIO_VOLUME_PCT
             int "Audio volume (0-100)"
             range 0 100

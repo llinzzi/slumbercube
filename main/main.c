@@ -154,7 +154,7 @@ void app_main(void)
      * Skip in night mode since WiFi is not available. */
     if (!clock_screen_is_night_time()) {
         if (audio_init() == ESP_OK) {
-            audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+            audio_play_url();
             s_audio_playing = true;
         }
     }
@@ -183,7 +183,7 @@ void app_main(void)
                 if (wifi_init_sta() == ESP_OK) {
                     clock_screen_set_station_name("Starting audio...");
                     if (audio_init() == ESP_OK) {
-                        audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+                        audio_play_url();
                         clock_screen_set_audio_indicator(true);
                         s_audio_playing = true;
                     }
@@ -192,7 +192,7 @@ void app_main(void)
                     if (wifi_is_connected()) {
                         clock_screen_set_station_name("Starting audio...");
                         if (audio_init() == ESP_OK) {
-                            audio_play_url(CONFIG_AUDIO_MUSIC_URL);
+                            audio_play_url();
                             clock_screen_set_audio_indicator(true);
                             s_audio_playing = true;
                         }
@@ -204,14 +204,7 @@ void app_main(void)
             }
         }
 
-        /* Poll station name from continuous stream (via /api/status) */
-        if (i < 10 || i % 5 == 0) {
-            audio_poll_status();
-            const char *info = audio_get_station_name();
-            if (info) {
-                clock_screen_set_station_name(info);
-            }
-        }
+
 #endif
 
         vTaskDelay(pdMS_TO_TICKS(1000));
