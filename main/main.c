@@ -204,11 +204,9 @@ void app_main(void)
             }
         }
 
-        /* Poll station name + refresh radio metadata every 60s */
-        if (i % 60 == 0 && i > 0) {
-            audio_radio_refresh();
-        }
+        /* Poll station name from continuous stream (via /api/status) */
         if (i < 10 || i % 5 == 0) {
+            audio_poll_status();
             const char *info = audio_get_station_name();
             if (info) {
                 clock_screen_set_station_name(info);

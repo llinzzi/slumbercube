@@ -101,7 +101,7 @@ static esp_err_t mute_fn(AUDIO_PLAYER_MUTE_SETTING setting)
  * Radio JSON API
  * ══════════════════════════════════════════════════════════════ */
 
-esp_err_t audio_radio_refresh(void)
+static esp_err_t audio_radio_fetch(void)
 {
     char *resp_buf = malloc(1024);
     if (!resp_buf) return ESP_ERR_NO_MEM;
@@ -204,6 +204,56 @@ esp_err_t audio_radio_refresh(void)
     ESP_LOGI(TAG, "Radio: '%s' — '%s' -> %s",
              s_radio_station, s_radio_song, s_radio_url);
     return ESP_OK;
+}
+
+/* ── Poll /api/status for song name + volume updates (continuous stream) ─── */
+void audio_poll_status(void)
+{
+    char *resp_buf = malloc(512);
+    if (!resp_buf) return;
+
+    int resp_len = 0;
+    esp_http_client_config_t cfg = {
+        .url = "http://192.168.8.105:3000/api/status",
+        .timeout_ms = 3000,
+        .buffer_size = 256,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) { free(resp_buf); return; }
+
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+        esp_http_client_cleanup(client); free(resp_buf); return;
+    }
+    esp_http_client_fetch_headers(client);
+    while (resp_len < 511) {
+        int r = esp_http_client_read(client, resp_buf + resp_len, 511 - resp_len);
+        if (r <= 0) break;
+        resp_len += r;
+    }
+    resp_buf[resp_len] = '\0';
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (status != 200 || resp_len == 0) { free(resp_buf); return; }
+
+    cJSON *root = cJSON_Parse(resp_buf);
+    if (!root) { free(resp_buf); return; }
+
+    cJSON *j_song   = cJSON_GetObjectItem(root, "song");
+    cJSON *j_vol    = cJSON_GetObjectItem(root, "volume");
+    cJSON *j_prog   = cJSON_GetObjectItem(root, "progress");
+
+    if (j_song && cJSON_IsString(j_song) && j_song->valuestring[0]) {
+        strncpy(s_radio_song, j_song->valuestring, sizeof(s_radio_song) - 1);
+    }
+    if (j_vol && cJSON_IsNumber(j_vol)) {
+        double v = cJSON_GetNumberValue(j_vol);
+        s_radio_volume_pct = (v >= 0 && v <= 100) ? (int)(v + 0.5) : s_radio_volume_pct;
+    }
+
+    cJSON_Delete(root);
+    free(resp_buf);
 }
 
 /* ══════════════════════════════════════════════════════════════
@@ -349,7 +399,7 @@ esp_err_t audio_play_url(const char *fallback_url)
     s_status = "Fetching radio...";
 
     /* Fetch radio config from /radio API; fall back to fallback_url on failure */
-    if (audio_radio_refresh() != ESP_OK) {
+    if (audio_radio_fetch() != ESP_OK) {
         ESP_LOGW(TAG, "Radio fetch failed, using fallback URL");
         if (fallback_url && fallback_url[0]) {
             strncpy(s_radio_url, fallback_url, sizeof(s_radio_url) - 1);
@@ -386,20 +436,6 @@ esp_err_t audio_stop(void)
     }
     ESP_LOGI(TAG, "Playback stopped");
     return ESP_OK;
-}
-
-bool audio_is_playing(void)
-{
-    if (!s_http_stream) return false;
-    audio_http_stream_state_t st = audio_http_stream_get_state(s_http_stream);
-    return (st != AUDIO_HTTP_STREAM_STATE_IDLE &&
-            st != AUDIO_HTTP_STREAM_STATE_FINISHED);
-}
-
-bool audio_stream_ended(void)
-{
-    if (!s_http_stream) return false;
-    return audio_http_stream_get_state(s_http_stream) == AUDIO_HTTP_STREAM_STATE_FINISHED;
 }
 
 const char *audio_get_station_name(void)

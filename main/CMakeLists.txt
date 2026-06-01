@@ -14,4 +14,4 @@ idf_component_register(SRCS "main.c"
                             "ui/styles.c"
                             "audio_player_wrapper.c"
                     INCLUDE_DIRS "."
-                    REQUIRES lvgl__lvgl driver esp_netif esp_wifi lwip nvs_flash esp_http_client json mbedtls esp-audio-player esp_driver_i2s)
+                    REQUIRES lvgl__lvgl driver esp_netif esp_wifi lwip nvs_flash esp_http_client json mbedtls esp-audio-player esp_driver_i2s espressif__button esp-libhelix-mp3)
