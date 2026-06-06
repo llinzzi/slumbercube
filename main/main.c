@@ -116,11 +116,6 @@ void app_main(void)
     // Turn on display AFTER first frame is in GDDRAM — eliminates white flash on wake
     ssd1322_display_on();
 
-    // Pass weather data to screens if available (from a previous fetch)
-    if (s_weather.valid) {
-        screens_set_weather_data_ptr(&s_weather);
-    }
-
     // Wait for UI to load
     vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -203,7 +198,6 @@ void app_main(void)
                 }
             }
         }
-
 
 #endif
 
