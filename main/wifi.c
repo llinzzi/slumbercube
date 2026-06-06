@@ -32,6 +32,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         esp_err_t err = esp_wifi_connect();
         ESP_LOGI(TAG, "esp_wifi_connect returned: %s", esp_err_to_name(err));
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        s_wifi_connected = false;
         if (s_retry_num == 0 || s_retry_num >= MAX_RETRY || s_retry_num % 5 == 0) {
             ESP_LOGI(TAG, "WIFI_DISCONNECTED, retry=%d", s_retry_num);
         }
@@ -179,7 +180,10 @@ esp_err_t wifi_init_sta(void)
     ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G));
     ESP_ERROR_CHECK(esp_wifi_start());
 
-    esp_wifi_set_max_tx_power(50);
+    /* Use near-max TX power (80 = 20 dBm). The device is far from the AP with a
+     * weak link (~-62 dBm); a low TX power starved the uplink so SYNs failed to
+     * reach the AP, causing intermittent ESP_ERR_HTTP_CONNECT. */
+    esp_wifi_set_max_tx_power(80);
 
     ESP_LOGI(TAG, "wifi_init_sta finished.");
     s_wifi_inited = true;

@@ -149,7 +149,9 @@ void app_main(void)
      * Skip in night mode since WiFi is not available. */
     if (!clock_screen_is_night_time()) {
         if (audio_init() == ESP_OK) {
-            audio_play_url();
+            if (audio_play_url() == ESP_OK) {
+                clock_screen_set_station_name(audio_get_station_name());
+            }
             s_audio_playing = true;
         }
     }
@@ -196,6 +198,18 @@ void app_main(void)
                         clock_screen_set_station_name("WiFi failed");
                     }
                 }
+            }
+        }
+
+        /* Auto-advance: when the current track finishes, fetch the next one.
+         * audio_play_url() re-queries /api/esp, which returns the next song. */
+        if (s_audio_playing && !s_audio_toggle_request && audio_is_finished()) {
+            ESP_LOGI(TAG, "Track finished, playing next");
+            if (!wifi_is_connected()) {
+                wifi_init_sta();
+            }
+            if (audio_play_url() == ESP_OK) {
+                clock_screen_set_station_name(audio_get_station_name());
             }
         }
 

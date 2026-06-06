@@ -302,9 +302,11 @@ static esp_err_t audio_play_url_inner(const char *url)
     http_cfg.buffer_size          = 6 * 1024;
     http_cfg.high_watermark       = 4 * 1024;
     http_cfg.low_watermark        = 1 * 1024;
-    http_cfg.task_stack_size      = 5 * 1024;
-    http_cfg.read_timeout_ms      = 5000;
-    http_cfg.reconnect_timeout_ms = 1000;
+    http_cfg.task_stack_size      = 8 * 1024;
+    http_cfg.task_priority        = 6;   // above mixer/decoder (5) so the socket
+                                         // connect/read isn't starved of CPU
+    http_cfg.read_timeout_ms      = 4000;
+    http_cfg.reconnect_timeout_ms = 1500;
     http_cfg.enable_auto_reconnect = true;
     s_http_stream = audio_http_stream_open(&http_cfg);
     if (!s_http_stream) {
@@ -319,9 +321,11 @@ static esp_err_t audio_play_url_inner(const char *url)
         return err;
     }
 
-    /* Wait for initial buffer — Icecast servers may burst-buffer for a few seconds
-     * before sending, so allow up to 15s. 2KB is enough for MP3 format detection. */
-    for (int wait = 0; wait < 150; wait++) {
+    /* Wait for initial buffer. The ESP's TCP connection to the track endpoint is
+     * intermittently flaky (connect / header fetch can fail and the download task
+     * auto-retries), but succeeds within a few attempts — so allow up to 30s for
+     * one to land. 2KB is enough for MP3 format detection. */
+    for (int wait = 0; wait < 300; wait++) {
         size_t buffered = audio_http_stream_get_buffered_bytes(s_http_stream);
         if (buffered >= 2048) {
             err = audio_stream_play_io(s_stream, io);
@@ -373,14 +377,17 @@ esp_err_t audio_play_url(void)
 
 esp_err_t audio_stop(void)
 {
+    /* Close HTTP stream first — stops download task from filling the ringbuf.
+     * This unblocks the drain in audio_http_stream_close() and lets the task
+     * exit cleanly before we delete the decoder that was consuming the data. */
+    if (s_http_stream) {
+        audio_http_stream_close(s_http_stream);
+        s_http_stream = NULL;
+    }
     if (s_stream) {
         audio_stream_stop(s_stream);
         audio_stream_delete(s_stream);
         s_stream = NULL;
-    }
-    if (s_http_stream) {
-        audio_http_stream_close(s_http_stream);
-        s_http_stream = NULL;
     }
     ESP_LOGI(TAG, "Playback stopped");
     return ESP_OK;
@@ -391,6 +398,15 @@ const char *audio_get_station_name(void)
     if (s_radio_song[0]) return s_radio_song;
     if (s_radio_station[0]) return s_radio_station;
     return s_status;
+}
+
+bool audio_is_finished(void)
+{
+    /* No active decoder stream → nothing is playing (never started, errored,
+     * or already torn down). Treat as finished so the caller advances. */
+    if (!s_stream) return true;
+    /* Decoder drained the whole track and returned to idle. */
+    return audio_stream_get_state(s_stream) == AUDIO_PLAYER_STATE_IDLE;
 }
 
 void audio_deinit(void)
