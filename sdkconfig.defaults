@@ -1,8 +1,9 @@
 # Use external 32.768kHz crystal for RTC clock to preserve time during deep sleep
 CONFIG_RTC_CLK_SRC_EXT_CRYS=y
 
-# Use large single-app partition (2MB) to accommodate C3 binary with fonts/images
-CONFIG_PARTITION_TABLE_SINGLE_APP_LARGE=y
+# Use custom 1800K factory partition (binary too large for standard 1500K large partition)
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
 # Audio player
 CONFIG_AUDIO_ENABLE=y
