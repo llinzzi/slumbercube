@@ -201,16 +201,14 @@ void app_main(void)
             }
         }
 
-        /* Auto-advance: when the current track finishes, fetch the next one.
-         * audio_play_url() re-queries /api/esp, which returns the next song. */
+        /* Auto-stop: when the boot track finishes, stop playback.
+         * User can long-press to restart manually. */
         if (s_audio_playing && !s_audio_toggle_request && audio_is_finished()) {
-            ESP_LOGI(TAG, "Track finished, playing next");
-            if (!wifi_is_connected()) {
-                wifi_init_sta();
-            }
-            if (audio_play_url() == ESP_OK) {
-                clock_screen_set_station_name(audio_get_station_name());
-            }
+            ESP_LOGI(TAG, "Track finished, stopping");
+            audio_stop();
+            clock_screen_set_audio_indicator(false);
+            clock_screen_set_station_name("Paused");
+            s_audio_playing = false;
         }
 
 #endif
