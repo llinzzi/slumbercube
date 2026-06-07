@@ -17,6 +17,9 @@ const char *audio_get_station_name(void);
  * active. Poll this to auto-advance to the next song. */
 bool audio_is_finished(void);
 
+/* Returns download progress 0-100, or -1 if unknown/not playing. */
+int audio_get_progress(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -18,7 +18,9 @@ static audio_stream_handle_t s_stream = NULL;
 static audio_http_stream_handle_t s_http_stream = NULL;
 static bool s_i2s_ready = false;
 static bool s_mixer_ready = false;
+static bool s_playback_active = false;  /* true only when playback actually started */
 static const char *s_status = NULL;
+static int s_content_length = 0;
 
 /* ── Radio config from /radio JSON API ─────────────────────── */
 static char s_radio_url[256] = {0};
@@ -307,7 +309,7 @@ static esp_err_t audio_play_url_inner(const char *url)
                                          // connect/read isn't starved of CPU
     http_cfg.read_timeout_ms      = 4000;
     http_cfg.reconnect_timeout_ms = 1500;
-    http_cfg.enable_auto_reconnect = true;
+    http_cfg.enable_auto_reconnect = false;
     s_http_stream = audio_http_stream_open(&http_cfg);
     if (!s_http_stream) {
         ESP_LOGE(TAG, "http_stream_open failed");
@@ -321,18 +323,34 @@ static esp_err_t audio_play_url_inner(const char *url)
         return err;
     }
 
-    /* Wait for initial buffer. The ESP's TCP connection to the track endpoint is
-     * intermittently flaky (connect / header fetch can fail and the download task
-     * auto-retries), but succeeds within a few attempts — so allow up to 30s for
-     * one to land. 2KB is enough for MP3 format detection. */
+    /* Wait for initial buffer, then try to start playback.
+     * Retry with fallback sample rates if mixer rejects the stream's rate. */
+    static const uint32_t RATES[] = {44100, 16000, 22050, 48000};
     for (int wait = 0; wait < 300; wait++) {
         size_t buffered = audio_http_stream_get_buffered_bytes(s_http_stream);
         if (buffered >= 2048) {
-            err = audio_stream_play_io(s_stream, io);
-            if (err == ESP_OK) {
-                ESP_LOGI(TAG, "Playback started OK (%d bytes buffered)", (int)buffered);
+            for (int ri = 0; ri < (int)(sizeof(RATES)/sizeof(RATES[0])); ri++) {
+                if (ri > 0) {
+                    /* Reinit mixer at new sample rate */
+                    audio_mixer_deinit();
+                    mixer_cfg.i2s_format.sample_rate = RATES[ri];
+                    if (audio_mixer_init(&mixer_cfg) != ESP_OK) continue;
+                    /* Recreate stream */
+                    audio_stream_stop(s_stream);
+                    audio_stream_delete(s_stream);
+                    s_stream = audio_stream_new(&stream_cfg);
+                    if (!s_stream) break;
+                }
+                err = audio_stream_play_io(s_stream, io);
+                if (err == ESP_OK) {
+                    s_playback_active = true;
+                    s_content_length = audio_http_stream_get_content_length(s_http_stream);
+                    ESP_LOGI(TAG, "Playback started at %lu Hz (%d bytes buffered)", RATES[ri], (int)buffered);
+                    return ESP_OK;
+                }
+                ESP_LOGW(TAG, "play_io failed at %lu Hz: %s", RATES[ri], esp_err_to_name(err));
             }
-            return err;
+            return err;  /* all rates failed */
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
@@ -389,6 +407,8 @@ esp_err_t audio_stop(void)
         audio_stream_delete(s_stream);
         s_stream = NULL;
     }
+    s_playback_active = false;
+    s_content_length = 0;
     ESP_LOGI(TAG, "Playback stopped");
     return ESP_OK;
 }
@@ -402,11 +422,20 @@ const char *audio_get_station_name(void)
 
 bool audio_is_finished(void)
 {
-    /* No active decoder stream → nothing is playing (never started, errored,
-     * or already torn down). Treat as finished so the caller advances. */
+    if (!s_playback_active) return false;  /* never started or already handled */
     if (!s_stream) return true;
-    /* Decoder drained the whole track and returned to idle. */
-    return audio_stream_get_state(s_stream) == AUDIO_PLAYER_STATE_IDLE;
+    audio_player_state_t st = audio_stream_get_state(s_stream);
+    ESP_LOGD(TAG, "stream state: %d", (int)st);
+    return st == AUDIO_PLAYER_STATE_IDLE || st == AUDIO_PLAYER_STATE_SHUTDOWN;
+}
+
+int audio_get_progress(void)
+{
+    if (!s_http_stream || s_content_length <= 0) return -1;
+    size_t downloaded = audio_http_stream_get_total_bytes(s_http_stream);
+    int pct = (int)((downloaded * 100) / (size_t)s_content_length);
+    if (pct > 100) pct = 100;
+    return pct;
 }
 
 void audio_deinit(void)

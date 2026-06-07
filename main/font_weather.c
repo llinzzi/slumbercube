@@ -1,10 +1,14 @@
 /*******************************************************************************
  * Size: 12 px
  * Bpp: 1
- * Opts: --size 12 --bpp 1 --format lvgl --no-compress --font fusion-pixel-12px-monospaced-zh_hans.ttf --symbols  0123456789°/-:AMPM严中云伴冰冷冻劲卷和多大天夹小少尘带平并度强微扬晴暴有未极毛气沙浓浮清烈热爆特狂疾知端细重间阴阵降雨雪雷雹雾霾静风飓龙转到 --output font_weather.c --lv-font-name lv_font_weather
+ * Opts: --size 12 --bpp 1 --format lvgl --no-compress --font assets/fonts/fusion-pixel-12px-monospaced-zh_hans.ttf --symbols  0123456789°/-:AMPM严中云伴冰冷冻劲卷和多大天夹小少尘带平并度强微扬晴暴有未极毛气沙浓浮清烈热爆特狂疾知端细重间阴阵降雨雪雷雹雾霾静风飓龙转到 --lv-include lvgl.h --output main/font_weather.c --lv-font-name lv_font_weather
  ******************************************************************************/
 
+#ifdef LV_LVGL_H_INCLUDE_SIMPLE
 #include "lvgl.h"
+#else
+#include "lvgl.h"
+#endif
 
 #ifndef LV_FONT_WEATHER
 #define LV_FONT_WEATHER 1

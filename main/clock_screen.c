@@ -3,6 +3,7 @@
 #include "font_weather.h"
 #include "font_digital.h"
 #include "font_station.h"
+#include "audio_player_wrapper.h"
 #include "ssd1322_driver.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
@@ -104,25 +105,18 @@ static void draw_chart(void)
                  weather->daily[0].month, weather->daily[0].day);
     }
 
-    /* ── Bottom progress bar (time-of-day) ── */
+    /* ── Song progress bar (right side, y=61) ── */
     {
-        int bar_y = CANVAS_H - 3;
         int bar_x0 = SEP_X + 4;
         int bar_x1 = CANVAS_W - 2;
         int bar_w = bar_x1 - bar_x0;
+        int bar_y = CANVAS_H - 3;
 
+        int song_pct = audio_get_progress();
         draw_line(bar_x0, bar_y, bar_x1, bar_y, COL_PROGBG);
-
-        int elapsed = tm_now.tm_hour * 60 + tm_now.tm_min;
-        int total = 24 * 60;
-        int fill = (bar_w * elapsed) / total;
-        if (fill > 0)
+        if (song_pct > 0) {
+            int fill = (bar_w * song_pct) / 100;
             draw_line(bar_x0, bar_y, bar_x0 + fill, bar_y, COL_PROGFG);
-
-        /* Quarter markers */
-        for (int x = bar_x0 + bar_w / 4; x < bar_x1; x += bar_w / 4) {
-            draw_pixel(x, bar_y - 1, COL_SEP);
-            draw_pixel(x, bar_y + 1, COL_SEP);
         }
     }
 
@@ -293,7 +287,7 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_set_style_text_font(date_label, &lv_font_weather, 0);
     lv_obj_set_style_text_align(date_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(date_label, 0, 52);
-    lv_obj_set_size(date_label, TIME_W, 10);
+    lv_obj_set_size(date_label, TIME_W, 12);
     lv_label_set_text(date_label, "");
 
     /* ── Weather icon image (right, left column) ── */
@@ -307,7 +301,7 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(weather_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
     lv_obj_set_style_text_font(weather_label, &lv_font_weather, 0);
     lv_obj_set_pos(weather_label, SEP_X + 44, 4);
-    lv_obj_set_size(weather_label, 100, 14);
+    lv_obj_set_size(weather_label, 100, 12);
     lv_label_set_text(weather_label, "");
     lv_obj_add_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
 
@@ -316,8 +310,8 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_set_style_text_color(temp_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
     lv_obj_set_style_text_font(temp_label, &lv_font_weather, 0);
     lv_obj_set_style_text_align(temp_label, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_pos(temp_label, SEP_X + 44, 22);
-    lv_obj_set_size(temp_label, 100, 14);
+    lv_obj_set_pos(temp_label, SEP_X + 44, 16);
+    lv_obj_set_size(temp_label, 100, 12);
     lv_label_set_text(temp_label, "");
     lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
 
