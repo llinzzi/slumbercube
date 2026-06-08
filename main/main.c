@@ -201,14 +201,40 @@ void app_main(void)
             }
         }
 
-        /* Auto-stop: when the boot track finishes, stop playback.
-         * User can long-press to restart manually. */
-        if (s_audio_playing && !s_audio_toggle_request && audio_is_finished()) {
-            ESP_LOGI(TAG, "Track finished, stopping");
-            audio_stop();
-            clock_screen_set_audio_indicator(false);
-            clock_screen_set_station_name("Paused");
-            s_audio_playing = false;
+        /* Auto-stop: when the boot track finishes, fully release audio resources.
+         * User can long-press to restart manually (re-inits I2S + mixer).
+         *
+         * Two conditions trigger stop:
+         * 1. Stream state goes IDLE (clean finish)
+         * 2. HTTP download at 100% for 3+ seconds (decoder stuck on trailing garbage) */
+        if (s_audio_playing && !s_audio_toggle_request) {
+            int progress = audio_get_progress();
+            static int stall_ticks = 0;
+
+            if (audio_is_finished()) {
+                const char *name = audio_get_station_name();
+                ESP_LOGI(TAG, "Boot track finished cleanly: '%s', releasing audio resources", name ? name : "unknown");
+                audio_deinit();
+                clock_screen_set_audio_indicator(false);
+                clock_screen_set_station_name("Done");
+                s_audio_playing = false;
+                stall_ticks = 0;
+                ESP_LOGI(TAG, "Audio deinitialized: I2S closed, mixer freed, amp shut down");
+            } else if (progress >= 100) {
+                stall_ticks++;
+                ESP_LOGW(TAG, "Download complete but decoder stalled for %d s", (int)stall_ticks);
+                if (stall_ticks >= 3) {
+                    ESP_LOGW(TAG, "Decoder stalled, force-stopping audio");
+                    audio_deinit();
+                    clock_screen_set_audio_indicator(false);
+                    clock_screen_set_station_name("Done");
+                    s_audio_playing = false;
+                    stall_ticks = 0;
+                    ESP_LOGI(TAG, "Audio force-deinitialized after stall");
+                }
+            } else {
+                stall_ticks = 0;
+            }
         }
 
 #endif
