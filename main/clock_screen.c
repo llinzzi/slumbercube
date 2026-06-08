@@ -214,10 +214,10 @@ static void draw_night_clock(void)
 
     apply_grid_mask();
 
-    /* Audio indicator — drawn after grid mask, top-left 4x4 dot */
+    /* Audio indicator — drawn after grid mask, top-left 2x2 dot */
     if (s_indicator_on) {
-        for (int y = 0; y < 4; y++)
-            for (int x = 0; x < 4; x++)
+        for (int y = 0; y < 2; y++)
+            for (int x = 0; x < 2; x++)
                 canvas_buf[y * CANVAS_W + x] = NIGHT_COLOR;
     }
 
