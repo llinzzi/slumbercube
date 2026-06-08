@@ -10,8 +10,9 @@
 - **NTP 自动校时** — 上电连接 WiFi 自动同步 NTP 时间 (pool.ntp.org)，时区 CST-8
 - **天气预报** — 高德天气 API 获取 4 天预报，程序化天气图标（晴/阴/雨/雪/雾/风），温度范围、中文天气描述
 - **日进度条** — 底部 Canvas 绘制当日时间进度，带四等分刻度标记
-- **HTTP 音频直播** — 唤醒自动播放网络电台流（NS4168 I2S 44.1kHz/16-bit/立体声），支持 ICY 元数据显示（电台名 + 歌曲名），屏幕底部 marquee 滚动
-- **音量控制** — menuconfig 0-100% 软件线性缩放
+- **HTTP 音频播放** — 启动自动请求 `/api/esp` 获取歌曲 URL 播放（NS4168 I2S 44.1kHz/16-bit/立体声），显示歌曲名，底部进度条
+- **连续播放循环** — 每首歌播完后自动请求 `/api/esp` 获取下一首，无限循环；解码器卡住 3 秒自动跳过
+- **音量控制** — `/api/esp` 返回 JSON 中 `volume` 字段动态调节（0-100），兜底 menuconfig 默认值
 - **夜间模式** — 22:00-6:00 自动切换，极简 7 段数码管显示，8×8 网格抖动，最低对比度，静默跳过 WiFi/天气/音频
 - **按键交互** — 短按立即深度睡眠，按键唤醒
 - **深度睡眠** — 10 分钟活动时长，按键唤醒 + 定时器唤醒（默认 7:50），GPIO hold 维持睡眠状态
@@ -87,14 +88,15 @@ app_main()
 ├── WiFi STA 连接 + SNTP 时间同步
 │   └── 状态栏显示 "Connecting WiFi..." → "Fetching weather..."
 ├── 天气数据获取 (最多重试 5 次，间隔 2 秒)
-├── HTTP 音乐流播放 (NS4168 I2S 功放)
+├── 音频播放 (NS4168 I2S 功放)
 │   ├── I2S 初始化 (44.1kHz/16-bit/立体声)
-│   ├── HTTP 流下载 + 缓冲 (8KB/6KB/2KB watermark)
-│   ├── 尝试主 URL 播放
-│   ├── ICY 元数据解析 (电台名、歌曲标题)
-│   └── MP3 解码 → 混音器 → I2S 输出
+│   ├── 请求 /api/esp 获取歌曲 URL + 歌名 + 音量
+│   ├── HTTP 流下载 + 缓冲 (6KB/4KB/1KB watermark)
+│   ├── MP3 解码 → 混音器 → I2S 输出
+│   └── 播完后自动 deinit + 重新请求下一首（循环）
 └── 主循环 (可配置秒数, 1 秒间隔)
     ├── 检查按键 → 停止播放 → 进入睡眠
+    ├── 检测歌曲结束 → 释放资源 → 请求下一首
     └── 超时 → 停止播放 → 关闭显示 → 深度睡眠
 ```
 
@@ -108,7 +110,7 @@ app_main()
 | WiFi/对时 | `wifi.c/h` | WiFi STA 连接、SNTP 时间同步、时区设置 |
 | 天气服务 | `weather_service.c/h` | 高德天气 API 客户端，JSON 解析 |
 | 天气图表 | `clock_screen.c/h` | 全屏 UI 组件：时间、日期、天气图标、温度、进度条 |
-| 音频播放 | `audio_player_wrapper.c/h` | I2S 初始化、HTTP 流下载、ICY 元数据、MP3 解码 |
+| 音频播放 | `audio_player_wrapper.c/h` | I2S 初始化、HTTP 流下载、/api/esp JSON API、MP3 解码、进度跟踪 |
 | 字库 | `font_digital.c/h` | digital-7 等宽字体（时钟数字） |
 | 字库 | `font_weather.c/h` | 天气信息字体 |
 | UI 框架 | `ui/` | LVGL UI 代码 |
@@ -163,7 +165,8 @@ python read_crash.py            # 专门捕捉 Guru Meditation 崩溃
 | Night Mode | 起始/结束时间 | 夜间模式降低亮度 |
 | Sleep | 活跃时长 / 唤醒 GPIO / 闹钟时间 | 深度睡眠配置 |
 | GPIO Pins | SPI / I2S / NS4168 / 按键 | 引脚映射 |
-| Audio | 启用开关 / 音乐流 URL / 音量 (0-100) | 唤醒电台播放 |
+| Audio | 启用开关 / 默认音量 (0-100) | 唤醒音频播放，URL 由 /api/esp 下发 |
+| Partition | 自定义 1800K factory 分区 | 固件 ~1.5MB 超过标准 1500K 大分区 |
 
 ## 功耗说明
 
@@ -286,4 +289,4 @@ tick_screen_main();
 
 ---
 
-*固件 v2.0 | 2026-05-18*
+*固件 v2.1 | 2026-06-08*
