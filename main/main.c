@@ -201,39 +201,59 @@ void app_main(void)
             }
         }
 
-        /* Auto-stop: when the boot track finishes, fully release audio resources.
-         * User can long-press to restart manually (re-inits I2S + mixer).
+        /* Auto-advance: when a track finishes, fetch the next song from /api/esp
+         * and continue playing in a loop.
          *
-         * Two conditions trigger stop:
+         * Two conditions trigger advance:
          * 1. Stream state goes IDLE (clean finish)
          * 2. HTTP download at 100% for 3+ seconds (decoder stuck on trailing garbage) */
         if (s_audio_playing && !s_audio_toggle_request) {
             int progress = audio_get_progress();
             static int stall_ticks = 0;
+            bool track_done = false;
 
             if (audio_is_finished()) {
                 const char *name = audio_get_station_name();
-                ESP_LOGI(TAG, "Boot track finished cleanly: '%s', releasing audio resources", name ? name : "unknown");
-                audio_deinit();
-                clock_screen_set_audio_indicator(false);
-                clock_screen_set_station_name("Done");
-                s_audio_playing = false;
-                stall_ticks = 0;
-                ESP_LOGI(TAG, "Audio deinitialized: I2S closed, mixer freed, amp shut down");
+                ESP_LOGI(TAG, "Track finished cleanly: '%s', advancing to next", name ? name : "unknown");
+                track_done = true;
             } else if (progress >= 100) {
                 stall_ticks++;
                 ESP_LOGW(TAG, "Download complete but decoder stalled for %d s", (int)stall_ticks);
                 if (stall_ticks >= 3) {
-                    ESP_LOGW(TAG, "Decoder stalled, force-stopping audio");
-                    audio_deinit();
-                    clock_screen_set_audio_indicator(false);
-                    clock_screen_set_station_name("Done");
-                    s_audio_playing = false;
-                    stall_ticks = 0;
-                    ESP_LOGI(TAG, "Audio force-deinitialized after stall");
+                    ESP_LOGW(TAG, "Decoder stalled, force-advancing to next track");
+                    track_done = true;
                 }
             } else {
                 stall_ticks = 0;
+            }
+
+            if (track_done) {
+                stall_ticks = 0;
+                audio_deinit();
+                ESP_LOGI(TAG, "Audio deinitialized, fetching next song...");
+                vTaskDelay(pdMS_TO_TICKS(1000));
+
+                /* Re-init I2S (deinit tore it down), then fetch next song and play */
+                clock_screen_set_station_name("Next song...");
+                if (!wifi_is_connected()) {
+                    wifi_init_sta();
+                }
+                if (audio_init() == ESP_OK) {
+                    if (audio_play_url() == ESP_OK) {
+                        clock_screen_set_station_name(audio_get_station_name());
+                        clock_screen_set_audio_indicator(true);
+                    } else {
+                        ESP_LOGW(TAG, "Failed to fetch next track, stopping");
+                        clock_screen_set_audio_indicator(false);
+                        clock_screen_set_station_name("Paused");
+                        s_audio_playing = false;
+                    }
+                } else {
+                    ESP_LOGW(TAG, "Audio re-init failed, stopping");
+                    clock_screen_set_audio_indicator(false);
+                    clock_screen_set_station_name("Paused");
+                    s_audio_playing = false;
+                }
             }
         }
 
