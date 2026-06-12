@@ -91,7 +91,13 @@ static void draw_chart(void)
 
     /* ── Right: Weather (current condition from /api/esp) ── */
     lv_img_set_src(icon_img, weather_icon_match(weather->daily[0].current_text));
-    lv_label_set_text(weather_label, weather->daily[0].current_text);
+    {
+        char buf[24];
+        snprintf(buf, sizeof(buf), "%s %d\xc2\xb0",
+                 weather->daily[0].current_text,
+                 weather->daily[0].current);
+        lv_label_set_text(weather_label, buf);
+    }
 
     {
         char buf[24];
