@@ -1,4 +1,5 @@
 #include "audio_player_wrapper.h"
+#include "weather_service.h"
 #include "audio_mixer.h"
 #include "audio_stream.h"
 #include "audio_http_stream.h"
@@ -27,6 +28,7 @@ static char s_radio_url[256] = {0};
 static char s_radio_station[64] = {0};
 static char s_radio_song[128] = {0};
 static int s_radio_volume_pct = -1;  /* -1 = not set, fallback to CONFIG */
+static weather_data_t s_cached_weather = {0};
 
 #define RADIO_API_URL "http://192.168.8.105:3000/api/esp"
 
@@ -105,7 +107,7 @@ static esp_err_t mute_fn(AUDIO_PLAYER_MUTE_SETTING setting)
 
 static esp_err_t audio_radio_fetch(void)
 {
-    char *resp_buf = malloc(1024);
+    char *resp_buf = malloc(2048);
     if (!resp_buf) return ESP_ERR_NO_MEM;
 
     int resp_len = 0;
@@ -138,8 +140,8 @@ static esp_err_t audio_radio_fetch(void)
     }
 
     /* Read response body */
-    while (resp_len < 1023) {
-        int r = esp_http_client_read(client, resp_buf + resp_len, 1023 - resp_len);
+    while (resp_len < 2047) {
+        int r = esp_http_client_read(client, resp_buf + resp_len, 2047 - resp_len);
         if (r <= 0) break;
         resp_len += r;
     }
@@ -193,6 +195,52 @@ static esp_err_t audio_radio_fetch(void)
         if (s_radio_volume_pct < 0)  s_radio_volume_pct = 0;
         if (s_radio_volume_pct > 100) s_radio_volume_pct = 100;
         ESP_LOGI(TAG, "Radio: volume=%.2f -> %d%%", v, s_radio_volume_pct);
+    }
+
+    /* ── Parse weather sub-object (current + today hi/lo) ── */
+    cJSON *j_weather = cJSON_GetObjectItem(root, "weather");
+    if (j_weather && cJSON_IsObject(j_weather)) {
+        weather_data_t w = {0};
+        daily_forecast_t *d = &w.daily[0];
+
+        cJSON *j_temp   = cJSON_GetObjectItem(j_weather, "temp");
+        cJSON *j_text   = cJSON_GetObjectItem(j_weather, "text");
+        cJSON *j_humid  = cJSON_GetObjectItem(j_weather, "humidity");
+        cJSON *j_tmax   = cJSON_GetObjectItem(j_weather, "tempMax");
+        cJSON *j_tmin   = cJSON_GetObjectItem(j_weather, "tempMin");
+        cJSON *j_tday   = cJSON_GetObjectItem(j_weather, "textDay");
+        cJSON *j_tnight = cJSON_GetObjectItem(j_weather, "textNight");
+
+        d->current  = (j_temp  && cJSON_IsString(j_temp))  ? atoi(j_temp->valuestring)  : 0;
+        d->high     = (j_tmax  && cJSON_IsString(j_tmax))  ? atoi(j_tmax->valuestring)  : 0;
+        d->low      = (j_tmin  && cJSON_IsString(j_tmin))  ? atoi(j_tmin->valuestring)  : 0;
+        d->humidity = (j_humid && cJSON_IsString(j_humid)) ? atoi(j_humid->valuestring) : 0;
+
+        if (j_text && cJSON_IsString(j_text)) {
+            strncpy(d->current_text, j_text->valuestring, sizeof(d->current_text) - 1);
+        }
+        if (j_tday && cJSON_IsString(j_tday)) {
+            strncpy(d->day_text, j_tday->valuestring, sizeof(d->day_text) - 1);
+        }
+        if (j_tnight && cJSON_IsString(j_tnight)) {
+            strncpy(d->night_text, j_tnight->valuestring, sizeof(d->night_text) - 1);
+        }
+
+        struct tm tm_now = {0};
+        time_t now = time(NULL);
+        localtime_r(&now, &tm_now);
+        d->month = tm_now.tm_mon + 1;
+        d->day   = tm_now.tm_mday;
+
+        w.count = 1;
+        w.valid = true;
+        w.fetch_time = now;
+        s_cached_weather = w;
+
+        ESP_LOGI(TAG, "Weather: %s %d°  hi=%d° lo=%d°  humid=%d%%",
+                 d->current_text, d->current, d->high, d->low, d->humidity);
+    } else {
+        ESP_LOGW(TAG, "No weather block in /api/esp response");
     }
 
     cJSON_Delete(root);
@@ -436,6 +484,11 @@ int audio_get_progress(void)
     int pct = (int)((downloaded * 100) / (size_t)s_content_length);
     if (pct > 100) pct = 100;
     return pct;
+}
+
+const weather_data_t *audio_get_weather(void)
+{
+    return &s_cached_weather;
 }
 
 void audio_deinit(void)

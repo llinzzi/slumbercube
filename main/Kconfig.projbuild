@@ -9,18 +9,6 @@ menu "Clock Configuration"
             default "ping8275"
     endmenu
 
-    menu "Weather API Configuration"
-        config AMAP_KEY
-            string "AMAP Weather API Key"
-            default "a2dd59be3fc29eded9ac2a4c760871e8"
-        config AMAP_CITY
-            string "AMAP City Code (adcode)"
-            default "330100"
-            help
-                City code for weather queries, e.g. 330100 for Hangzhou.
-                Find yours at https://restapi.amap.com/v3/config/district
-    endmenu
-
     menu "Night Mode Configuration"
         config NIGHT_START_HOUR
             int "Night mode start hour (0-23)"

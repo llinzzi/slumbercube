@@ -6,7 +6,6 @@
 #include "lvgl_adapter.h"
 #include "ui.h"
 #include "wifi.h"
-#include "weather_service.h"
 #include "clock_screen.h"
 #include "esp_sleep.h"
 #include <time.h>
@@ -22,7 +21,6 @@ static const char *TAG = "MAIN";
 /* 配置项通过 menuconfig 设置 (参见 Kconfig.projbuild) */
 
 static button_handle_t g_btn = NULL;
-static weather_data_t s_weather;
 static volatile bool s_sleep_pending = false;
 
 static volatile bool s_audio_playing = false;
@@ -120,7 +118,7 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(100));
 
     if (!clock_screen_is_night_time()) {
-        // Always init TCP/IP stack + start WiFi for button-press weather
+        // Always init TCP/IP stack + start WiFi (needed for /api/esp)
         clock_screen_set_station_name("Connecting WiFi...");
         wifi_ensure_netif();
         if (wifi_init_sta() == ESP_OK) {
@@ -128,29 +126,25 @@ void app_main(void)
                 wifi_mark_time_set();
             }
         }
-
-        // Initial weather fetch (retries handle async WiFi connection)
-        clock_screen_set_station_name("Fetching weather...");
-        for (int retry = 0; retry < 5; retry++) {
-            esp_err_t err = weather_fetch(&s_weather);
-            if (err == ESP_OK) {
-                screens_set_weather_data_ptr(&s_weather);
-                break;
-            }
-            ESP_LOGW(TAG, "Boot weather fetch attempt %d/5 failed", retry + 1);
-            vTaskDelay(pdMS_TO_TICKS(2000));
-        }
+        /* Weather is fetched as part of audio_play_url() via /api/esp;
+         * the display shows the default icon until that completes. */
     } else {
         ESP_LOGI(TAG, "Night mode, skipping network and weather fetch");
     }
 
 #if CONFIG_AUDIO_ENABLE
     /* Start audio playback (non-blocking: mixer + decoder + HTTP tasks run in background).
-     * Skip in night mode since WiFi is not available. */
+     * Skip in night mode since WiFi is not available.
+     * /api/esp also returns the weather block, so push the cached struct
+     * to the display after a successful fetch. */
     if (!clock_screen_is_night_time()) {
         if (audio_init() == ESP_OK) {
             if (audio_play_url() == ESP_OK) {
                 clock_screen_set_station_name(audio_get_station_name());
+                const weather_data_t *w = audio_get_weather();
+                if (w && w->valid) {
+                    screens_set_weather_data_ptr(w);
+                }
             }
             s_audio_playing = true;
         }
@@ -180,7 +174,13 @@ void app_main(void)
                 if (wifi_init_sta() == ESP_OK) {
                     clock_screen_set_station_name("Starting audio...");
                     if (audio_init() == ESP_OK) {
-                        audio_play_url();
+                        if (audio_play_url() == ESP_OK) {
+                            clock_screen_set_station_name(audio_get_station_name());
+                            const weather_data_t *w = audio_get_weather();
+                            if (w && w->valid) {
+                                screens_set_weather_data_ptr(w);
+                            }
+                        }
                         clock_screen_set_audio_indicator(true);
                         s_audio_playing = true;
                     }
@@ -189,7 +189,13 @@ void app_main(void)
                     if (wifi_is_connected()) {
                         clock_screen_set_station_name("Starting audio...");
                         if (audio_init() == ESP_OK) {
-                            audio_play_url();
+                            if (audio_play_url() == ESP_OK) {
+                                clock_screen_set_station_name(audio_get_station_name());
+                                const weather_data_t *w = audio_get_weather();
+                                if (w && w->valid) {
+                                    screens_set_weather_data_ptr(w);
+                                }
+                            }
                             clock_screen_set_audio_indicator(true);
                             s_audio_playing = true;
                         }
@@ -241,6 +247,10 @@ void app_main(void)
                 if (audio_init() == ESP_OK) {
                     if (audio_play_url() == ESP_OK) {
                         clock_screen_set_station_name(audio_get_station_name());
+                        const weather_data_t *w = audio_get_weather();
+                        if (w && w->valid) {
+                            screens_set_weather_data_ptr(w);
+                        }
                         clock_screen_set_audio_indicator(true);
                     } else {
                         ESP_LOGW(TAG, "Failed to fetch next track, stopping");

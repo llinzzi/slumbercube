@@ -89,20 +89,15 @@ static void draw_chart(void)
         lv_label_set_text(date_label, buf);
     }
 
-    /* ── Right: Weather ── */
-    lv_img_set_src(icon_img, weather_icon_match(weather->daily[0].day_text));
-    lv_label_set_text(weather_label, weather->daily[0].day_text);
+    /* ── Right: Weather (current condition from /api/esp) ── */
+    lv_img_set_src(icon_img, weather_icon_match(weather->daily[0].current_text));
+    lv_label_set_text(weather_label, weather->daily[0].current_text);
 
     {
         char buf[24];
         snprintf(buf, sizeof(buf), "%d\xc2\xb0 - %d\xc2\xb0",
                  weather->daily[0].low, weather->daily[0].high);
         lv_label_set_text(temp_label, buf);
-    }
-    {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%02d-%02d",
-                 weather->daily[0].month, weather->daily[0].day);
     }
 
     /* ── Song progress bar (right side, y=61) ── */
