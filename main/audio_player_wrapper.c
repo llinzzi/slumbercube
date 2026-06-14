@@ -1,5 +1,6 @@
 #include "audio_player_wrapper.h"
 #include "weather_service.h"
+#include "wifi.h"
 #include "audio_mixer.h"
 #include "audio_stream.h"
 #include "audio_http_stream.h"
@@ -13,6 +14,18 @@
 #include <string.h>
 
 static const char *TAG = "AUDIO";
+
+#define RADIO_API_BASE "http://192.168.8.192:3000/api/esp"
+
+static const char *radio_api_url(void)
+{
+    static char url[256] = {0};
+    if (url[0] == 0) {
+        snprintf(url, sizeof(url), "%s/%s", RADIO_API_BASE, wifi_get_device_id());
+        ESP_LOGI(TAG, "API URL: %s", url);
+    }
+    return url;
+}
 
 static i2s_chan_handle_t s_i2s_tx_chan = NULL;
 static audio_stream_handle_t s_stream = NULL;
@@ -30,7 +43,6 @@ static char s_radio_song[128] = {0};
 static int s_radio_volume_pct = -1;  /* -1 = not set, fallback to CONFIG */
 static weather_data_t s_cached_weather = {0};
 
-#define RADIO_API_URL "http://192.168.8.105:3000/api/esp"
 
 /* ── Software volume scale (16-bit stereo PCM) ──────────────── */
 static void apply_volume(void *buf, size_t len)
@@ -105,6 +117,114 @@ static esp_err_t mute_fn(AUDIO_PLAYER_MUTE_SETTING setting)
  * Radio JSON API
  * ══════════════════════════════════════════════════════════════ */
 
+/* Fetch /api/esp and parse weather only (no audio playback).
+ * Use this to display weather before starting audio. */
+esp_err_t audio_fetch_weather(void)
+{
+    char *resp_buf = malloc(2048);
+    if (!resp_buf) return ESP_ERR_NO_MEM;
+
+    int resp_len = 0;
+    esp_http_client_config_t cfg = {
+        .url = radio_api_url(),
+        .timeout_ms = 10000,
+        .buffer_size = 512,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        free(resp_buf);
+        ESP_LOGW(TAG, "Radio: HTTP init failed");
+        return ESP_FAIL;
+    }
+
+    esp_err_t err = esp_http_client_open(client, 0);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "Radio: HTTP open failed: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        free(resp_buf);
+        return err;
+    }
+
+    int ret = esp_http_client_fetch_headers(client);
+    if (ret < 0 && ret != -1) {
+        ESP_LOGW(TAG, "Radio: fetch headers failed");
+        esp_http_client_cleanup(client);
+        free(resp_buf);
+        return ESP_FAIL;
+    }
+
+    while (resp_len < 2047) {
+        int r = esp_http_client_read(client, resp_buf + resp_len, 2047 - resp_len);
+        if (r <= 0) break;
+        resp_len += r;
+    }
+    resp_buf[resp_len] = '\0';
+
+    int status = esp_http_client_get_status_code(client);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    if (status != 200 || resp_len == 0) {
+        ESP_LOGW(TAG, "Radio: HTTP %d, body=%d bytes", status, resp_len);
+        free(resp_buf);
+        return ESP_FAIL;
+    }
+
+    cJSON *root = cJSON_Parse(resp_buf);
+    if (!root) {
+        ESP_LOGW(TAG, "Radio: JSON parse failed");
+        free(resp_buf);
+        return ESP_FAIL;
+    }
+
+    /* Parse weather sub-object */
+    cJSON *j_weather = cJSON_GetObjectItem(root, "weather");
+    if (j_weather && cJSON_IsObject(j_weather)) {
+        weather_data_t w = {0};
+        daily_forecast_t *d = &w.daily[0];
+
+        cJSON *j_temp   = cJSON_GetObjectItem(j_weather, "temp");
+        cJSON *j_text   = cJSON_GetObjectItem(j_weather, "text");
+        cJSON *j_humid  = cJSON_GetObjectItem(j_weather, "humidity");
+        cJSON *j_tmax   = cJSON_GetObjectItem(j_weather, "tempMax");
+        cJSON *j_tmin   = cJSON_GetObjectItem(j_weather, "tempMin");
+        cJSON *j_tday   = cJSON_GetObjectItem(j_weather, "textDay");
+        cJSON *j_tnight = cJSON_GetObjectItem(j_weather, "textNight");
+
+        d->current  = (j_temp  && cJSON_IsString(j_temp))  ? atoi(j_temp->valuestring)  : 0;
+        d->high    = (j_tmax  && cJSON_IsString(j_tmax))  ? atoi(j_tmax->valuestring)  : 0;
+        d->low     = (j_tmin  && cJSON_IsString(j_tmin))  ? atoi(j_tmin->valuestring)  : 0;
+        d->humidity= (j_humid && cJSON_IsString(j_humid)) ? atoi(j_humid->valuestring) : 0;
+
+        if (j_text && cJSON_IsString(j_text))
+            strncpy(d->current_text, j_text->valuestring, sizeof(d->current_text) - 1);
+        if (j_tday && cJSON_IsString(j_tday))
+            strncpy(d->day_text, j_tday->valuestring, sizeof(d->day_text) - 1);
+        if (j_tnight && cJSON_IsString(j_tnight))
+            strncpy(d->night_text, j_tnight->valuestring, sizeof(d->night_text) - 1);
+
+        struct tm tm_now = {0};
+        time_t now = time(NULL);
+        localtime_r(&now, &tm_now);
+        d->month = tm_now.tm_mon + 1;
+        d->day   = tm_now.tm_mday;
+
+        w.count = 1;
+        w.valid = true;
+        w.fetch_time = now;
+        s_cached_weather = w;
+
+        ESP_LOGI(TAG, "Weather: %s %d°  hi=%d° lo=%d°  humid=%d%%",
+                 d->current_text, d->current, d->high, d->low, d->humidity);
+    } else {
+        ESP_LOGW(TAG, "No weather block in /api/esp");
+    }
+
+    cJSON_Delete(root);
+    free(resp_buf);
+    return ESP_OK;
+}
+
 static esp_err_t audio_radio_fetch(void)
 {
     char *resp_buf = malloc(2048);
@@ -112,8 +232,8 @@ static esp_err_t audio_radio_fetch(void)
 
     int resp_len = 0;
     esp_http_client_config_t cfg = {
-        .url = RADIO_API_URL,
-        .timeout_ms = 5000,
+        .url = radio_api_url(),
+        .timeout_ms = 10000,
         .buffer_size = 512,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
@@ -355,7 +475,7 @@ static esp_err_t audio_play_url_inner(const char *url)
     http_cfg.task_stack_size      = 8 * 1024;
     http_cfg.task_priority        = 6;   // above mixer/decoder (5) so the socket
                                          // connect/read isn't starved of CPU
-    http_cfg.read_timeout_ms      = 4000;
+    http_cfg.read_timeout_ms      = 30000;  // /audio/local/track can wait for intro buffer
     http_cfg.reconnect_timeout_ms = 1500;
     http_cfg.enable_auto_reconnect = false;
     s_http_stream = audio_http_stream_open(&http_cfg);

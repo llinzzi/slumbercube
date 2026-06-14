@@ -11,4 +11,8 @@ bool wifi_is_time_set(void);
 void wifi_mark_time_set(void);
 void wifi_set_timezone(void);
 
+/* Returns the device's WiFi MAC as hex, e.g. "543204470984".
+ * Suitable for /api/esp/<device_id> endpoints. */
+const char *wifi_get_device_id(void);
+
 #endif // WIFI_MANAGER_H

@@ -24,7 +24,7 @@
 #define LV_FONT_MONTSERRAT_14 0
 #define LV_FONT_MONTSERRAT_48 0
 
-#define LV_FONT_DEFAULT &lv_font_weather
+#define LV_FONT_DEFAULT &lv_font_station
 
 /* Widgets used */
 #define LV_USE_LABEL  1

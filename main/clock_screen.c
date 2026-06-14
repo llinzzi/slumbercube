@@ -1,6 +1,5 @@
 #include "clock_screen.h"
 #include "weather_icons.h"
-#include "font_weather.h"
 #include "font_digital.h"
 #include "font_station.h"
 #include "audio_player_wrapper.h"
@@ -285,7 +284,7 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     /* ── Date label (left, below time) ── */
     date_label = lv_label_create(container);
     lv_obj_set_style_text_color(date_label, lv_color_make(COL_DATE, COL_DATE, COL_DATE), 0);
-    lv_obj_set_style_text_font(date_label, &lv_font_weather, 0);
+    lv_obj_set_style_text_font(date_label, &lv_font_station, 0);
     lv_obj_set_style_text_align(date_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(date_label, 0, 52);
     lv_obj_set_size(date_label, TIME_W, 12);
@@ -300,7 +299,7 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     /* ── Weather text (right, top) ── */
     weather_label = lv_label_create(container);
     lv_obj_set_style_text_color(weather_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
-    lv_obj_set_style_text_font(weather_label, &lv_font_weather, 0);
+    lv_obj_set_style_text_font(weather_label, &lv_font_station, 0);
     lv_obj_set_pos(weather_label, SEP_X + 44, 4);
     lv_obj_set_size(weather_label, 100, 12);
     lv_label_set_text(weather_label, "");
@@ -309,7 +308,7 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     /* ── Temperature label (right, middle) ── */
     temp_label = lv_label_create(container);
     lv_obj_set_style_text_color(temp_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
-    lv_obj_set_style_text_font(temp_label, &lv_font_weather, 0);
+    lv_obj_set_style_text_font(temp_label, &lv_font_station, 0);
     lv_obj_set_style_text_align(temp_label, LV_TEXT_ALIGN_LEFT, 0);
     lv_obj_set_pos(temp_label, SEP_X + 44, 16);
     lv_obj_set_size(temp_label, 100, 12);

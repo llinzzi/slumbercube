@@ -14,6 +14,11 @@ esp_err_t audio_stop(void);
 void audio_deinit(void);
 const char *audio_get_station_name(void);
 
+/* Fetch /api/esp and parse weather only (no audio playback).
+ * Call this before audio_play_url() to render weather immediately,
+ * then call audio_play_url() to start audio. */
+esp_err_t audio_fetch_weather(void);
+
 /* Cached weather parsed from the latest /api/esp response.
  * Returns a pointer to a static struct (valid= false until first fetch). */
 const weather_data_t *audio_get_weather(void);

@@ -81,9 +81,11 @@ void app_main(void)
     ESP_ERROR_CHECK(ssd1322_init());
 
     // Initialize button with short/long press distinction
+    // - short_press_time 300ms: 容忍机械抖动，普通点击就能识别
+    // - long_press_time  800ms: 更短的长按识别，用户体验更灵敏
     button_config_t btn_cfg = {
-        .short_press_time = 200,
-        .long_press_time = 1500,
+        .short_press_time = 300,
+        .long_press_time = 800,
     };
     button_gpio_config_t gpio_cfg = {
         .gpio_num = CONFIG_BUTTON_GPIO,
@@ -135,16 +137,24 @@ void app_main(void)
 #if CONFIG_AUDIO_ENABLE
     /* Start audio playback (non-blocking: mixer + decoder + HTTP tasks run in background).
      * Skip in night mode since WiFi is not available.
-     * /api/esp also returns the weather block, so push the cached struct
-     * to the display after a successful fetch. */
+     * Fetch weather FIRST so the display updates immediately (before audio buffering),
+     * then start audio. */
     if (!clock_screen_is_night_time()) {
         if (audio_init() == ESP_OK) {
-            if (audio_play_url() == ESP_OK) {
-                clock_screen_set_station_name(audio_get_station_name());
+            /* 1. Fetch + display weather (fast, ~200-500ms) */
+            clock_screen_set_station_name("Fetching weather...");
+            if (audio_fetch_weather() == ESP_OK) {
                 const weather_data_t *w = audio_get_weather();
                 if (w && w->valid) {
                     screens_set_weather_data_ptr(w);
                 }
+                clock_screen_set_station_name("Starting audio...");
+                /* Give LVGL one tick to render before audio starts buffering */
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+            /* 2. Start audio (background buffering, non-blocking) */
+            if (audio_play_url() == ESP_OK) {
+                clock_screen_set_station_name(audio_get_station_name());
             }
             s_audio_playing = true;
         }

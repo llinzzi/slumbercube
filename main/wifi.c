@@ -4,6 +4,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "esp_system.h"
+#include "esp_mac.h"
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
@@ -16,6 +17,22 @@ static const char *TAG = "WIFI";
 
 /* WiFi 配置通过 menuconfig 设置 (参见 Kconfig.projbuild) */
 #define MAX_RETRY     10
+
+static char s_device_id[13] = {0};  /* hex MAC, e.g. "543204470984" */
+
+const char *wifi_get_device_id(void)
+{
+    if (s_device_id[0] == 0) {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        snprintf(s_device_id, sizeof(s_device_id),
+                 "%02X%02X%02X%02X%02X%02X",
+                 mac[0], mac[1], mac[2],
+                 mac[3], mac[4], mac[5]);
+        ESP_LOGI(TAG, "Device ID: %s", s_device_id);
+    }
+    return s_device_id;
+}
 
 static EventGroupHandle_t s_wifi_event_group;
 static int s_retry_num = 0;
