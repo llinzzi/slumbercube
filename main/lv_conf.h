@@ -18,6 +18,9 @@
 #define LV_MEM_CUSTOM_FREE    heap_caps_free
 #define LV_MEM_CUSTOM_REALLOC heap_caps_realloc
 
+/* Large font support (full CJK requires >1MB bitmap) */
+#define LV_FONT_FMT_TXT_LARGE 1
+
 /* Fonts */
 #define LV_FONT_MONTSERRAT_8  0
 #define LV_FONT_MONTSERRAT_12 0

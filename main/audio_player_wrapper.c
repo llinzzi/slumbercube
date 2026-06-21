@@ -1,6 +1,7 @@
 #include "audio_player_wrapper.h"
 #include "weather_service.h"
 #include "wifi.h"
+#include "shtc3.h"
 #include "audio_mixer.h"
 #include "audio_stream.h"
 #include "audio_http_stream.h"
@@ -12,17 +13,82 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include <string.h>
+#include <math.h>
 
 static const char *TAG = "AUDIO";
 
 #define RADIO_API_BASE "http://192.168.8.192:3000/api/esp"
 
+/* Latest indoor temp/RH (NaN = sensor absent / not yet read).
+ * Updated via audio_set_indoor_env() right before each /api/esp fetch. */
+static float s_indoor_t = NAN;
+static float s_indoor_h = NAN;
+
+void audio_set_indoor_env(float temp_c, float humidity)
+{
+    s_indoor_t = temp_c;
+    s_indoor_h = humidity;
+}
+
+/* Wake source for this boot cycle: "rtc", "btn", or NULL (cold boot).
+ * Set once via audio_set_wake_source() before any network call. */
+static const char *s_wake_source = NULL;
+
+void audio_set_wake_source(const char *source)
+{
+    s_wake_source = source;
+}
+
+/* Query-string fragment "t=24.3&h=58" (no leading ? or &) — empty if no sensor.
+ * Tries SHTC3 here as a last-chance read in case main.c didn't. */
+static const char *indoor_query(void)
+{
+    static char qs[32] = {0};
+    if (isnan(s_indoor_t)) {
+        float t, h;
+        if (shtc3_read(&t, &h)) {
+            s_indoor_t = t;
+            s_indoor_h = h;
+        } else {
+            s_indoor_t = NAN;  /* mark sensor absent, don't retry */
+            s_indoor_h = NAN;
+        }
+    }
+    if (isnan(s_indoor_t)) {
+        qs[0] = '\0';
+        return qs;
+    }
+    snprintf(qs, sizeof(qs), "t=%.1f&h=%.0f", s_indoor_t, s_indoor_h);
+    return qs;
+}
+
 static const char *radio_api_url(void)
 {
-    static char url[256] = {0};
-    if (url[0] == 0) {
-        snprintf(url, sizeof(url), "%s/%s", RADIO_API_BASE, wifi_get_device_id());
+    static char url[288] = {0};
+    static bool logged = false;
+
+    char qs[96]  = {0};
+    int  offset  = 0;
+
+    /* Wake source is always the first query param (when present) */
+    if (s_wake_source) {
+        offset += snprintf(qs + offset, sizeof(qs) - offset,
+                           "?wake=%s", s_wake_source);
+    }
+
+    /* Indoor temp/humidity (indoor_query returns "t=X&h=Y" or "") */
+    const char *indoor = indoor_query();
+    if (indoor[0]) {
+        offset += snprintf(qs + offset, sizeof(qs) - offset,
+                           "%c%s", (offset > 0) ? '&' : '?', indoor);
+    }
+
+    snprintf(url, sizeof(url), "%s/%s%s",
+             RADIO_API_BASE, wifi_get_device_id(), qs);
+
+    if (!logged) {
         ESP_LOGI(TAG, "API URL: %s", url);
+        logged = true;
     }
     return url;
 }
@@ -117,207 +183,83 @@ static esp_err_t mute_fn(AUDIO_PLAYER_MUTE_SETTING setting)
  * Radio JSON API
  * ══════════════════════════════════════════════════════════════ */
 
-/* Fetch /api/esp and parse weather only (no audio playback).
- * Use this to display weather before starting audio. */
-esp_err_t audio_fetch_weather(void)
+/* Fetch /api/esp and return parsed JSON. Caller must cJSON_Delete(root).
+ * Retries once after a 2s delay on transient network errors. */
+static esp_err_t audio_http_get_json(cJSON **out_root)
 {
-    char *resp_buf = malloc(2048);
-    if (!resp_buf) return ESP_ERR_NO_MEM;
+    *out_root = NULL;
 
-    int resp_len = 0;
-    esp_http_client_config_t cfg = {
-        .url = radio_api_url(),
-        .timeout_ms = 10000,
-        .buffer_size = 512,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) {
-        free(resp_buf);
-        ESP_LOGW(TAG, "Radio: HTTP init failed");
-        return ESP_FAIL;
-    }
+    for (int attempt = 0; attempt < 2; attempt++) {
+        if (attempt > 0) {
+            ESP_LOGW(TAG, "Radio: retrying after 2s delay");
+            vTaskDelay(pdMS_TO_TICKS(2000));
+        }
 
-    esp_err_t err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Radio: HTTP open failed: %s", esp_err_to_name(err));
+        char *resp_buf = malloc(2048);
+        if (!resp_buf) return ESP_ERR_NO_MEM;
+
+        int resp_len = 0;
+        esp_http_client_config_t cfg = {
+            .url = radio_api_url(),
+            .timeout_ms = 10000,
+            .buffer_size = 512,
+        };
+        esp_http_client_handle_t client = esp_http_client_init(&cfg);
+        if (!client) {
+            free(resp_buf);
+            ESP_LOGW(TAG, "Radio: HTTP init failed");
+            continue;
+        }
+
+        esp_err_t err = esp_http_client_open(client, 0);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "Radio: HTTP open failed: %s", esp_err_to_name(err));
+            esp_http_client_cleanup(client);
+            free(resp_buf);
+            continue;
+        }
+
+        int ret = esp_http_client_fetch_headers(client);
+        if (ret < 0 && ret != -1) {
+            ESP_LOGW(TAG, "Radio: fetch headers failed");
+            esp_http_client_cleanup(client);
+            free(resp_buf);
+            continue;
+        }
+
+        while (resp_len < 2047) {
+            int r = esp_http_client_read(client, resp_buf + resp_len, 2047 - resp_len);
+            if (r <= 0) break;
+            resp_len += r;
+        }
+        resp_buf[resp_len] = '\0';
+
+        int status = esp_http_client_get_status_code(client);
+        esp_http_client_close(client);
         esp_http_client_cleanup(client);
+
+        if (status != 200 || resp_len == 0) {
+            ESP_LOGW(TAG, "Radio: HTTP %d, body=%d bytes", status, resp_len);
+            free(resp_buf);
+            continue;
+        }
+
+        *out_root = cJSON_Parse(resp_buf);
         free(resp_buf);
-        return err;
+        if (!*out_root) {
+            ESP_LOGW(TAG, "Radio: JSON parse failed");
+            continue;
+        }
+        return ESP_OK;
     }
 
-    int ret = esp_http_client_fetch_headers(client);
-    if (ret < 0 && ret != -1) {
-        ESP_LOGW(TAG, "Radio: fetch headers failed");
-        esp_http_client_cleanup(client);
-        free(resp_buf);
-        return ESP_FAIL;
-    }
-
-    while (resp_len < 2047) {
-        int r = esp_http_client_read(client, resp_buf + resp_len, 2047 - resp_len);
-        if (r <= 0) break;
-        resp_len += r;
-    }
-    resp_buf[resp_len] = '\0';
-
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-
-    if (status != 200 || resp_len == 0) {
-        ESP_LOGW(TAG, "Radio: HTTP %d, body=%d bytes", status, resp_len);
-        free(resp_buf);
-        return ESP_FAIL;
-    }
-
-    cJSON *root = cJSON_Parse(resp_buf);
-    if (!root) {
-        ESP_LOGW(TAG, "Radio: JSON parse failed");
-        free(resp_buf);
-        return ESP_FAIL;
-    }
-
-    /* Parse weather sub-object */
-    cJSON *j_weather = cJSON_GetObjectItem(root, "weather");
-    if (j_weather && cJSON_IsObject(j_weather)) {
-        weather_data_t w = {0};
-        daily_forecast_t *d = &w.daily[0];
-
-        cJSON *j_temp   = cJSON_GetObjectItem(j_weather, "temp");
-        cJSON *j_text   = cJSON_GetObjectItem(j_weather, "text");
-        cJSON *j_humid  = cJSON_GetObjectItem(j_weather, "humidity");
-        cJSON *j_tmax   = cJSON_GetObjectItem(j_weather, "tempMax");
-        cJSON *j_tmin   = cJSON_GetObjectItem(j_weather, "tempMin");
-        cJSON *j_tday   = cJSON_GetObjectItem(j_weather, "textDay");
-        cJSON *j_tnight = cJSON_GetObjectItem(j_weather, "textNight");
-
-        d->current  = (j_temp  && cJSON_IsString(j_temp))  ? atoi(j_temp->valuestring)  : 0;
-        d->high    = (j_tmax  && cJSON_IsString(j_tmax))  ? atoi(j_tmax->valuestring)  : 0;
-        d->low     = (j_tmin  && cJSON_IsString(j_tmin))  ? atoi(j_tmin->valuestring)  : 0;
-        d->humidity= (j_humid && cJSON_IsString(j_humid)) ? atoi(j_humid->valuestring) : 0;
-
-        if (j_text && cJSON_IsString(j_text))
-            strncpy(d->current_text, j_text->valuestring, sizeof(d->current_text) - 1);
-        if (j_tday && cJSON_IsString(j_tday))
-            strncpy(d->day_text, j_tday->valuestring, sizeof(d->day_text) - 1);
-        if (j_tnight && cJSON_IsString(j_tnight))
-            strncpy(d->night_text, j_tnight->valuestring, sizeof(d->night_text) - 1);
-
-        struct tm tm_now = {0};
-        time_t now = time(NULL);
-        localtime_r(&now, &tm_now);
-        d->month = tm_now.tm_mon + 1;
-        d->day   = tm_now.tm_mday;
-
-        w.count = 1;
-        w.valid = true;
-        w.fetch_time = now;
-        s_cached_weather = w;
-
-        ESP_LOGI(TAG, "Weather: %s %d°  hi=%d° lo=%d°  humid=%d%%",
-                 d->current_text, d->current, d->high, d->low, d->humidity);
-    } else {
-        ESP_LOGW(TAG, "No weather block in /api/esp");
-    }
-
-    cJSON_Delete(root);
-    free(resp_buf);
-    return ESP_OK;
+    return ESP_FAIL;
 }
 
-static esp_err_t audio_radio_fetch(void)
+/* Parse only weather from /api/esp JSON. Stores result in s_cached_weather.
+ * Does NOT touch radio state — safe to call from audio_fetch_api(). */
+static void audio_parse_weather(cJSON *root)
 {
-    char *resp_buf = malloc(2048);
-    if (!resp_buf) return ESP_ERR_NO_MEM;
-
-    int resp_len = 0;
-    esp_http_client_config_t cfg = {
-        .url = radio_api_url(),
-        .timeout_ms = 10000,
-        .buffer_size = 512,
-    };
-    esp_http_client_handle_t client = esp_http_client_init(&cfg);
-    if (!client) {
-        free(resp_buf);
-        ESP_LOGW(TAG, "Radio: HTTP init failed");
-        return ESP_FAIL;
-    }
-
-    esp_err_t err = esp_http_client_open(client, 0);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "Radio: HTTP open failed: %s", esp_err_to_name(err));
-        esp_http_client_cleanup(client);
-        free(resp_buf);
-        return err;
-    }
-
-    int ret = esp_http_client_fetch_headers(client);
-    if (ret < 0 && ret != -1) {
-        ESP_LOGW(TAG, "Radio: fetch headers failed");
-        esp_http_client_cleanup(client);
-        free(resp_buf);
-        return ESP_FAIL;
-    }
-
-    /* Read response body */
-    while (resp_len < 2047) {
-        int r = esp_http_client_read(client, resp_buf + resp_len, 2047 - resp_len);
-        if (r <= 0) break;
-        resp_len += r;
-    }
-    resp_buf[resp_len] = '\0';
-
-    int status = esp_http_client_get_status_code(client);
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-
-    if (status != 200 || resp_len == 0) {
-        ESP_LOGW(TAG, "Radio: HTTP %d, body=%d bytes", status, resp_len);
-        free(resp_buf);
-        return ESP_FAIL;
-    }
-
-    ESP_LOGI(TAG, "Radio JSON: %s", resp_buf);
-
-    /* Parse JSON */
-    cJSON *root = cJSON_Parse(resp_buf);
-    if (!root) {
-        ESP_LOGW(TAG, "Radio: JSON parse failed");
-        free(resp_buf);
-        return ESP_FAIL;
-    }
-
-    cJSON *j_url    = cJSON_GetObjectItem(root, "url");
-    cJSON *j_name   = cJSON_GetObjectItem(root, "name");
-    cJSON *j_song   = cJSON_GetObjectItem(root, "song");
-    cJSON *j_volume = cJSON_GetObjectItem(root, "volume");
-
-    if (j_url && cJSON_IsString(j_url) && j_url->valuestring[0]) {
-        strncpy(s_radio_url, j_url->valuestring, sizeof(s_radio_url) - 1);
-        s_radio_url[sizeof(s_radio_url) - 1] = '\0';
-    }
-    if (j_name && cJSON_IsString(j_name)) {
-        strncpy(s_radio_station, j_name->valuestring, sizeof(s_radio_station) - 1);
-    }
-    if (j_song && cJSON_IsString(j_song)) {
-        strncpy(s_radio_song, j_song->valuestring, sizeof(s_radio_song) - 1);
-    }
-    if (j_volume && cJSON_IsNumber(j_volume)) {
-        double v = cJSON_GetNumberValue(j_volume);
-        /* Support both 0.0-1.0 (float) and 0-100 (integer/percentage) */
-        if (v >= 0.0 && v <= 1.0) {
-            s_radio_volume_pct = (int)(v * 100.0 + 0.5);
-        } else if (v > 1.0 && v <= 100.0) {
-            s_radio_volume_pct = (int)(v + 0.5);
-        } else {
-            s_radio_volume_pct = (int)v;
-        }
-        if (s_radio_volume_pct < 0)  s_radio_volume_pct = 0;
-        if (s_radio_volume_pct > 100) s_radio_volume_pct = 100;
-        ESP_LOGI(TAG, "Radio: volume=%.2f -> %d%%", v, s_radio_volume_pct);
-    }
-
-    /* ── Parse weather sub-object (current + today hi/lo) ── */
     cJSON *j_weather = cJSON_GetObjectItem(root, "weather");
     if (j_weather && cJSON_IsObject(j_weather)) {
         weather_data_t w = {0};
@@ -360,11 +302,82 @@ static esp_err_t audio_radio_fetch(void)
         ESP_LOGI(TAG, "Weather: %s %d°  hi=%d° lo=%d°  humid=%d%%",
                  d->current_text, d->current, d->high, d->low, d->humidity);
     } else {
-        ESP_LOGW(TAG, "No weather block in /api/esp response");
+        ESP_LOGW(TAG, "No weather block in /api/esp");
     }
+}
 
+/* Parse radio fields (url/name/song/volume) from /api/esp JSON.
+ * Clears previous radio state FIRST, then populates from response.
+ * When a field is missing in the new response, it stays empty — no
+ * stale data from a previous fetch persists. */
+static void audio_parse_radio(cJSON *root)
+{
+    /* ── Reset radio state ── */
+    s_radio_url[0]      = '\0';
+    s_radio_station[0]  = '\0';
+    s_radio_song[0]     = '\0';
+    s_radio_volume_pct  = -1;
+
+    /* ── Radio URL / station / song / volume ── */
+    cJSON *j_url    = cJSON_GetObjectItem(root, "url");
+    cJSON *j_name   = cJSON_GetObjectItem(root, "name");
+    cJSON *j_song   = cJSON_GetObjectItem(root, "song");
+    cJSON *j_volume = cJSON_GetObjectItem(root, "volume");
+
+    if (j_url && cJSON_IsString(j_url) && j_url->valuestring[0]) {
+        strncpy(s_radio_url, j_url->valuestring, sizeof(s_radio_url) - 1);
+        s_radio_url[sizeof(s_radio_url) - 1] = '\0';
+    }
+    if (j_name && cJSON_IsString(j_name)) {
+        strncpy(s_radio_station, j_name->valuestring, sizeof(s_radio_station) - 1);
+    }
+    if (j_song && cJSON_IsString(j_song)) {
+        strncpy(s_radio_song, j_song->valuestring, sizeof(s_radio_song) - 1);
+    }
+    if (j_volume && cJSON_IsNumber(j_volume)) {
+        double v = cJSON_GetNumberValue(j_volume);
+        /* Support both 0.0-1.0 (float) and 0-100 (integer/percentage) */
+        if (v >= 0.0 && v <= 1.0) {
+            s_radio_volume_pct = (int)(v * 100.0 + 0.5);
+        } else if (v > 1.0 && v <= 100.0) {
+            s_radio_volume_pct = (int)(v + 0.5);
+        } else {
+            s_radio_volume_pct = (int)v;
+        }
+        if (s_radio_volume_pct < 0)  s_radio_volume_pct = 0;
+        if (s_radio_volume_pct > 100) s_radio_volume_pct = 100;
+        ESP_LOGI(TAG, "Radio: volume=%.2f -> %d%%", v, s_radio_volume_pct);
+    }
+}
+
+/* Fetch /api/esp and parse weather + radio fields.
+ * Used as the boot weather fetch — also caches s_radio_url so
+ * audio_play_url() can skip a redundant HTTP round-trip. */
+esp_err_t audio_fetch_api(void)
+{
+    cJSON *root = NULL;
+    esp_err_t err = audio_http_get_json(&root);
+    if (err != ESP_OK) return err;
+
+    audio_parse_weather(root);
+    audio_parse_radio(root);
     cJSON_Delete(root);
-    free(resp_buf);
+
+    /* Success if we got usable weather data */
+    return s_cached_weather.valid ? ESP_OK : ESP_FAIL;
+}
+
+/* Fetch /api/esp for a fresh radio URL (auto-advance, button toggle).
+ * Always clears previous radio state before parsing. */
+static esp_err_t audio_radio_fetch(void)
+{
+    cJSON *root = NULL;
+    esp_err_t err = audio_http_get_json(&root);
+    if (err != ESP_OK) return err;
+
+    audio_parse_radio(root);
+    audio_parse_weather(root);
+    cJSON_Delete(root);
 
     if (s_radio_url[0] == '\0') {
         ESP_LOGW(TAG, "Radio: no URL in response");
@@ -538,10 +551,13 @@ esp_err_t audio_play_url(void)
 
     s_status = "Fetching radio...";
 
-    /* Fetch radio config from /radio API; if it fails, don't play */
-    if (audio_radio_fetch() != ESP_OK) {
-        ESP_LOGW(TAG, "Radio fetch failed, no fallback URL configured");
-        return ESP_FAIL;
+    /* Fetch radio config from /api/esp unless already cached by
+     * audio_fetch_api() during boot — avoids a double HTTP round-trip. */
+    if (s_radio_url[0] == '\0') {
+        if (audio_radio_fetch() != ESP_OK) {
+            ESP_LOGW(TAG, "Radio fetch failed, no URL to play");
+            return ESP_FAIL;
+        }
     }
 
     const char *play_url = s_radio_url;
@@ -550,9 +566,15 @@ esp_err_t audio_play_url(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    /* Copy URL before calling audio_play_url_inner() — it calls
+     * audio_stop() which clears s_radio_url, invalidating the pointer. */
+    char url_copy[256];
+    strncpy(url_copy, play_url, sizeof(url_copy) - 1);
+    url_copy[sizeof(url_copy) - 1] = '\0';
+
     s_status = "Connecting...";
 
-    if (audio_play_url_inner(play_url) == ESP_OK) {
+    if (audio_play_url_inner(url_copy) == ESP_OK) {
         s_status = "Streaming...";
         return ESP_OK;
     }
@@ -577,6 +599,7 @@ esp_err_t audio_stop(void)
     }
     s_playback_active = false;
     s_content_length = 0;
+    s_radio_url[0] = '\0';  /* force re-fetch on next play */
     ESP_LOGI(TAG, "Playback stopped");
     return ESP_OK;
 }
@@ -595,6 +618,11 @@ bool audio_is_finished(void)
     audio_player_state_t st = audio_stream_get_state(s_stream);
     ESP_LOGD(TAG, "stream state: %d", (int)st);
     return st == AUDIO_PLAYER_STATE_IDLE || st == AUDIO_PLAYER_STATE_SHUTDOWN;
+}
+
+bool audio_radio_url_is_set(void)
+{
+    return s_radio_url[0] != '\0';
 }
 
 int audio_get_progress(void)

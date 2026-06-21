@@ -1,5 +1,4 @@
 #include "clock_screen.h"
-#include "weather_icons.h"
 #include "font_digital.h"
 #include "font_station.h"
 #include "audio_player_wrapper.h"
@@ -9,6 +8,7 @@
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
+#include <math.h>
 
 static const char *TAG = "WEATHER_CHART";
 
@@ -21,17 +21,14 @@ static const char *TAG = "WEATHER_CHART";
 #define COL_TEMP   0xFF
 #define COL_LOW    0xFF
 #define COL_SEP    0xFF
-#define COL_PROGBG 0x22
-#define COL_PROGFG 0xFF
 
 static lv_obj_t *container = NULL;
 static lv_obj_t *canvas = NULL;
 static uint8_t *canvas_buf = NULL;
 static lv_obj_t *time_label = NULL;
-static lv_obj_t *date_label = NULL;
 static lv_obj_t *weather_label = NULL;
 static lv_obj_t *temp_label = NULL;
-static lv_obj_t *icon_img = NULL;
+static lv_obj_t *indoor_label = NULL;
 static lv_obj_t *station_label = NULL;
 static bool s_indicator_on = false;
 
@@ -81,20 +78,22 @@ static void draw_chart(void)
                  (unsigned char)tm_now.tm_hour, (unsigned char)tm_now.tm_min);
         lv_label_set_text(time_label, buf);
     }
+    /* ── Right: Weather (current condition + indoor temp in parens) ── */
     {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%02d-%02d",
-                 (unsigned char)tm_now.tm_mon + 1, (unsigned char)tm_now.tm_mday);
-        lv_label_set_text(date_label, buf);
-    }
-
-    /* ── Right: Weather (current condition from /api/esp) ── */
-    lv_img_set_src(icon_img, weather_icon_match(weather->daily[0].current_text));
-    {
-        char buf[24];
-        snprintf(buf, sizeof(buf), "%s %d\xc2\xb0",
-                 weather->daily[0].current_text,
-                 weather->daily[0].current);
+        char buf[64];
+        const char *indoor = (indoor_label && lv_label_get_text(indoor_label)[0])
+                             ? lv_label_get_text(indoor_label) : NULL;
+        ESP_LOGI(TAG, "weather row: text='%s' indoor=%s",
+                 weather->daily[0].current_text, indoor ? indoor : "(none)");
+        if (indoor) {
+            snprintf(buf, sizeof(buf), "%s %d\xc2\xb0 %s",
+                     weather->daily[0].current_text,
+                     weather->daily[0].current, indoor);
+        } else {
+            snprintf(buf, sizeof(buf), "%s %d\xc2\xb0",
+                     weather->daily[0].current_text,
+                     weather->daily[0].current);
+        }
         lv_label_set_text(weather_label, buf);
     }
 
@@ -103,21 +102,6 @@ static void draw_chart(void)
         snprintf(buf, sizeof(buf), "%d\xc2\xb0 - %d\xc2\xb0",
                  weather->daily[0].low, weather->daily[0].high);
         lv_label_set_text(temp_label, buf);
-    }
-
-    /* ── Song progress bar (right side, y=61) ── */
-    {
-        int bar_x0 = SEP_X + 4;
-        int bar_x1 = CANVAS_W - 2;
-        int bar_w = bar_x1 - bar_x0;
-        int bar_y = CANVAS_H - 3;
-
-        int song_pct = audio_get_progress();
-        draw_line(bar_x0, bar_y, bar_x1, bar_y, COL_PROGBG);
-        if (song_pct > 0) {
-            int fill = (bar_w * song_pct) / 100;
-            draw_line(bar_x0, bar_y, bar_x0 + fill, bar_y, COL_PROGFG);
-        }
     }
 
     /* Bottom-left small decorative corner */
@@ -240,13 +224,6 @@ void clock_screen_update_time(void)
     snprintf(buf, sizeof(buf), "%02d:%02d",
              (unsigned char)tm_now.tm_hour, (unsigned char)tm_now.tm_min);
     lv_label_set_text(time_label, buf);
-
-    if (date_label) {
-        char date[8];
-        snprintf(date, sizeof(date), "%02d-%02d",
-                 (unsigned char)tm_now.tm_mon + 1, (unsigned char)tm_now.tm_mday);
-        lv_label_set_text(date_label, date);
-    }
 }
 
 /* ── Public API ── */
@@ -281,47 +258,40 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_set_size(time_label, TIME_W, 48);
     lv_label_set_text(time_label, "");
 
-    /* ── Date label (left, below time) ── */
-    date_label = lv_label_create(container);
-    lv_obj_set_style_text_color(date_label, lv_color_make(COL_DATE, COL_DATE, COL_DATE), 0);
-    lv_obj_set_style_text_font(date_label, &lv_font_station, 0);
-    lv_obj_set_style_text_align(date_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(date_label, 0, 52);
-    lv_obj_set_size(date_label, TIME_W, 12);
-    lv_label_set_text(date_label, "");
+    /* ── Indoor temp cache (hidden label, used by draw_chart) ── */
+    indoor_label = lv_label_create(container);
+    lv_label_set_text(indoor_label, "");
+    lv_obj_add_flag(indoor_label, LV_OBJ_FLAG_HIDDEN);
 
-    /* ── Weather icon image (right, left column) ── */
-    icon_img = lv_img_create(container);
-    lv_img_set_src(icon_img, weather_icon_default());
-    lv_obj_set_pos(icon_img, SEP_X + 6, 2);
-    lv_obj_add_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
-
-    /* ── Weather text (right, top) ── */
+    /* ── Weather text (right half, top row — with indoor in parens) ── */
     weather_label = lv_label_create(container);
     lv_obj_set_style_text_color(weather_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
     lv_obj_set_style_text_font(weather_label, &lv_font_station, 0);
-    lv_obj_set_pos(weather_label, SEP_X + 44, 4);
-    lv_obj_set_size(weather_label, 100, 12);
+    lv_obj_set_style_text_align(weather_label, LV_TEXT_ALIGN_LEFT, 0);
+    lv_obj_set_pos(weather_label, SEP_X + 7, 0);
+    lv_obj_set_size(weather_label, CANVAS_W - SEP_X - 9, 18);
+    lv_label_set_long_mode(weather_label, LV_LABEL_LONG_CLIP);
     lv_label_set_text(weather_label, "");
     lv_obj_add_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
 
-    /* ── Temperature label (right, middle) ── */
+    /* ── Temperature range label (right half, second row) ── */
     temp_label = lv_label_create(container);
     lv_obj_set_style_text_color(temp_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
     lv_obj_set_style_text_font(temp_label, &lv_font_station, 0);
     lv_obj_set_style_text_align(temp_label, LV_TEXT_ALIGN_LEFT, 0);
-    lv_obj_set_pos(temp_label, SEP_X + 44, 16);
-    lv_obj_set_size(temp_label, 100, 12);
+    lv_obj_set_pos(temp_label, SEP_X + 7, 18);
+    lv_obj_set_size(temp_label, CANVAS_W - SEP_X - 9, 18);
+    lv_label_set_long_mode(temp_label, LV_LABEL_LONG_CLIP);
     lv_label_set_text(temp_label, "");
     lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
 
-    /* ── Station name label (right side, same row as weather date) ── */
+    /* ── Station name (bottom row, full width, centered) ── */
     station_label = lv_label_create(container);
     lv_obj_set_style_text_color(station_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
     lv_obj_set_style_text_font(station_label, &lv_font_station, 0);
     lv_obj_set_style_text_align(station_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(station_label, 0, 37);
-    lv_obj_set_size(station_label, 256, 18);
+    lv_obj_set_pos(station_label, 0, 36);
+    lv_obj_set_size(station_label, CANVAS_W, 18);
     lv_obj_set_style_bg_opa(station_label, LV_OPA_TRANSP, 0);
     lv_label_set_long_mode(station_label, LV_LABEL_LONG_SCROLL_CIRCULAR);
     lv_label_set_text(station_label, "");
@@ -349,6 +319,24 @@ void clock_screen_set_audio_indicator(bool on)
     if (canvas) lv_obj_invalidate(canvas);
 }
 
+void clock_screen_set_indoor_env(float temp_c, float humidity)
+{
+    if (!indoor_label) return;
+
+    if (isnan(temp_c)) {  /* sensor absent */
+        ESP_LOGI(TAG, "indoor env: sensor absent (NaN)");
+        lv_label_set_text(indoor_label, "");
+        if (weather && weather->valid) draw_chart();
+        return;
+    }
+
+    char buf[32];
+    snprintf(buf, sizeof(buf), "(内%.1f\xc2\xb0%.0f%%)", temp_c, humidity);
+    ESP_LOGI(TAG, "indoor env: %.1f°C %.0f%%RH  →  suffix='%s'", temp_c, humidity, buf);
+    lv_label_set_text(indoor_label, buf);
+    if (weather && weather->valid) draw_chart();
+}
+
 void clock_screen_set_data(const weather_data_t *data)
 {
     weather = data;
@@ -363,7 +351,6 @@ void clock_screen_set_data(const weather_data_t *data)
     if (night_mode) return; /* Don't change visibility during night mode */
 
     /* Show weather data */
-    if (icon_img) lv_obj_remove_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
     if (weather_label) lv_obj_remove_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
     if (temp_label) lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
     draw_chart();
@@ -412,19 +399,16 @@ void clock_screen_set_night_mode(bool enable)
     if (enable) {
         ssd1322_set_contrast(0x01); /* dim contrast current */
         if (canvas) lv_obj_remove_flag(canvas, LV_OBJ_FLAG_HIDDEN);
-        if (date_label) lv_obj_add_flag(date_label, LV_OBJ_FLAG_HIDDEN);
         if (time_label) lv_obj_add_flag(time_label, LV_OBJ_FLAG_HIDDEN);
-        if (icon_img) lv_obj_add_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
         if (weather_label) lv_obj_add_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
         if (temp_label) lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
+        if (indoor_label) lv_obj_add_flag(indoor_label, LV_OBJ_FLAG_HIDDEN);
         if (station_label) lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
     } else {
         ssd1322_set_contrast(0x9F); /* restore normal contrast */
         if (canvas) lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
-        if (date_label) lv_obj_remove_flag(date_label, LV_OBJ_FLAG_HIDDEN);
         if (time_label) lv_obj_remove_flag(time_label, LV_OBJ_FLAG_HIDDEN);
         if (weather && weather->valid) {
-            if (icon_img) lv_obj_remove_flag(icon_img, LV_OBJ_FLAG_HIDDEN);
             if (weather_label) lv_obj_remove_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
             if (temp_label) lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
         }

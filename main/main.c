@@ -11,6 +11,7 @@
 #include <time.h>
 #include "iot_button.h"
 #include "button_gpio.h"
+#include "shtc3.h"
 
 #if CONFIG_AUDIO_ENABLE
 #include "audio_player_wrapper.h"
@@ -25,6 +26,30 @@ static volatile bool s_sleep_pending = false;
 
 static volatile bool s_audio_playing = false;
 static volatile bool s_audio_toggle_request = false;
+
+/* Try the on-board SHTC3 sensor. Returns true and fills *temp_c on success.
+ * Hardware variant without the sensor just returns false; display omits the value. */
+static bool read_indoor_env(float *temp_c, float *humidity)
+{
+    float t = 0, h = 0;
+    if (!shtc3_read(&t, &h)) return false;
+    *temp_c = t;
+    *humidity = h;
+    ESP_LOGI(TAG, "SHTC3: indoor %.1f°C, %.0f%%RH", t, h);
+    return true;
+}
+
+static void apply_weather_and_indoor(const weather_data_t *w)
+{
+    if (w && w->valid) {
+        screens_set_weather_data_ptr(w);
+    }
+    float t = 0, h = 0;
+    if (read_indoor_env(&t, &h)) {
+        clock_screen_set_indoor_env(t, h);
+        audio_set_indoor_env(t, h);
+    }
+}
 
 /* Short click: sleep */
 static void button_short_click_cb(void *button_handle, void *usr_data)
@@ -49,6 +74,27 @@ static void button_long_press_cb(void *button_handle, void *usr_data)
 void app_main(void)
 {
     ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL, active=%ds", CONFIG_ACTIVE_DURATION_SECS);
+
+    /* Detect wake source for /api/esp ?wake= query param */
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    switch (cause) {
+    case ESP_SLEEP_WAKEUP_TIMER:
+        audio_set_wake_source("rtc");
+        ESP_LOGI(TAG, "Woke from RTC timer");
+        break;
+    case ESP_SLEEP_WAKEUP_GPIO:
+        audio_set_wake_source("btn");
+        ESP_LOGI(TAG, "Woke from GPIO (button)");
+        break;
+    case ESP_SLEEP_WAKEUP_UNDEFINED:
+        audio_set_wake_source("sys");
+        ESP_LOGI(TAG, "Cold boot");
+        break;
+    default:
+        audio_set_wake_source("sys");
+        ESP_LOGI(TAG, "Wake cause: %d (unhandled, using sys)", (int)cause);
+        break;
+    }
 
     /* Enable GPIO hold through deep sleep, and release any hold left from
      * previous sleep cycle before reconfiguring pins. */
@@ -137,26 +183,44 @@ void app_main(void)
 #if CONFIG_AUDIO_ENABLE
     /* Start audio playback (non-blocking: mixer + decoder + HTTP tasks run in background).
      * Skip in night mode since WiFi is not available.
-     * Fetch weather FIRST so the display updates immediately (before audio buffering),
-     * then start audio. */
+     * Read SHTC3 early so indoor temp appears in the very first /api/esp URL,
+     * avoiding a second HTTP round-trip with different query params. */
     if (!clock_screen_is_night_time()) {
+        /* Read indoor sensor before any network call */
+        float t = 0, h = 0;
+        if (shtc3_read(&t, &h)) {
+            audio_set_indoor_env(t, h);
+            ESP_LOGI(TAG, "SHTC3: indoor %.1f°C, %.0f%%RH", t, h);
+        }
+
         if (audio_init() == ESP_OK) {
-            /* 1. Fetch + display weather (fast, ~200-500ms) */
+            /* 1. Single HTTP call — parses both weather and radio URL from /api/esp.
+             * Weather and URL are independent; one can succeed without the other. */
             clock_screen_set_station_name("Fetching weather...");
-            if (audio_fetch_weather() == ESP_OK) {
-                const weather_data_t *w = audio_get_weather();
-                if (w && w->valid) {
-                    screens_set_weather_data_ptr(w);
-                }
+            bool got_weather = (audio_fetch_api() == ESP_OK);
+
+            /* Display whatever we got (best-effort) */
+            const weather_data_t *w = audio_get_weather();
+            if (got_weather && w && w->valid) {
+                screens_set_weather_data_ptr(w);
+            }
+            clock_screen_set_indoor_env(t, h);
+
+            if (got_weather) {
                 clock_screen_set_station_name("Starting audio...");
-                /* Give LVGL one tick to render before audio starts buffering */
-                vTaskDelay(pdMS_TO_TICKS(50));
             }
-            /* 2. Start audio (background buffering, non-blocking) */
-            if (audio_play_url() == ESP_OK) {
-                clock_screen_set_station_name(audio_get_station_name());
+            /* Give LVGL one tick to render before audio starts buffering */
+            vTaskDelay(pdMS_TO_TICKS(50));
+
+            /* 2. Start audio — only if the same API response included a URL.
+             * audio_fetch_api() already cached s_radio_url above. */
+            if (audio_radio_url_is_set()) {
+                if (audio_play_url() == ESP_OK) {
+                    clock_screen_set_station_name(audio_get_station_name());
+                    clock_screen_set_audio_indicator(true);
+                    s_audio_playing = true;
+                }
             }
-            s_audio_playing = true;
         }
     }
 #endif
@@ -186,13 +250,10 @@ void app_main(void)
                     if (audio_init() == ESP_OK) {
                         if (audio_play_url() == ESP_OK) {
                             clock_screen_set_station_name(audio_get_station_name());
-                            const weather_data_t *w = audio_get_weather();
-                            if (w && w->valid) {
-                                screens_set_weather_data_ptr(w);
-                            }
+                            apply_weather_and_indoor(audio_get_weather());
+                            clock_screen_set_audio_indicator(true);
+                            s_audio_playing = true;
                         }
-                        clock_screen_set_audio_indicator(true);
-                        s_audio_playing = true;
                     }
                 } else {
                     /* wifi_init_sta timed out — check if it connected just after timeout */
@@ -201,13 +262,10 @@ void app_main(void)
                         if (audio_init() == ESP_OK) {
                             if (audio_play_url() == ESP_OK) {
                                 clock_screen_set_station_name(audio_get_station_name());
-                                const weather_data_t *w = audio_get_weather();
-                                if (w && w->valid) {
-                                    screens_set_weather_data_ptr(w);
-                                }
+                                apply_weather_and_indoor(audio_get_weather());
+                                clock_screen_set_audio_indicator(true);
+                                s_audio_playing = true;
                             }
-                            clock_screen_set_audio_indicator(true);
-                            s_audio_playing = true;
                         }
                     } else {
                         clock_screen_set_audio_indicator(false);
@@ -257,10 +315,7 @@ void app_main(void)
                 if (audio_init() == ESP_OK) {
                     if (audio_play_url() == ESP_OK) {
                         clock_screen_set_station_name(audio_get_station_name());
-                        const weather_data_t *w = audio_get_weather();
-                        if (w && w->valid) {
-                            screens_set_weather_data_ptr(w);
-                        }
+                        apply_weather_and_indoor(audio_get_weather());
                         clock_screen_set_audio_indicator(true);
                     } else {
                         ESP_LOGW(TAG, "Failed to fetch next track, stopping");
@@ -278,6 +333,15 @@ void app_main(void)
         }
 
 #endif
+
+        /* Refresh indoor temp every 10s — updates display + cache for next /api/esp */
+        if (i % 10 == 0) {
+            float t = 0, h = 0;
+            if (shtc3_read(&t, &h)) {
+                audio_set_indoor_env(t, h);
+                clock_screen_set_indoor_env(t, h);
+            }
+        }
 
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
