@@ -1,22 +1,8 @@
 # Sleep Clock
 
-基于 ESP-IDF 5.5 框架的睡眠时钟固件，驱动 256x64 SSD1322 灰度 OLED 显示屏。支持 WiFi 自动对时、天气信息获取、按键交互和深度睡眠。
+基于 ESP-IDF 5.5 框架的睡眠时钟固件，驱动 256×64 SSD1322 灰度 OLED 显示屏。支持 WiFi 自动对时、`/api/esp` 天气+电台数据获取、I2S 音频播放、SHTC3 室内温湿度传感、按键交互和深度睡眠。
 
 ![产品照片](image_001.jpg)
-
-## 功能特性
-
-- **数字时钟** — digital-7 字体 48px 超大时间显示 (HH:MM)，日期 MM-DD
-- **NTP 自动校时** — 上电连接 WiFi 自动同步 NTP 时间 (pool.ntp.org)，时区 CST-8
-- **天气预报** — 高德天气 API 获取 4 天预报，程序化天气图标（晴/阴/雨/雪/雾/风），温度范围、中文天气描述
-- **日进度条** — 底部 Canvas 绘制当日时间进度，带四等分刻度标记
-- **HTTP 音频播放** — 启动自动请求 `/api/esp` 获取歌曲 URL 播放（NS4168 I2S 44.1kHz/16-bit/立体声），显示歌曲名，底部进度条
-- **连续播放循环** — 每首歌播完后自动请求 `/api/esp` 获取下一首，无限循环；解码器卡住 3 秒自动跳过
-- **音量控制** — `/api/esp` 返回 JSON 中 `volume` 字段动态调节（0-100），兜底 menuconfig 默认值
-- **夜间模式** — 22:00-6:00 自动切换，极简 7 段数码管显示，8×8 网格抖动，最低对比度，静默跳过 WiFi/天气/音频
-- **按键交互** — 短按立即深度睡眠，按键唤醒
-- **深度睡眠** — 10 分钟活动时长，按键唤醒 + 定时器唤醒（默认 7:50），GPIO hold 维持睡眠状态
-- **防白闪机制** — 多层级保护：GPIO hold + 显示初始关闭 + 首帧渲染后开启 + 正确屏幕加载顺序
 
 ## 硬件规格
 
@@ -24,269 +10,394 @@
 | 项目 | 规格 |
 |------|------|
 | 芯片 | ESP32-C3-MINI-1 (RISC-V 单核, WiFi/BT) |
-| USB | 原生 USB（DE11 ESD 保护） |
-| 工作电压 | 3.3V |
-| 输入电源 | 5V DC |
 | Flash | 4MB DIO @ 80MHz |
-| RTC 晶振 | 32.768kHz |
+| RTC | 32.768kHz 晶振 |
 
 ### 显示
 | 项目 | 规格 |
 |------|------|
 | 型号 | SSD1322 |
-| 分辨率 | 256x64 灰度 OLED |
-| 接口 | SPI (10MHz) |
-| 灰度格式 | I4 (4-bit, 16 级灰度) |
-
-### 外设
-- **音频功放**: NS4168 (I2S 输入)
-- **LED 驱动**: FM116C (双路 H 桥)
-- **电源**: ME6217 LDO (5V → 3.3V)
+| 分辨率 | 256×64 灰度 OLED |
+| 接口 | SPI 10MHz, I4 灰度 (16 级) |
 
 ### GPIO 连接
 
 | GPIO | 功能 | 连接 |
 |------|------|------|
-| GPIO0 | 32k_XP | 32.768kHz 晶振 |
-| GPIO1 | 32k_XN | 32.768kHz 晶振 |
-| GPIO2 | NS_CTRL | NS4168 关断控制 |
-| GPIO3 | KEY | 用户按键（唤醒） |
-| GPIO4 | I2S_SDIN | NS4168 数据输入 |
-| GPIO5 | I2S_SCLK | NS4168 时钟 |
-| GPIO6 | I2S_LRCLK | NS4168 左右声道时钟 |
-| GPIO7 | SPI_SCK | SSD1322 SCLK |
-| GPIO8 | SPI_DC | SSD1322 DC |
-| GPIO9 | BOOT | 下载/启动按键 |
-| GPIO10 | SPI_SDA | SSD1322 SDI (MOSI) |
-| GPIO18 | USB_D- | USB 数据线 |
-| GPIO19 | USB_D+ | USB 数据线 |
-| GPIO20 | SPI_RST | SSD1322 RST |
-| GPIO21 | IN2 | FM116C IN2 |
+| 2 | NS_CTRL | NS4168 功放关断 |
+| 3 | KEY / WAKEUP | 用户按键 (短按睡眠, 长按切歌, 深度睡眠唤醒) |
+| 4 | I2S_SDIN | NS4168 数据 |
+| 5 | I2S_SCLK | NS4168 时钟 |
+| 6 | I2S_LRCLK | NS4168 声道 |
+| 7 | SPI_SCK | SSD1322 SCLK |
+| 8 | SPI_DC | SSD1322 DC |
+| 9 | I2C_SCL | SHTC3 温湿度传感器 |
+| 10 | SPI_SDA | SSD1322 MOSI |
+| 20 | SPI_RST | SSD1322 RST |
+| 21 | I2C_SDA | SHTC3 温湿度传感器 |
 
-> SPI_CS 硬件接地，无需占用 GPIO。
+> SPI CS 硬件接地。唤醒 GPIO 和按键共用 GPIO3。
 
-### 电源架构
+---
+
+## 程序启动流程
+
+```mermaid
+flowchart TD
+    A[深度睡眠] -->|RTC/按键唤醒| B[esp_sleep_get_wakeup_cause]
+    B --> C{唤醒源}
+    C -->|RTC| D[wake=rtc]
+    C -->|按键| E[wake=btn]
+    C -->|冷启动| F[wake=sys]
+
+    D --> G[GPIO 早期初始化]
+    E --> G
+    F --> G
+
+    G --> H[ssd1322_init<br/>显示保持关闭]
+    H --> I[按键初始化<br/>短按=睡眠, 长按=切歌]
+    I --> J[wifi_set_timezone<br/>CST-8]
+    J --> K[lvgl_adapter_init<br/>L8→I4 DMA]
+    K --> L[clock_screen_create<br/>首帧渲染]
+    L --> M[ssd1322_display_on<br/>防白闪]
+
+    M --> N{夜间模式?}
+
+    N -->|是| O[跳过 WiFi/天气/音频<br/>7段数码管显示]
+    N -->|否| P[WiFi STA 连接]
+    P --> Q[SNTP 时间同步]
+    Q --> R[读取 SHTC3 传感器]
+    R --> S[audio_fetch_api<br/>单次 HTTP GET /api/esp]
+    S --> T[解析天气 + 电台URL]
+    T --> U{有电台URL?}
+    U -->|是| V[audio_play_url<br/>HTTP 流 MP3 解码]
+    U -->|否| W[跳过音频]
+
+    V --> X[主循环 3600s]
+    O --> X
+    W --> X
+
+    X --> Y{每秒检查}
+    Y -->|短按/超时| Z[深度睡眠]
+    Y -->|长按| AA[切换播放/停止]
+    Y -->|歌曲结束| AB[auto_advance<br/>请求下一首]
+    Y -->|每10秒| AC[刷新 SHTC3 传感器]
+    AB --> V
+    AA --> V
+    AC --> X
+```
+
+---
+
+## 屏幕布局
 
 ```
-5V DC ──► ME6217 LDO ──► 3.3V (主控/外设)
-                    └──► VLED (显示)
+y=0   ┌──────────────────────────────────────────────┐
+      │ 左: 16:30 (digital-7 48px)   右: 小雨 22°(内25.3°58%)  │
+y=18  │                                    22° - 30°         │
+y=36  │              [ 歌曲名居中滚动 ]                          │
+      └──────────────────────────────────────────────┘
+                        256×64 SSD1322
 ```
+
+| 区域 | 字体 | 内容 |
+|------|------|------|
+| 时间 | `lv_font_digital` (digital-7, 48px, 4bpp) | HH:MM |
+| 天气行 | `lv_font_station` (fusion-pixel, 10px, 1bpp) | 天气文字 + 当前温度 + 室内温湿度 |
+| 温度行 | `lv_font_station` | 今日最低温度 – 最高温度 |
+| 歌名行 | `lv_font_station` | 歌曲名, 居中滚动 |
+
+---
+
+## 夜间模式
+
+触发条件: 22:00–6:00
+
+- 显示切换到 Canvas 7 段数码管 (12px 灰度像素, 8×8 网格抖动)
+- 对比度降到 `0x01` (极暗)
+- 跳过 WiFi、天气、SHTC3、音频 — 纯时钟
+
+---
+
+## 唤醒机制
+
+| 唤醒源 | `?wake=` | 说明 |
+|--------|----------|------|
+| RTC 定时器 (默认 7:50) | `rtc` | 每天定时唤醒 |
+| GPIO3 按键 | `btn` | 手动按按键唤醒 |
+| 冷启动 (上电/烧录) | `sys` | 第一次启动 |
+
+唤醒源在启动最早期通过 `esp_sleep_get_wakeup_cause()` 检测，随后拼接到 `/api/esp` URL 中。
+
+---
+
+## /api/esp API 规范
+
+### 请求
+
+```
+GET http://{server}:3000/api/esp/{device_id}?wake={src}&t={temp}&h={humidity}
+```
+
+| 参数 | 类型 | 示例 | 说明 |
+|------|------|------|------|
+| `device_id` | path | `543204470994` | ESP32-C3 MAC 地址 (12 hex) |
+| `wake` | query | `rtc` / `btn` / `sys` | 唤醒源 |
+| `t` | query | `25.3` | 室内温度 °C (SHTC3, 可选) |
+| `h` | query | `58` | 室内湿度 %RH (SHTC3, 可选) |
+
+### 响应 JSON
+
+```json
+{
+  "url": "http://stream.example.com/track.mp3",
+  "name": "电台名称",
+  "song": "当前歌曲",
+  "volume": 50,
+  "weather": {
+    "temp": "26",
+    "text": "小雨",
+    "humidity": "85",
+    "tempMax": "30",
+    "tempMin": "22",
+    "textDay": "小雨",
+    "textNight": "阴"
+  }
+}
+```
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `url` | string | 音频流 URL, 为空字符串则不播放 |
+| `name` | string | 电台/专辑名 |
+| `song` | string | 当前歌曲名, 优先显示 |
+| `volume` | number | 音量 0.0–1.0 或 0–100 |
+| `weather.temp` | string | 当前温度 |
+| `weather.text` | string | 天气描述 (晴/多云/阴/雨/雪/雾/风 等) |
+| `weather.humidity` | string | 室外湿度 |
+| `weather.tempMax` | string | 今日最高温 |
+| `weather.tempMin` | string | 今日最低温 |
+| `weather.textDay` | string | 白天天气 |
+| `weather.textNight` | string | 夜间天气 |
+
+### 响应示例 (无音乐)
+
+```json
+{
+  "weather": { "temp": "26", "text": "晴", "humidity": "50", "tempMax": "32", "tempMin": "22", "textDay": "晴", "textNight": "多云" }
+}
+```
+
+> `url` 缺失或为空 → 不启动音频播放, 仅显示天气。
+
+### 请求时机
+
+```mermaid
+sequenceDiagram
+    participant ESP as ESP32-C3
+    participant API as /api/esp Server
+    participant Stream as Audio Stream Server
+
+    Note over ESP: 启动 (任意唤醒源)
+    ESP->>API: GET /api/esp/{id}?wake=rtc&t=25.3&h=58
+    API-->>ESP: { url, name, song, volume, weather }
+
+    alt url 存在
+        ESP->>Stream: HTTP GET audio stream
+        Stream-->>ESP: MP3 data
+        Note over ESP: I2S 播放
+    else url 为空
+        Note over ESP: 仅显示天气, 不播放
+    end
+
+    Note over ESP: 歌曲结束 (或卡住3秒)
+    ESP->>API: GET /api/esp/{id}?wake=rtc&t=25.4&h=57
+    API-->>ESP: { url, ... }
+    ESP->>Stream: HTTP GET next track
+
+    Note over ESP: 长按按键
+    ESP->>API: GET /api/esp/{id}?wake=rtc&t=25.6&h=55
+    API-->>ESP: { url, ... }
+    ESP->>Stream: HTTP GET new track
+```
+
+> 启动阶段只发 **一次** HTTP GET: `audio_fetch_api()` 同时解析天气和电台 URL, `audio_play_url()` 判断 URL 已缓存则直接播放, 不再重复请求。
+
+---
+
+## 温度传感器 (SHTC3)
+
+```mermaid
+flowchart LR
+    A[主循环 每10秒] --> B[shtc3_read]
+    B --> C{测量成功?}
+    C -->|是| D[audio_set_indoor_env<br/>缓存温度+湿度]
+    D --> E[clock_screen_set_indoor_env<br/>更新屏幕显示]
+    C -->|失败| F[保留上次值<br/>3次重试后放弃本周期]
+```
+
+- **芯片**: Sensirion SHTC3 (I2C, 0x70)
+- **引脚**: GPIO9 (SCL), GPIO21 (SDA)
+- **读取频率**: 每 10 秒
+- **容错**: 每次读取尝试 3 种策略 (正常 → 软复位 → Clock Stretching), 失败后跳过本次, 10 秒后自动重试
+- **数据用途**: 屏幕显示 `(内25.3°58%)` + 作为 `?t=&h=` 参数随下次 `/api/esp` 请求发送
+
+---
 
 ## 软件架构
 
-```
-app_main()
-├── GPIO/外设初始化
-├── SSD1322 驱动初始化 (显示保持关闭)
-├── 按键初始化 (GPIO3)
-├── 时区设置 (CST-8 / UTC+8)
-├── LVGL 适配器初始化
-│   └── lvgl_task (FreeRTOS, 每 10ms 调用 lv_timer_handler)
-├── UI 初始化
-│   └── clock_screen_create() 创建主界面
-├── 显示开启 (等待首帧渲染完毕)
-├── WiFi STA 连接 + SNTP 时间同步
-│   └── 状态栏显示 "Connecting WiFi..." → "Fetching weather..."
-├── 天气数据获取 (最多重试 5 次，间隔 2 秒)
-├── 音频播放 (NS4168 I2S 功放)
-│   ├── I2S 初始化 (44.1kHz/16-bit/立体声)
-│   ├── 请求 /api/esp 获取歌曲 URL + 歌名 + 音量
-│   ├── HTTP 流下载 + 缓冲 (6KB/4KB/1KB watermark)
-│   ├── MP3 解码 → 混音器 → I2S 输出
-│   └── 播完后自动 deinit + 重新请求下一首（循环）
-└── 主循环 (可配置秒数, 1 秒间隔)
-    ├── 检查按键 → 停止播放 → 进入睡眠
-    ├── 检测歌曲结束 → 释放资源 → 请求下一首
-    └── 超时 → 停止播放 → 关闭显示 → 深度睡眠
+```mermaid
+graph TB
+    subgraph Entry
+        MAIN[main.c]
+    end
+
+    subgraph Display
+        SSD1322[ssd1322_driver.c<br/>SPI 驱动]
+        LVGL_ADAPT[lvgl_adapter.c<br/>L8→I4 DMA]
+        CLOCK[clock_screen.c<br/>主界面]
+        FONT_D[font_digital.c<br/>时钟数字 48px]
+        FONT_S[font_station.c<br/>通用中文 10px<br/>11031 CJK 全字集]
+    end
+
+    subgraph Network
+        WIFI[wifi.c<br/>STA + SNTP]
+        HTTP[esp_http_client<br/>HTTPS/HTTP]
+        JSON[cJSON 解析]
+    end
+
+    subgraph Audio
+        AUDIO_WRAP[audio_player_wrapper.c]
+        MIXER[audio_mixer]
+        MP3[esp-libhelix-mp3]
+        I2S[esp_driver_i2s]
+        NS4168[NS4168 功放]
+    end
+
+    subgraph Sensor
+        SHTC3[shtc3.c<br/>I2C 温湿度]
+    end
+
+    subgraph UI_FW
+        EEZ[screens.c / ui.c]
+    end
+
+    MAIN --> SSD1322
+    MAIN --> LVGL_ADAPT
+    MAIN --> CLOCK
+    MAIN --> WIFI
+    MAIN --> AUDIO_WRAP
+    MAIN --> SHTC3
+
+    LVGL_ADAPT --> SSD1322
+    CLOCK --> FONT_D
+    CLOCK --> FONT_S
+    CLOCK --> EEZ
+
+    AUDIO_WRAP --> HTTP
+    AUDIO_WRAP --> JSON
+    AUDIO_WRAP --> MIXER
+    AUDIO_WRAP --> MP3
+    MIXER --> I2S
+    MP3 --> MIXER
+    I2S --> NS4168
 ```
 
 ### 核心模块
 
 | 模块 | 文件 | 说明 |
 |------|------|------|
-| 入口 | `main.c` | 初始化流程和主循环、深度睡眠控制 |
-| 显示驱动 | `ssd1322_driver.c/h` | SSD1322 SPI 驱动，含上电防白闪序列 |
-| LVGL 适配 | `lvgl_adapter.c/h` | LVGL 显示适配，L8→I4 格式转换，DMA 刷新 |
-| WiFi/对时 | `wifi.c/h` | WiFi STA 连接、SNTP 时间同步、时区设置 |
-| 天气服务 | `weather_service.c/h` | 高德天气 API 客户端，JSON 解析 |
-| 天气图表 | `clock_screen.c/h` | 全屏 UI 组件：时间、日期、天气图标、温度、进度条 |
-| 音频播放 | `audio_player_wrapper.c/h` | I2S 初始化、HTTP 流下载、/api/esp JSON API、MP3 解码、进度跟踪 |
-| 字库 | `font_digital.c/h` | digital-7 等宽字体（时钟数字） |
-| 字库 | `font_weather.c/h` | 天气信息字体 |
-| UI 框架 | `ui/` | LVGL UI 代码 |
-
-## 构建与烧录
-
-### 环境要求
-
-- [ESP-IDF](https://docs.espressif.com/projects/esp-idf/) v5.5 或更高版本
-- 配置好 ESP32-C3 工具链
-
-### 命令
-
-```bash
-# 设置目标芯片
-idf.py set-target esp32c3
-
-# 配置项目
-idf.py menuconfig
-
-# 编译
-idf.py build
-
-# 烧录
-idf.py -p /dev/ttyUSB0 flash
-
-# 串口监视
-idf.py -p /dev/ttyUSB0 monitor
-```
-
-### 串口调试
-
-```bash
-# 查看完整输出
-idf.py -p /dev/ttyUSB0 monitor
-
-# 使用 Python 脚本（过滤关键日志）
-python read_serial.py           # 过滤: WEATHER_SVC / WIFI / MAIN / 崩溃信息
-python read_serial2.py          # 完整串口输出
-python read_serial3.py          # 展开输出（60 秒超时）
-python read_crash.py            # 专门捕捉 Guru Meditation 崩溃
-```
-
-## 配置说明
-
-所有配置项通过 `idf.py menuconfig` → Clock Configuration 设置：
-
-| 菜单 | 配置项 | 说明 |
-|------|------|------|
-| WiFi | SSID / 密码 | 目标 WiFi 网络 |
-| Weather API | API Key / 城市编码 | 高德天气 API |
-| Night Mode | 起始/结束时间 | 夜间模式降低亮度 |
-| Sleep | 活跃时长 / 唤醒 GPIO / 闹钟时间 | 深度睡眠配置 |
-| GPIO Pins | SPI / I2S / NS4168 / 按键 | 引脚映射 |
-| Audio | 启用开关 / 默认音量 (0-100) | 唤醒音频播放，URL 由 /api/esp 下发 |
-| Partition | 自定义 1800K factory 分区 | 固件 ~1.5MB 超过标准 1500K 大分区 |
-
-## 功耗说明
-
-- **工作状态**: 显示开启，默认运行 10 分钟后自动休眠（可通过 menuconfig 调整）
-- **深度睡眠**: 关闭显示，GPIO3 低电平唤醒 + 定时器闹钟唤醒（默认 7:50），功耗极低
-- **夜间模式**: 22:00-6:00，8×8 网格抖动 + 最低对比度 (0x01)，跳过 WiFi、天气、音频
-
-## 字体
-
-项目使用三个编译后的 LVGL 字体，分别对应时钟数字、天气信息、电台名称。
-
-### 数字字体 (`font_digital.c`)
-
-- **源文件**: `main/digital-7 (mono).ttf`
-- **用途**: 时钟时间显示 (HH:MM)
-- **字符子集**: `0123456789:` （数字+冒号）
-- **编译参数**: size=48, bpp=4
-
-编译命令：
-
-```bash
-lv_font_conv --size 48 --bpp 4 --format lvgl --no-compress \
-  --font "main/digital-7 (mono).ttf" \
-  --symbols "0123456789:" \
-  --output font_digital.c --lv-font-name lv_font_digital
-```
-
-### 天气字体 (`font_weather.c`)
-
-- **源文件**: `assets/fonts/fusion-pixel-12px-monospaced-zh_hans.ttf`
-- **用途**: 天气文字、日期、温度显示
-- **字符子集**: `0123456789°/-:AMPM严中云伴冰冷冻劲卷和多大天夹小少尘带平并度强微扬晴暴有未极毛气沙浓浮清烈热爆特狂疾知端细重间阴阵降雨雪雷雹雾霾静风飓龙转到`
-- **编译参数**: size=12, bpp=1
-
-编译命令：
-
-```bash
-lv_font_conv --size 12 --bpp 1 --format lvgl --no-compress \
-  --font fusion-pixel-12px-monospaced-zh_hans.ttf \
-  --symbols "0123456789°/-:AMPM严中云伴冰冷冻劲卷和多大天夹小少尘带平并度强微扬晴暴有未极毛气沙浓浮清烈热爆特狂疾知端细重间阴阵降雨雪雷雹雾霾静风飓龙转到" \
-  --output font_weather.c --lv-font-name lv_font_weather
-```
-
-> 如需增删天气描述文字，需同步更新 `--symbols` 中的字符子集并重新编译字体。
-
-### 电台名字体 (`font_station.c`)
-
-- **源文件**: `assets/fonts/ark-pixel-10px-monospaced-zh_cn.ttf`
-- **用途**: 电台名称 / ICY 元数据滚动显示（屏幕底部 marquee）
-- **字符子集**: `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.-_广播中`
-- **编译参数**: size=10, bpp=2
-
-编译命令：
-
-```bash
-lv_font_conv --size 10 --bpp 2 --format lvgl --no-compress \
-  --font assets/fonts/ark-pixel-10px-monospaced-zh_cn.ttf \
-  --symbols "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz.-_广播中" \
-  --output main/font_station.c --lv-font-name lv_font_station
-```
-
-### 未使用的字体文件
-
-下列字体文件已下载但未在代码中引用，仅作备存：
-
-| 文件 | 说明 |
-|------|------|
-| `fusion-pixel-12px-monospaced-latin.ttf` | 同款字体的拉丁字母版本 |
-| `fusion-pixel-12px-monospaced-zh_hant.ttf.woff2` | 同款字体的繁体中文版本 (WOFF2) |
-| `NotoSansSC-Light.ttf` | 思源黑体 Light 字重 |
-
-### 防白闪机制
-
-深度睡眠唤醒时 OLED 白闪的根本原因是 **LVGL 的默认主题屏幕在用户屏幕加载前被提前渲染**。
-
-**问题链路：**
-
-1. `create_screen_main()` 创建黑色背景的用户屏幕，并含天气等 UI 组件
-2. 该函数调用 `tick_screen_main()` → `lv_refr_now()` 进行首次渲染
-3. 但此时 `lv_screen_active()` 仍然是 **LVGL 默认屏幕**（白色主题背景）
-4. 白色像素被渲染到 SSD1322 GDDRAM 中
-5. 接着 `ssd1322_display_on()` 打开显示 → 用户看到 GDDRAM 中的白色 → **白闪**
-6. 后续 LVGL tick 才会渲染正确的黑色背景，但白闪已经出现
-
-**修复方案：**
-
-```c
-// screens.c — create_screen_main()
-weather_chart_create(obj);
-weather_chart_show();
-
-// ✅ 在 tick_screen_main() 之前加载屏幕，确保 lv_refr_now()
-//    渲染的是黑色背景的用户屏幕，而非默认白色屏幕
-lv_screen_load(objects.main);
-
-tick_screen_main();
-```
-
-**对比 u8g2：** u8g2 在每次刷新前都调用 `u8g2_ClearBuffer()` 将缓冲区填充为黑色，因此不会有白色默认背景的问题。
-
-**辅助防护：**
-
-| 层次 | 措施 | 作用 |
-|------|------|------|
-| 硬件 | 深度睡眠前 GPIO hold 拉低 RST | 防止 SSD1322 在睡眠期间自行启动 |
-| 初始化 | `ssd1322_init()` 复位后立即 `0xAE` | 关闭显示，防止随机 GDDRAM 内容显示 |
-| 清屏 | `ssd1322_clear_display()` 全 128 列 | 清空 GDDRAM，作为最后一道防线 |
-| 渲染 | 首帧渲染后再 `ssd1322_display_on()` | 确保 GDDRAM 中已是正确内容 |
-| **屏幕加载** | **`lv_screen_load()` 在 `lv_refr_now()` 之前** | **消除默认白色主题屏渲染 — 本次修复的关键** |
-
-## 依赖组件
-
-| 组件 | 版本 | 说明 |
-|------|------|------|
-| lvgl/lvgl | ^9.4.0 | 图形用户界面库 |
-| espressif/button | ^4.1.6 | GPIO 按键驱动 |
-| chmorgan/esp-libhelix-mp3 | >=1.0.0 | MP3 解码器 (Helix) |
-| llinzzi/esp-audio-player | main | 音频播放框架 (HTTP 流 + 混音器 + I2S) |
-| ESP-IDF | >=5.0 | ESP32 开发框架 |
+| 入口 | `main.c` | 初始化 + 主循环 + 深度睡眠 + 唤醒检测 + SHTC3 定时刷新 |
+| 显示驱动 | `ssd1322_driver.c/h` | SSD1322 SPI 命令, 复位序列, 对比度控制 |
+| LVGL 适配 | `lvgl_adapter.c/h` | LVGL flush callback, L8→I4 格式转换 |
+| WiFi/对时 | `wifi.c/h` | STA 连接, SNTP 同步, 设备 ID (MAC) |
+| 天气/电台 API | `audio_player_wrapper.c/h` | `/api/esp` HTTP + JSON 解析 + I2S 音频播放 |
+| 屏幕 UI | `clock_screen.c/h` | 时间/天气/温度/歌名布局 + Canvas 绘制 |
+| SHTC3 驱动 | `components/shtc3/shtc3.c/h` | I2C 传感器读取, CRC8 校验 |
+| UI 框架 | `ui/screens.c, ui/styles.c, ui/ui.c` | EEZ Studio 生成 |
+| 数字字体 | `font_digital.c/h` | digital-7 48px 4bpp (时钟) |
+| 通用字体 | `font_station.c/h` | fusion-pixel 10px 1bpp (11031 CJK + ASCII + 标点) |
 
 ---
 
-*固件 v2.1 | 2026-06-08*
+## 构建
+
+```bash
+# 环境
+. ~/esp/esp-idf/export.sh      # 适配你的 ESP-IDF 路径
+
+# 构建
+idf.py build
+
+# 烧录 (macOS 通常用 /dev/cu.usbmodem*)
+idf.py -p /dev/cu.usbmodem1301 flash
+
+# 串口监视
+idf.py -p /dev/cu.usbmodem1301 monitor
+```
+
+### 分区表
+
+| 分区 | 大小 | 说明 |
+|------|------|------|
+| bootloader | 32KB | |
+| partition table | 4KB | |
+| nvs | 24KB | WiFi 凭证等 |
+| phy_init | 4KB | |
+| factory | 4032K (3.94MB) | 单 app 分区, 最大化利用 4MB Flash |
+
+### 字体生成
+
+```bash
+lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
+  --font assets/fonts/fusion-pixel-10px-monospaced-zh_hans.ttf \
+  -r 0x0020-0x007F -r 0x00A0-0x00FF -r 0x2000-0x206F \
+  -r 0x3000-0x303F -r 0xFF00-0xFFEF \
+  -r 0x4E00-0x9FFF -r 0x3400-0x4DBF \
+  --output main/font_station.c --lv-font-name lv_font_station
+```
+
+> Unicode 范围覆盖: Basic Latin, Latin-1 Supplement, General Punctuation, CJK 标点, 全角字符, CJK 统一汉字 (GB2312/GB18030)
+
+---
+
+## 配置
+
+`idf.py menuconfig` → Clock Configuration
+
+| 分类 | 选项 | 说明 |
+|------|------|------|
+| WiFi | SSID, 密码 | |
+| Sleep | 活跃时长, 唤醒 GPIO, 闹钟时间 | 默认 3600s, GPIO3, 7:50 |
+| Night | 开始/结束小时 | 默认 22→6 |
+| Audio | 默认音量 | 0–100 |
+| GPIO | SPI/I2S/NS4168/按键 | 默认值见上文 GPIO 连接表 |
+
+---
+
+## 防白闪机制
+
+深度睡眠唤醒时, SSD1322 GDDRAM 内容随机, 如果显示过早打开会出现白闪。
+
+**修复策略** (多层防护):
+
+1. 睡眠前 GPIO hold 拉低 RST → SSD1322 在睡眠期间保持复位
+2. `ssd1322_init()` 复位后立即发 `0xAE` → 显示关断
+3. `lv_screen_load()` 在 `lv_refr_now()` 之前 → 渲染用户黑底界面, 而非 LVGL 默认白底
+4. 首帧渲染完成后才调用 `ssd1322_display_on()` → GDDRAM 中已是正确内容
+
+---
+
+## 依赖
+
+| 组件 | 说明 |
+|------|------|
+| lvgl/lvgl ^9.4 | 图形库 |
+| espressif/button ^4.1 | GPIO 按键 |
+| chmorgan/esp-libhelix-mp3 | MP3 解码 |
+| esp-audio-player | 音频框架 (HTTP 流 + 混音器 + I2S) |
+| ESP-IDF >=5.0 | 开发框架 |
+
+---
+
+*固件 v2.2 | 2026-06-21*
