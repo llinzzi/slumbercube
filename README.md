@@ -2,14 +2,15 @@
 
 基于 ESP-IDF 5.5 框架的睡眠时钟固件，驱动 256×64 SSD1322 灰度 OLED 显示屏。支持 WiFi 自动对时、`/api/esp` 天气+电台数据获取、I2S 音频播放、SHTC3 室内温湿度传感、按键交互和深度睡眠。
 
-![产品照片](image_001.jpg)
+![正面](assets/正面.jpg)
+![反面](assets/反面.jpg)
 
 ## 硬件规格
 
 ### 主控
 | 项目 | 规格 |
 |------|------|
-| 芯片 | ESP32-C3-MINI-1 (RISC-V 单核, WiFi/BT) |
+| 模组 | ESP32-C3-WROOM-02 (RISC-V 单核, WiFi/BT) |
 | Flash | 4MB DIO @ 80MHz |
 | RTC | 32.768kHz 晶振 |
 
@@ -397,6 +398,15 @@ lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
 | chmorgan/esp-libhelix-mp3 | MP3 解码 |
 | esp-audio-player | 音频框架 (HTTP 流 + 混音器 + I2S) |
 | ESP-IDF >=5.0 | 开发框架 |
+
+---
+
+## 硬件设计文件
+
+| 文件 | 路径 |
+|------|------|
+| 原理图 (PDF) | `assets/hardware/SCH_Schematic1_9_2026-06-21.pdf` |
+| Gerber 文件 (ZIP) | `assets/hardware/Gerber_PCB1_9_2026-06-21.zip` |
 
 ---
 
