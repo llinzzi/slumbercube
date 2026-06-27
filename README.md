@@ -31,29 +31,31 @@
 
 ## 硬件规格
 
-> 原理图版本：Schematic1_9 · 2026-06-20
+> 原理图版本：Schematic1_9 · 2026-06-27 (P2 修订 2026-06-23)
 
 ### 主控
 | 项目 | 规格 |
 |------|------|
-| 模组 | ESP32-C3-WROOM-02 (RISC-V 单核, WiFi) |
+| 模组 | **ESP32-C3-MINI-1-N4** (RISC-V 单核, WiFi, SMD 模组) |
 | Flash | 4MB DIO @ 80MHz |
-| RTC | 32.768kHz 晶振 (X1 + C9/C11 12pF + R10 5M 偏置) |
-| 复位 | CHIP_PU 上拉 R8 10K, 按键 SW14 可手动复位 |
+| 内部 RTC | ESP32-C3 内置 RC 振荡器（精度较低, 深度睡眠期间不计时） |
+| 外部 RTC | **PCF85063ATT/AJ (U3)** — 见下文"实时时钟" |
+| 复位 | CHIP_PU 上拉 R5 10K, 按键 SW14 可手动复位 |
 
 ### 芯片清单
 
 | 位号 | 型号 | 角色 |
 |------|------|------|
-| U4 | ESP32-C3-WROOM-02 | 主控 MCU |
+| **U6** | **ESP32-C3-MINI-1-N4** | 主控 MCU (SMD 模组) |
 | U5 | NS4168 | Class-D 数字功放 |
-| U20 | SHTC3-TR-10KS | I²C 温湿度传感器 |
+| **U3** | **PCF85063ATT/AJ** | **I²C 实时时钟芯片 (自带 32.768kHz 晶振)** |
+| U20 | SHTC3-TR-10KS | I²C 温湿度传感器 (与 U3 共用总线) |
 | U1 | TP4056X | 锂电池充电管理 |
 | U2 | (LDO SOT-23-5) | 3.3V 线性稳压 |
 | D1 | 1N5819WS | 防反肖特基二极管 |
 | D2 | USBLC6-2SC6 | USB 数据线 ESD 保护 |
 | Q1 | (P-MOSFET) | 电池防反接 |
-| X1 | 32.768kHz | RTC 晶振 |
+| X1 | 32.768kHz | PCF85063 专用 RTC 晶振 (C9/C11 22pF, R10 5M 偏置) |
 
 ### 电源
 
@@ -69,6 +71,7 @@ flowchart LR
     F --> G[ESP32-C3]
     F --> H[SHTC3]
     F --> I[NS4168 逻辑]
+    F --> J[PCF85063]
 ```
 
 | 项目 | 规格 |
@@ -80,6 +83,21 @@ flowchart LR
 | 电池接口 | H6 2-pin 2.0mm wafer |
 | 稳压 | U2 LDO, 输入/输出各 1µF 去耦 |
 | OLED 供电 | 直接取自 USB 5V (H2 pin 1), 不经过电池 |
+
+### 实时时钟 (PCF85063ATT/AJ)
+
+板载独立 RTC 芯片，深度睡眠期间持续计时，唤醒后 ESP32-C3 通过 I²C 读取时间，避免每次 WiFi SNTP 同步。
+
+| 项目 | 规格 |
+|------|------|
+| 芯片 | NXP PCF85063ATT/AJ (SO-8) |
+| 接口 | I²C (与 SHTC3 共用 SCL/SDA 总线, 地址 0x51) |
+| 晶振 | 外置 32.768kHz (X1 + C9/C11 22pF + R10 5M 偏置) |
+| 中断输出 | INT# → ESP32-C3 **IO0** (RTC_INT, 可作秒中断/闹钟唤醒) |
+| 精度 | 取决于晶振, 典型 ±20 ppm @ 25°C |
+| 去耦 | C17 100nF |
+
+> **设计动机**：ESP32-C3 内置 RTC 在深度睡眠时若使用内部 RC 振荡器会丢失精度，外部 32.768kHz 晶振本应直接接到 ESP32-C3 的 XTAL_32K 脚。新版原理图把晶振挪到了 PCF85063，由 PCF85063 独立计时，ESP32-C3 唤醒后再去 I²C 读——这样深度睡眠期间 ESP32-C3 内部 RTC 完全断电也无所谓。
 
 ### 显示
 | 项目 | 规格 |
@@ -99,21 +117,27 @@ flowchart LR
 | 喇叭接口 | H5 2-pin 2.0mm wafer |
 | 关断 | NS_CTRL 低电平 = 关功放 |
 
-### 温湿度
+### 温湿度 & RTC (I²C 总线)
+
 | 项目 | 规格 |
 |------|------|
-| 芯片 | Sensirion SHTC3 (I²C 0x70) |
+| 总线 | I²C, SCL = IO9, SDA = IO21 |
 | 上拉 | R41/R42 各 4.7K → 3.3V |
+| 设备 1 | Sensirion SHTC3 (地址 0x70) — 温湿度 |
+| 设备 2 | NXP PCF85063ATT/AJ (地址 0x51) — RTC |
+
+> 两设备共用同一 I²C 总线，靠地址区分。
 
 ### 按键
 
 | 位号 | 型号 | 接至 | 触发 | 功能 |
 |------|------|------|------|------|
+| SW1 | TC-6615-5-260G (侧按 5mm) | IO1 | 低电平 | 预留按键 (固件未启用) |
 | SW12 | TC-6615-5-260G (侧按 5mm) | IO3 | 低电平 | 主按键：短按睡眠 / 长按切歌 / 深度睡眠唤醒 |
-| SW13 | TS342A2P 160gf | **IO9** ⚠️ | 低电平 | 预留按键（与 SHTC3 SCL 复用, 固件未启用） |
+| SW13 | TS342A2P 160gf | **IO9** ⚠️ | 低电平 | 预留按键（**三重共用**, 见下） |
 | SW14 | TS342A2P 160gf | CHIP_PU/EN | 低电平 | 硬件复位 |
 
-> ⚠️ **SW13 与 SHTC3 复用 IO9**：原理图上 SW13 和 SHTC3 SCL 都接到 IO9，按下按键会把 I²C SCL 拉低。固件目前仅使用 SW12（IO3），SW13 暂未启用。
+> ⚠️ **IO9 三重共用**：SW13、SHTC3 SCL、PCF85063 SCL 都接到 IO9。I²C 总线空闲时 SW13 按下会把 SCL 拉低，可能导致 I²C 通信失败。固件目前仅使用 SW12（IO3）和 SW1（IO1 未启用），SW13 暂留空。
 
 ### USB 与接口
 
@@ -124,14 +148,14 @@ flowchart LR
 | H6 | WAFER-PH2.0-2PWB | 喇叭接入 |
 | H2 | PM254-2-08-S-8.5 | OLED 模组接入 |
 
-USB 数据线 D+/D- 直连 ESP32-C3 原生 USB (IO19/IO18)，本固件未使用 USB CDC（仍走串口烧录）。
+USB 数据线 D+_OUT/D-_OUT 经 USBLC6-2SC6 ESD 后直连 ESP32-C3 原生 USB (IO19/IO18)，本固件未使用 USB CDC（仍走串口烧录）。
 
 ### GPIO 配置
 
 | GPIO | 功能 | 连接 | 备注 |
 |------|------|------|------|
-| IO0 | XTAL_32K_P | 32.768kHz 晶振 | RTC |
-| IO1 | XTAL_32K_N | 32.768kHz 晶振 | RTC |
+| **IO0** | **RTC_INT** | **PCF85063 INT#** | RTC 闹钟/秒中断输出, 可唤醒 ESP32-C3 |
+| IO1 | KEY (预留) | SW1 | 固件未启用 |
 | IO2 | NS_CTRL | NS4168 CTRL | 功放关断, 低 = 静音 |
 | **IO3** | **KEY / WAKEUP** | **SW12** | **深度睡眠唤醒, 短按/长按识别** |
 | IO4 | I2S_SDIN | NS4168 SDATA | |
@@ -139,16 +163,17 @@ USB 数据线 D+/D- 直连 ESP32-C3 原生 USB (IO19/IO18)，本固件未使用 
 | IO6 | I2S_LRCLK | NS4168 LRCLK | |
 | IO7 | SPI_SCK | SSD1322 SCLK | |
 | IO8 | SPI_DC | SSD1322 DC | |
-| **IO9** | **I2C_SCL / SW13** | **SHTC3 SCL + SW13** | ⚠️ 与 SW13 复用, 固件仅作 SHTC3 用 |
+| **IO9** | **I2C_SCL (三重共用)** | **SHTC3 + PCF85063 + SW13** | ⚠️ 三方复用, 固件仅作 I²C 用 |
 | IO10 | SPI_SDA | SSD1322 MOSI | |
-| IO18 | USB_D- | USB-C D- | 原生 USB, 固件未用 |
-| IO19 | USB_D+ | USB-C D+ | 原生 USB, 固件未用 |
+| IO18 | USB_D-_OUT | USB-C D- | 原生 USB, 固件未用 |
+| IO19 | USB_D+_OUT | USB-C D+ | 原生 USB, 固件未用 |
 | IO20 | SPI_RST | SSD1322 RST | 深度睡眠期间 GPIO hold 拉低 |
-| IO21 | I2C_SDA | SHTC3 SDA | R42 4.7K 上拉 |
-| CHIP_PU | EN | SW14 + R8 10K 上拉 | 复位按键, 高 = 运行 |
+| IO21 | I2C_SDA | SHTC3 SDA + PCF85063 SDA | R42 4.7K 上拉, 总线共享 |
+| CHIP_PU | EN | SW14 + R5 10K 上拉 | 复位按键, 高 = 运行 |
 
 > SPI CS 硬件接地（SSD1322 始终选中）。
 > 唤醒 GPIO 与主按键共用 IO3。
+> ESP32-C3 **不再**外接 32.768kHz 晶振（晶振移到 PCF85063）。
 
 ---
 
@@ -516,8 +541,8 @@ lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
 
 | 文件 | 路径 |
 |------|------|
-| 原理图 (PDF) | `assets/hardware/SCH_Schematic1_9_2026-06-21.pdf` |
-| Gerber 文件 (ZIP) | `assets/hardware/Gerber_PCB1_9_2026-06-21.zip` |
+| 原理图 (PDF, 2026-06-27) | `assets/hardware/SCH_Schematic1_9_2026-06-27.pdf` |
+| Gerber 文件 | _待生成（基于 2026-06-27 原理图）_ |
 
 ---
 
