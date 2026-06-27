@@ -31,12 +31,55 @@
 
 ## 硬件规格
 
+> 原理图版本：Schematic1_9 · 2026-06-20
+
 ### 主控
 | 项目 | 规格 |
 |------|------|
-| 模组 | ESP32-C3-WROOM-02 (RISC-V 单核, WiFi/BT) |
+| 模组 | ESP32-C3-WROOM-02 (RISC-V 单核, WiFi) |
 | Flash | 4MB DIO @ 80MHz |
-| RTC | 32.768kHz 晶振 |
+| RTC | 32.768kHz 晶振 (X1 + C9/C11 12pF + R10 5M 偏置) |
+| 复位 | CHIP_PU 上拉 R8 10K, 按键 SW14 可手动复位 |
+
+### 芯片清单
+
+| 位号 | 型号 | 角色 |
+|------|------|------|
+| U4 | ESP32-C3-WROOM-02 | 主控 MCU |
+| U5 | NS4168 | Class-D 数字功放 |
+| U20 | SHTC3-TR-10KS | I²C 温湿度传感器 |
+| U1 | TP4056X | 锂电池充电管理 |
+| U2 | (LDO SOT-23-5) | 3.3V 线性稳压 |
+| D1 | 1N5819WS | 防反肖特基二极管 |
+| D2 | USBLC6-2SC6 | USB 数据线 ESD 保护 |
+| Q1 | (P-MOSFET) | 电池防反接 |
+| X1 | 32.768kHz | RTC 晶振 |
+
+### 电源
+
+```mermaid
+flowchart LR
+    A[USB-C 5V] -->|VBUS| B[USBLC6-2SC6<br/>ESD]
+    B -->|VIN| C[TP4056X<br/>充电管理]
+    C -->|VBAT| D[H6 电池接口<br/>锂电池]
+    D --> Q1[P-MOSFET<br/>防反]
+    Q1 -->|VBAT| E[U2 LDO 3.3V]
+    A -->|D1 肖特基| E
+    E --> F[3.3V 电源轨]
+    F --> G[ESP32-C3]
+    F --> H[SHTC3]
+    F --> I[NS4168 逻辑]
+```
+
+| 项目 | 规格 |
+|------|------|
+| 输入 | USB Type-C (MC-802YC-H105), 5V, CC1/CC2 各 5.1K 下拉 |
+| 充电 IC | TP4056X, PROG=R2 10K → ~130mA 充电电流 |
+| 充电指示 | LED1 (CHRG#) + R1 1K |
+| 防反 | D1 (1N5819WS) + Q1 (P-MOSFET, R3 10K 偏置) |
+| 电池接口 | H6 2-pin 2.0mm wafer |
+| 稳压 | U2 LDO, 输入/输出各 1µF 去耦 |
+| OLED 供电 | 直接取自 USB 5V (H2 pin 1), 不经过电池 |
 
 ### 显示
 | 项目 | 规格 |
@@ -44,24 +87,68 @@
 | 型号 | SSD1322 |
 | 分辨率 | 256×64 灰度 OLED |
 | 接口 | SPI 10MHz, I4 灰度 (16 级) |
+| 连接器 | H2 PM254-2-08-S-8.5 (8-pin 2.54mm) |
+| 供电 | 5V (从 USB VBUS 直接取电) |
 
-### GPIO 连接
+### 音频
+| 项目 | 规格 |
+|------|------|
+| 功放 | NS4168 Class-D |
+| 接口 | I2S (ESP32-C3 → NS4168) |
+| 输出 | 差分 VON/VOP, 经 L1/L2 + C14/C15 (1nF) LC 滤波 |
+| 喇叭接口 | H5 2-pin 2.0mm wafer |
+| 关断 | NS_CTRL 低电平 = 关功放 |
 
-| GPIO | 功能 | 连接 |
+### 温湿度
+| 项目 | 规格 |
+|------|------|
+| 芯片 | Sensirion SHTC3 (I²C 0x70) |
+| 上拉 | R41/R42 各 4.7K → 3.3V |
+
+### 按键
+
+| 位号 | 型号 | 接至 | 触发 | 功能 |
+|------|------|------|------|------|
+| SW12 | TC-6615-5-260G (侧按 5mm) | IO3 | 低电平 | 主按键：短按睡眠 / 长按切歌 / 深度睡眠唤醒 |
+| SW13 | TS342A2P 160gf | **IO9** ⚠️ | 低电平 | 预留按键（与 SHTC3 SCL 复用, 固件未启用） |
+| SW14 | TS342A2P 160gf | CHIP_PU/EN | 低电平 | 硬件复位 |
+
+> ⚠️ **SW13 与 SHTC3 复用 IO9**：原理图上 SW13 和 SHTC3 SCL 都接到 IO9，按下按键会把 I²C SCL 拉低。固件目前仅使用 SW12（IO3），SW13 暂未启用。
+
+### USB 与接口
+
+| 接口 | 型号 | 用途 |
 |------|------|------|
-| 2 | NS_CTRL | NS4168 功放关断 |
-| 3 | KEY / WAKEUP | 用户按键 (短按睡眠, 长按切歌, 深度睡眠唤醒) |
-| 4 | I2S_SDIN | NS4168 数据 |
-| 5 | I2S_SCLK | NS4168 时钟 |
-| 6 | I2S_LRCLK | NS4168 声道 |
-| 7 | SPI_SCK | SSD1322 SCLK |
-| 8 | SPI_DC | SSD1322 DC |
-| 9 | I2C_SCL | SHTC3 温湿度传感器 |
-| 10 | SPI_SDA | SSD1322 MOSI |
-| 20 | SPI_RST | SSD1322 RST |
-| 21 | I2C_SDA | SHTC3 温湿度传感器 |
+| USB-C | MC-802YC-H105 | 充电输入（5V） |
+| H5 | WAFER-PH2.0-2PWB | 锂电池接入 |
+| H6 | WAFER-PH2.0-2PWB | 喇叭接入 |
+| H2 | PM254-2-08-S-8.5 | OLED 模组接入 |
 
-> SPI CS 硬件接地。唤醒 GPIO 和按键共用 GPIO3。
+USB 数据线 D+/D- 直连 ESP32-C3 原生 USB (IO19/IO18)，本固件未使用 USB CDC（仍走串口烧录）。
+
+### GPIO 配置
+
+| GPIO | 功能 | 连接 | 备注 |
+|------|------|------|------|
+| IO0 | XTAL_32K_P | 32.768kHz 晶振 | RTC |
+| IO1 | XTAL_32K_N | 32.768kHz 晶振 | RTC |
+| IO2 | NS_CTRL | NS4168 CTRL | 功放关断, 低 = 静音 |
+| **IO3** | **KEY / WAKEUP** | **SW12** | **深度睡眠唤醒, 短按/长按识别** |
+| IO4 | I2S_SDIN | NS4168 SDATA | |
+| IO5 | I2S_SCLK | NS4168 BCLK | |
+| IO6 | I2S_LRCLK | NS4168 LRCLK | |
+| IO7 | SPI_SCK | SSD1322 SCLK | |
+| IO8 | SPI_DC | SSD1322 DC | |
+| **IO9** | **I2C_SCL / SW13** | **SHTC3 SCL + SW13** | ⚠️ 与 SW13 复用, 固件仅作 SHTC3 用 |
+| IO10 | SPI_SDA | SSD1322 MOSI | |
+| IO18 | USB_D- | USB-C D- | 原生 USB, 固件未用 |
+| IO19 | USB_D+ | USB-C D+ | 原生 USB, 固件未用 |
+| IO20 | SPI_RST | SSD1322 RST | 深度睡眠期间 GPIO hold 拉低 |
+| IO21 | I2C_SDA | SHTC3 SDA | R42 4.7K 上拉 |
+| CHIP_PU | EN | SW14 + R8 10K 上拉 | 复位按键, 高 = 运行 |
+
+> SPI CS 硬件接地（SSD1322 始终选中）。
+> 唤醒 GPIO 与主按键共用 IO3。
 
 ---
 
@@ -434,4 +521,4 @@ lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
 
 ---
 
-*SlumberCube 安睡小方 · 固件 v2.2 · 2026-06-27*
+*SlumberCube 安睡小方 · 固件 v2.2 · 2026-06-27 · 原理图 Schematic1_9*
