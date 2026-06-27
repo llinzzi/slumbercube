@@ -71,7 +71,7 @@ In `main/ui/screens.c`: `lv_screen_load()` must be called **before** `tick_scree
 
 ## Configuration
 
-All config is in `main/Kconfig.projbuild` (ESP-IDF menuconfig → Clock Configuration):
+All config is in `main/Kconfig.projbuild` (ESP-IDF menuconfig → SlumberCube Configuration):
 
 - **WiFi**: SSID, password
 - **Weather**: AMAP API key, city adcode

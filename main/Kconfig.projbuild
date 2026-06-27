@@ -1,4 +1,4 @@
-menu "Clock Configuration"
+menu "SlumberCube Configuration"
 
     menu "WiFi Configuration"
         config WIFI_SSID
@@ -27,7 +27,7 @@ menu "Clock Configuration"
     menu "Sleep Configuration"
         config ACTIVE_DURATION_SECS
             int "Active duration before deep sleep (seconds)"
-            default 3600
+            default 1800
         config WAKEUP_GPIO
             int "Wakeup GPIO number"
             default 3

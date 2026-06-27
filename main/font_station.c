@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Size: 10 px
  * Bpp: 1
- * Opts: --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h --font /Users/zulin/Dev/ssd1322clock/assets/fonts/fusion-pixel-10px-monospaced-zh_hans.ttf -r 0x0020-0x007F -r 0x00A0-0x00FF -r 0x2000-0x206F -r 0x3000-0x303F -r 0xFF00-0xFFEF -r 0x4E00-0x9FFF -r 0x3400-0x4DBF --output /Users/zulin/Dev/ssd1322clock/main/font_station.c --lv-font-name lv_font_station
+ * Opts: --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h --font /Users/zulin/Dev/slumbercube/assets/fonts/fusion-pixel-10px-monospaced-zh_hans.ttf -r 0x0020-0x007F -r 0x00A0-0x00FF -r 0x2000-0x206F -r 0x3000-0x303F -r 0xFF00-0xFFEF -r 0x4E00-0x9FFF -r 0x3400-0x4DBF --output /Users/zulin/Dev/slumbercube/main/font_station.c --lv-font-name lv_font_station
  ******************************************************************************/
 
 #ifdef LV_LVGL_H_INCLUDE_SIMPLE

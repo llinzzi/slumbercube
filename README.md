@@ -1,6 +1,26 @@
-# Sleep Clock
+# SlumberCube 安睡小方
 
-基于 ESP-IDF 5.5 框架的睡眠时钟固件，驱动 256×64 SSD1322 灰度 OLED 显示屏。支持 WiFi 自动对时、`/api/esp` 天气+电台数据获取、I2S 音频播放、SHTC3 室内温湿度传感、按键交互和深度睡眠。
+[![GitHub](https://img.shields.io/badge/github-llinzzi%2Fslumbercube-blue?logo=github)](https://github.com/llinzzi/slumbercube)
+[![ESP32-C3](https://img.shields.io/badge/ESP32--C3-RISC--V%20single--core-red?logo=espressif)](https://www.espressif.com)
+[![SSD1322](https://img.shields.io/badge/SSD1322-256×64%20OLED-orange)]()
+[![License](https://img.shields.io/badge/license-MIT-green)]()
+
+> **Slumber** = 安睡 · **Cube** = 方块 —— 床头那块陪你安稳入眠的小方块。
+
+## 简介
+
+基于 **ESP-IDF 5.5** 框架的床头睡眠时钟固件，驱动 **256×64 SSD1322** 灰度 OLED 显示屏。集 WiFi 自动对时、AMAP 天气、`/api/esp` 电台流媒体、I2S 音频播放、SHTC3 室内温湿度传感、按键交互和深度休眠于一体。
+
+夜间自动切换低亮数码管模式；白天/夜间整机会深度休眠，按键或定时唤醒。
+
+主要能力：
+
+- 🕒 **大字时钟** — 48px digital-7 数字显示，灰度 16 级
+- 🌤 **天气 + 室内温湿度** — AMAP 接口，SHTC3 传感器
+- 🎵 **电台流媒体** — HTTP MP3 流，I2S → NS4168 功放
+- 🌙 **夜间模式** — 4×4 抖动数码管 + 极暗对比度，22:00–6:00
+- 💤 **深度休眠** — 默认凌晨 7:50 RTC 定时唤醒，按键随时唤醒
+- 📐 **方正造型** — 4 层 PCB + 亚克力外壳，整机一手可握
 
 ![正面](assets/正面.jpg)
 ![反面](assets/反面.jpg)
@@ -368,7 +388,7 @@ lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
 
 ## 配置
 
-`idf.py menuconfig` → Clock Configuration
+`idf.py menuconfig` → SlumberCube Configuration
 
 | 分类 | 选项 | 说明 |
 |------|------|------|
@@ -414,4 +434,4 @@ lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
 
 ---
 
-*固件 v2.2 | 2026-06-21*
+*SlumberCube 安睡小方 · 固件 v2.2 · 2026-06-27*
