@@ -17,6 +17,8 @@
 - 🌙 **深夜气温检测** — 睡眠阶段采集室内温度，健康晚睡空调等是否合理。
 - 🎵 **早安广播** — 早上定时唤醒，开始播报起床广播，小方DJ也进行播报。
 
+后端服务：[llinzzi/slumbercube-server](https://github.com/llinzzi/slumbercube-server)
+
 
 ![夜间使用场景](assets/0.jpg)
 
