@@ -542,6 +542,8 @@ lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
 | 文件 | 路径 |
 |------|------|
 | 原理图 (PDF, 2026-06-27) | `assets/hardware/SCH_Schematic1_9_2026-06-27.pdf` |
+| 3D 外壳 (Shapr3D 原生) | `assets/hardware/安睡小方.shapr` |
+| 3D 外壳 (STEP 通用格式) | `assets/hardware/安睡小方.step` |
 | Gerber 文件 | _待生成（基于 2026-06-27 原理图）_ |
 
 ---
