@@ -1,28 +1,40 @@
-# Host-runnable unit tests for PCF85063.
+# Host-runnable unit tests.
 # Builds with system cc — no ESP-IDF required.
 #
 # Usage:
-#   make test     - compile and run
-#   make clean    - remove build artefacts
+#   make           - build all tests
+#   make test      - build and run all tests
+#   make test_bcd  - build and run only the BCD test
+#   make test_time - build and run only the alarm-time-string test
+#   make clean     - remove build artefacts
 
 CC      ?= cc
 CFLAGS  ?= -std=c99 -Wall -Wextra -Werror -O2 -g
-INCLUDE := -I../components/pcf85063/include
+PCF_INC := -I../components/pcf85063/include
+ALARM_INC := -I../components/audio_player_wrapper
 
-SRCS    := test_pcf85063_bcd.c \
-           ../components/pcf85063/pcf85063_bcd.c
+.PHONY: all test clean test_bcd test_time
 
-BIN     := test_pcf85063_bcd
+all: test_pcf85063_bcd test_alarm_time_parse
 
-.PHONY: all test clean
+# PCF85063 BCD helpers
+test_pcf85063_bcd: test_pcf85063_bcd.c ../components/pcf85063/pcf85063_bcd.c
+	$(CC) $(CFLAGS) $(PCF_INC) -o $@ $^
 
-all: $(BIN)
+# Alarm time string parser
+test_alarm_time_parse: test_alarm_time_parse.c ../components/audio_player_wrapper/alarm_time_parse.c
+	$(CC) $(CFLAGS) $(ALARM_INC) -o $@ $^
 
-$(BIN): $(SRCS)
-	$(CC) $(CFLAGS) $(INCLUDE) -o $@ $(SRCS)
+test: test_pcf85063_bcd test_alarm_time_parse
+	./test_pcf85063_bcd
+	@echo
+	./test_alarm_time_parse
 
-test: $(BIN)
-	./$(BIN)
+test_bcd: test_pcf85063_bcd
+	./test_pcf85063_bcd
+
+test_time: test_alarm_time_parse
+	./test_alarm_time_parse
 
 clean:
-	rm -f $(BIN)
+	rm -f test_pcf85063_bcd test_alarm_time_parse

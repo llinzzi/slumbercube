@@ -83,16 +83,29 @@ static bool apply_pcf85063_time(void)
     return true;
 }
 
-/* Configure the alarm to fire at WAKEUP_HOUR:WAKEUP_MINUTE daily, enable INT
- * output, and configure IO0 with internal pull-up. Returns true on success. */
+/* Configure the alarm to fire at the configured time, enable INT output,
+ * and configure IO0 with internal pull-up. Time source priority:
+ *   1. audio_get_alarm_config() (parsed from /api/esp, daily HH:MM)
+ *   2. CONFIG_WAKEUP_HOUR:CONFIG_WAKEUP_MINUTE (Kconfig fallback)
+ * Returns true on success. */
 static bool arm_pcf85063_alarm_wakeup(void)
 {
     if (!pcf85063_is_present()) return false;
 
+    const alarm_config_t *ac = audio_get_alarm_config();
+    uint8_t hour, minute;
+    if (ac->valid) {
+        hour = ac->hour;
+        minute = ac->minute;
+    } else {
+        hour = CONFIG_WAKEUP_HOUR;
+        minute = CONFIG_WAKEUP_MINUTE;
+    }
+
     pcf85063_alarm_t alarm = {
         .enable  = true,
-        .minute  = CONFIG_WAKEUP_MINUTE,
-        .hour    = CONFIG_WAKEUP_HOUR,
+        .minute  = minute,
+        .hour    = hour,
         .day     = PCF85063_ALARM_DISABLE,
         .weekday = PCF85063_ALARM_DISABLE,
     };
@@ -117,7 +130,40 @@ static bool arm_pcf85063_alarm_wakeup(void)
     gpio_config(&int_cfg);
 
     ESP_LOGI(TAG, "PCF85063 alarm armed for %02d:%02d daily on IO%d",
-             CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE, CONFIG_PCF85063_INT_GPIO);
+             hour, minute, CONFIG_PCF85063_INT_GPIO);
+    return true;
+}
+
+/* Decide whether audio should play this wake cycle.
+ *
+ * Rules:
+ *   - alarm.valid == false              → don't play (server says no alarm)
+ *   - weekend && !weekend_enabled       → don't play (suppressed)
+ *   - PCF read time fails               → don't play (can't verify weekday)
+ *   - otherwise                         → play
+ */
+static bool should_play_audio_this_wake(void)
+{
+    const alarm_config_t *ac = audio_get_alarm_config();
+    if (!ac->valid) {
+        ESP_LOGI(TAG, "Audio suppressed: no alarm configured");
+        return false;
+    }
+#if CONFIG_PCF85063_ENABLE
+    pcf85063_datetime_t now;
+    if (pcf85063_read_datetime(&now) != ESP_OK) {
+        ESP_LOGW(TAG, "Audio suppressed: PCF85063 read failed");
+        return false;
+    }
+    bool is_weekend = (now.weekday == 0 || now.weekday == 6);
+    if (is_weekend && !ac->weekend_enabled) {
+        ESP_LOGI(TAG, "Audio suppressed: weekend alarm disabled (weekday=%d)",
+                 now.weekday);
+        return false;
+    }
+#else
+    /* Without PCF we can't read weekday — play conservatively */
+#endif
     return true;
 }
 #endif /* CONFIG_PCF85063_ENABLE */
@@ -331,13 +377,17 @@ void app_main(void)
             vTaskDelay(pdMS_TO_TICKS(50));
 
             /* 2. Start audio — only if the same API response included a URL.
-             * audio_fetch_api() already cached s_radio_url above. */
-            if (audio_radio_url_is_set()) {
+             * audio_fetch_api() already cached s_radio_url above.
+             * Skip playback when server says no alarm OR weekend alarm disabled. */
+            if (audio_radio_url_is_set() && should_play_audio_this_wake()) {
                 if (audio_play_url() == ESP_OK) {
                     clock_screen_set_station_name(audio_get_station_name());
                     clock_screen_set_audio_indicator(true);
                     s_audio_playing = true;
                 }
+            } else if (!should_play_audio_this_wake()) {
+                ESP_LOGI(TAG, "Boot audio skipped (alarm suppress)");
+                clock_screen_set_station_name("Alarm off");
             }
         }
     }
@@ -490,10 +540,21 @@ void app_main(void)
     gpio_hold_en(CONFIG_WAKEUP_GPIO);
 
 #if CONFIG_PCF85063_ENABLE
-    /* Arm the PCF85063 alarm before sleep. If successful, we'll wake from
-     * IO0 (PCF85063 INT#) instead of an internal RTC timer — the external
-     * crystal keeps ticking accurately while ESP32-C3 is fully powered down. */
-    bool use_pcf85063_wakeup = arm_pcf85063_alarm_wakeup();
+    /* Decide whether to arm the PCF85063 alarm:
+     *   - alarm.valid  → arm with server-supplied HH:MM
+     *   - !alarm.valid + fetch failed → arm with Kconfig fallback (PCF still works
+     *                                  even though we couldn't reach the server)
+     *   - !alarm.valid + fetch succeeded → DO NOT arm (server explicitly cancelled
+     *                                     alarm; only button can wake us)
+     *
+     * arm_pcf85063_alarm_wakeup() itself picks between alarm_config and Kconfig. */
+    const alarm_config_t *ac = audio_get_alarm_config();
+    bool arm_ok = arm_pcf85063_alarm_wakeup();
+    bool use_pcf85063_wakeup = arm_ok && (ac->valid || !audio_last_fetch_succeeded());
+    if (!use_pcf85063_wakeup) {
+        ESP_LOGW(TAG, "PCF85063 alarm NOT armed (alarm.valid=%d, fetch_ok=%d)",
+                 ac->valid, audio_last_fetch_succeeded());
+    }
 #else
     bool use_pcf85063_wakeup = false;
 #endif
@@ -514,8 +575,15 @@ void app_main(void)
     ESP_LOGW(TAG, "GPIO deep sleep wakeup not supported on this chip, wake by timer only");
 #endif
 
-    // Fallback: schedule internal RTC timer wakeup if PCF85063 alarm isn't armed.
-    if (!use_pcf85063_wakeup) {
+    // Fallback: schedule internal RTC timer wakeup only when PCF85063 isn't
+    // available at all AND /api/esp was unreachable (so Kconfig can rescue us).
+    // If /api/esp succeeded but omitted the alarm field, we deliberately skip
+    // the timer — user wants no scheduled wakeup.
+    if (!use_pcf85063_wakeup
+#if CONFIG_PCF85063_ENABLE
+        && !pcf85063_is_present()
+#endif
+    ) {
         time_t now = time(NULL);
         struct tm tm_now = {0};
         localtime_r(&now, &tm_now);

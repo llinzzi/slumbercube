@@ -5,6 +5,7 @@
 #include "audio_mixer.h"
 #include "audio_stream.h"
 #include "audio_http_stream.h"
+#include "alarm_time_parse.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "cJSON.h"
@@ -108,6 +109,17 @@ static char s_radio_station[64] = {0};
 static char s_radio_song[128] = {0};
 static int s_radio_volume_pct = -1;  /* -1 = not set, fallback to CONFIG */
 static weather_data_t s_cached_weather = {0};
+
+/* ── Alarm config from /api/esp ────────────────────────────── */
+/* valid=false until a parseable alarm.time is received. weekend_enabled
+ * defaults to true (alarm fires every day) when the field is absent. */
+static alarm_config_t s_alarm_config = {
+    .valid = false, .hour = 0, .minute = 0, .weekend_enabled = true
+};
+
+/* Tracks whether the most recent audio_fetch_api() reached a successful
+ * HTTP 200 + JSON parse. Used by main.c to gate Kconfig fallback. */
+static bool s_last_fetch_succeeded = false;
 
 
 /* ── Software volume scale (16-bit stereo PCM) ──────────────── */
@@ -350,6 +362,64 @@ static void audio_parse_radio(cJSON *root)
     }
 }
 
+/* Parse alarm config from /api/esp response. Expected shape:
+ *   "alarm": {
+ *     "time": "07:50",         // HH:MM 24h
+ *     "weekend_enabled": true  // optional, default true
+ *   }
+ * Missing alarm object / missing/invalid time → s_alarm_config.valid = false.
+ * The PCF85063 alarm is NOT armed by this function — main.c owns sleep setup. */
+static void audio_parse_alarm(cJSON *root)
+{
+    /* Reset to defaults every fetch so a removed alarm field is honored. */
+    s_alarm_config.valid = false;
+    s_alarm_config.hour = 0;
+    s_alarm_config.minute = 0;
+    s_alarm_config.weekend_enabled = true;
+
+    cJSON *j_alarm = cJSON_GetObjectItem(root, "alarm");
+    if (!j_alarm || !cJSON_IsObject(j_alarm)) {
+        return;  /* no alarm object → caller treats as "no scheduled wakeup" */
+    }
+
+    cJSON *j_time = cJSON_GetObjectItem(j_alarm, "time");
+    if (!j_time || !cJSON_IsString(j_time) || !j_time->valuestring) {
+        ESP_LOGW(TAG, "Alarm: present but no time field");
+        return;
+    }
+
+    uint8_t hour = 0, minute = 0;
+    if (!alarm_parse_time_string(j_time->valuestring, &hour, &minute)) {
+        ESP_LOGW(TAG, "Alarm: invalid time '%s' (expected HH:MM 24h)",
+                 j_time->valuestring);
+        return;
+    }
+
+    cJSON *j_weekend = cJSON_GetObjectItem(j_alarm, "weekend_enabled");
+    bool weekend_enabled = true;
+    if (cJSON_IsBool(j_weekend)) {
+        weekend_enabled = cJSON_IsTrue(j_weekend);
+    }
+
+    s_alarm_config.valid = true;
+    s_alarm_config.hour = hour;
+    s_alarm_config.minute = minute;
+    s_alarm_config.weekend_enabled = weekend_enabled;
+    ESP_LOGI(TAG, "Alarm: %02d:%02d daily, weekend_enabled=%s",
+             s_alarm_config.hour, s_alarm_config.minute,
+             weekend_enabled ? "true" : "false");
+}
+
+const alarm_config_t *audio_get_alarm_config(void)
+{
+    return &s_alarm_config;
+}
+
+bool audio_last_fetch_succeeded(void)
+{
+    return s_last_fetch_succeeded;
+}
+
 /* Fetch /api/esp and parse weather + radio fields.
  * Used as the boot weather fetch — also caches s_radio_url so
  * audio_play_url() can skip a redundant HTTP round-trip. */
@@ -357,13 +427,18 @@ esp_err_t audio_fetch_api(void)
 {
     cJSON *root = NULL;
     esp_err_t err = audio_http_get_json(&root);
-    if (err != ESP_OK) return err;
+    if (err != ESP_OK) {
+        s_last_fetch_succeeded = false;
+        return err;
+    }
 
     audio_parse_weather(root);
     audio_parse_radio(root);
+    audio_parse_alarm(root);
     cJSON_Delete(root);
 
     /* Success if we got usable weather data */
+    s_last_fetch_succeeded = s_cached_weather.valid;
     return s_cached_weather.valid ? ESP_OK : ESP_FAIL;
 }
 

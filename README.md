@@ -299,6 +299,10 @@ GET http://{server}:3000/api/esp/{device_id}?wake={src}&t={temp}&h={humidity}
     "tempMin": "22",
     "textDay": "小雨",
     "textNight": "阴"
+  },
+  "alarm": {
+    "time": "07:50",
+    "weekend_enabled": false
   }
 }
 ```
@@ -316,6 +320,9 @@ GET http://{server}:3000/api/esp/{device_id}?wake={src}&t={temp}&h={humidity}
 | `weather.tempMin` | string | 今日最低温 |
 | `weather.textDay` | string | 白天天气 |
 | `weather.textNight` | string | 夜间天气 |
+| `alarm` | object | 闹铃配置；缺失 = 不闹 |
+| `alarm.time` | string | 每日唤醒时间，格式 `"HH:MM"` 24h 制 (例如 `"07:50"`) |
+| `alarm.weekend_enabled` | bool | 周六周日是否响；默认 `true` |
 
 ### 响应示例 (无音乐)
 
@@ -326,6 +333,27 @@ GET http://{server}:3000/api/esp/{device_id}?wake={src}&t={temp}&h={humidity}
 ```
 
 > `url` 缺失或为空 → 不启动音频播放, 仅显示天气。
+>
+> `alarm` 字段缺失或格式错误 → 取消闹铃（只能按键唤醒）。
+>
+> `alarm.weekend_enabled = false` 且今天是周六/周日 → PCF 闹钟照常触发，但固件跳过音频播放（display/天气仍正常）。
+
+### 闹铃时序
+
+```
+每次唤醒 (PCF 闹钟 / 按键)
+  │
+  ├─ /api/esp 响应含 alarm.time
+  │   └─ PCF85063 写 HH:MM（每天响一次，weekday/day 都是 wildcard）
+  │       ├─ 周一~周五 或 weekend_enabled=true → 正常播放
+  │       └─ 周六/周日 且 weekend_enabled=false → 不播音频，但设备仍启动
+  │
+  └─ /api/esp 响应无 alarm（或 /api/esp 失败）
+      ├─ 响应成功但无 alarm → 不写 PCF 闹钟，只能按键唤醒
+      └─ 响应失败 → PCF 仍按 Kconfig WAKEUP_HOUR:WAKEUP_MINUTE 兜底响
+```
+
+> **为什么 PCF 每天响一次**：PCF85063 硬件 weekday 寄存器只有 3 bit，是单值 0-6，无法表达"周一到周五"区间。固件在唤醒时读 weekday 决定是否播放，所以每天 PCF 7:50 触发一次，固件做周末抑制判断。
 
 ### 请求时机
 

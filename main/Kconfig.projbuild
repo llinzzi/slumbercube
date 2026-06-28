@@ -32,11 +32,11 @@ menu "SlumberCube Configuration"
             int "Wakeup GPIO number"
             default 3
         config WAKEUP_HOUR
-            int "Auto-wakeup hour (0-23)"
+            int "Fallback wake-up hour (0-23) — used only when /api/esp is unreachable"
             range 0 23
             default 7
         config WAKEUP_MINUTE
-            int "Auto-wakeup minute (0-59)"
+            int "Fallback wake-up minute (0-59) — used only when /api/esp is unreachable"
             range 0 59
             default 50
     endmenu

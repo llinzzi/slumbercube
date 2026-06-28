@@ -43,6 +43,30 @@ void audio_set_indoor_env(float temp_c, float humidity);
  * The source is appended as ?wake=... on all /api/esp requests. */
 void audio_set_wake_source(const char *source);
 
+/* Alarm configuration parsed from /api/esp response.
+ *
+ * `valid`       — true if `time` was parsed as "HH:MM" 24h string
+ * `hour`/`min`  — alarm time (0-23 / 0-59) when valid
+ * `weekend_enabled` — whether the alarm should fire on Sat/Sun
+ *                     (defaults to true if the field is absent)
+ *
+ * When `valid` is false, the server returned no usable alarm — the caller
+ * should treat this as "no scheduled wakeup". */
+typedef struct {
+    bool valid;
+    uint8_t hour;
+    uint8_t minute;
+    bool weekend_enabled;
+} alarm_config_t;
+
+/* Latest alarm config parsed from /api/esp. Returns a pointer to a static
+ * struct (valid=false until the first fetch that includes the alarm field). */
+const alarm_config_t *audio_get_alarm_config(void);
+
+/* True if the most recent audio_fetch_api() returned ESP_OK.
+ * Used by main.c to decide between server-provided alarm and Kconfig fallback. */
+bool audio_last_fetch_succeeded(void);
+
 #ifdef __cplusplus
 }
 #endif
