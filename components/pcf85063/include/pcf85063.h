@@ -64,6 +64,12 @@ esp_err_t pcf85063_clear_alarm_flag(void);
 /* Enable or disable the alarm interrupt output (Control_2.AIE). */
 esp_err_t pcf85063_enable_alarm_int(bool enable);
 
+/* Write the current system time (UTC) to the chip.
+ * Used to sync the RTC after SNTP gives us a more accurate wall-clock.
+ * Returns ESP_ERR_INVALID_STATE if init wasn't called or the chip didn't
+ * respond. Returns ESP_ERR_INVALID_ARG if system time looks uninitialised. */
+esp_err_t pcf85063_sync_from_system(void);
+
 /* True if the chip responded to its I2C address during init. */
 bool pcf85063_is_present(void);
 

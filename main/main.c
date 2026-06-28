@@ -282,6 +282,15 @@ void app_main(void)
             if (!wifi_is_time_set()) {
                 wifi_mark_time_set();
             }
+#if CONFIG_PCF85063_ENABLE
+            /* wifi_init_sta() blocks for up to 10s on SNTP. If it succeeded,
+             * the system clock now has an accurate UTC reading — push it
+             * back to PCF85063 so the chip holds the authoritative time and
+             * future boots don't depend on WiFi being available. */
+            if (pcf85063_is_present()) {
+                pcf85063_sync_from_system();
+            }
+#endif
         }
         /* Weather is fetched as part of audio_play_url() via /api/esp;
          * the display shows the default icon until that completes. */

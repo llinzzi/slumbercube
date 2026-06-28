@@ -10,6 +10,7 @@
 #include "freertos/FreeRTOS.h"
 #include "i2c_bus.h"
 #include <string.h>
+#include <time.h>
 
 #define TAG "PCF85063"
 
@@ -235,4 +236,43 @@ esp_err_t pcf85063_enable_alarm_int(bool enable)
                                     : (ctrl2 & ~CTRL2_AIE));
     if (want == ctrl2) return ESP_OK;
     return write_regs(REG_CTRL2, &want, 1);
+}
+
+esp_err_t pcf85063_sync_from_system(void)
+{
+    if (!s_present) return ESP_ERR_INVALID_STATE;
+
+    /* Read system time as UTC. The TZ env was set by wifi_set_timezone() —
+     * gmtime_r() ignores TZ and treats the epoch as UTC by definition. */
+    time_t now;
+    time(&now);
+    struct tm utc;
+    gmtime_r(&now, &utc);
+
+    /* Sanity check: refuse to write garbage that would put the RTC decades
+     * in the wrong place. */
+    int year = utc.tm_year + 1900;
+    if (year < 2025 || year > 2099) {
+        ESP_LOGW(TAG, "system year=%d out of range, skipping sync", year);
+        return ESP_ERR_INVALID_ARG;
+    }
+
+    pcf85063_datetime_t dt = {
+        .year    = (uint16_t)year,
+        .month   = (uint8_t)(utc.tm_mon + 1),
+        .day     = (uint8_t)utc.tm_mday,
+        .weekday = (uint8_t)(utc.tm_wday < 0 ? 0 : utc.tm_wday),
+        .hour    = (uint8_t)utc.tm_hour,
+        .minute  = (uint8_t)utc.tm_min,
+        .second  = (uint8_t)utc.tm_sec,
+    };
+
+    esp_err_t err = pcf85063_set_datetime(&dt);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "set_datetime failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    ESP_LOGI(TAG, "synced from system time: %04u-%02u-%02u %02u:%02u:%02u UTC",
+             dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+    return ESP_OK;
 }
