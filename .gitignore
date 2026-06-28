@@ -8,3 +8,7 @@ managed_components
 .DS_Store
 *.swp
 .DS_Store
+
+# Host unit test artefacts (tests/Makefile produces these)
+tests/test_*
+tests/*.dSYM/
