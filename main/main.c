@@ -9,9 +9,11 @@
 #include "clock_screen.h"
 #include "esp_sleep.h"
 #include <time.h>
+#include <sys/time.h>
 #include "iot_button.h"
 #include "button_gpio.h"
 #include "shtc3.h"
+#include "pcf85063.h"
 
 #if CONFIG_AUDIO_ENABLE
 #include "audio_player_wrapper.h"
@@ -38,6 +40,87 @@ static bool read_indoor_env(float *temp_c, float *humidity)
     ESP_LOGI(TAG, "SHTC3: indoor %.1f°C, %.0f%%RH", t, h);
     return true;
 }
+
+#if CONFIG_PCF85063_ENABLE
+/* Read PCF85063 wall-clock and apply it as UTC system time.
+ * Returns true if a plausible time was applied. */
+static bool apply_pcf85063_time(void)
+{
+    if (!pcf85063_is_present()) return false;
+
+    pcf85063_datetime_t dt;
+    if (pcf85063_read_datetime(&dt) != ESP_OK) {
+        ESP_LOGW(TAG, "PCF85063 read failed");
+        return false;
+    }
+    /* Reject obviously-uninitialised chips (factory default ~2000 or 0xFF). */
+    if (dt.year < 2025 || dt.year > 2099) {
+        ESP_LOGW(TAG, "PCF85063 year=%u looks uninitialised, skipping", dt.year);
+        return false;
+    }
+
+    struct tm tm_utc = {
+        .tm_sec   = dt.second,
+        .tm_min   = dt.minute,
+        .tm_hour  = dt.hour,
+        .tm_mday  = dt.day,
+        .tm_mon   = (int)dt.month - 1,
+        .tm_year  = (int)dt.year - 1900,
+        .tm_wday  = dt.weekday,
+        .tm_yday  = 0,
+        .tm_isdst = 0,
+    };
+    /* mktime() interprets the struct according to TZ — flip TZ to UTC for the
+     * conversion, then restore (wifi_set_timezone() will redo it shortly). */
+    setenv("TZ", "UTC0", 1);
+    tzset();
+    time_t t = mktime(&tm_utc);
+
+    struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+    ESP_LOGI(TAG, "PCF85063 applied: %04u-%02u-%02u %02u:%02u:%02u UTC (wday=%u)",
+             dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second, dt.weekday);
+    return true;
+}
+
+/* Configure the alarm to fire at WAKEUP_HOUR:WAKEUP_MINUTE daily, enable INT
+ * output, and configure IO0 with internal pull-up. Returns true on success. */
+static bool arm_pcf85063_alarm_wakeup(void)
+{
+    if (!pcf85063_is_present()) return false;
+
+    pcf85063_alarm_t alarm = {
+        .enable  = true,
+        .minute  = CONFIG_WAKEUP_MINUTE,
+        .hour    = CONFIG_WAKEUP_HOUR,
+        .day     = PCF85063_ALARM_DISABLE,
+        .weekday = PCF85063_ALARM_DISABLE,
+    };
+    if (pcf85063_set_alarm(&alarm) != ESP_OK) {
+        ESP_LOGW(TAG, "PCF85063 set_alarm failed");
+        return false;
+    }
+    if (pcf85063_enable_alarm_int(true) != ESP_OK) {
+        ESP_LOGW(TAG, "PCF85063 enable_alarm_int failed");
+        return false;
+    }
+
+    /* PCF85063 INT# is open-drain — internal pull-up keeps the line high
+     * until the chip drives it low. */
+    gpio_config_t int_cfg = {
+        .pin_bit_mask = (1ULL << CONFIG_PCF85063_INT_GPIO),
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_ENABLE,
+        .pull_down_en = GPIO_PULLDOWN_DISABLE,
+        .intr_type    = GPIO_INTR_DISABLE,
+    };
+    gpio_config(&int_cfg);
+
+    ESP_LOGI(TAG, "PCF85063 alarm armed for %02d:%02d daily on IO%d",
+             CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE, CONFIG_PCF85063_INT_GPIO);
+    return true;
+}
+#endif /* CONFIG_PCF85063_ENABLE */
 
 static void apply_weather_and_indoor(const weather_data_t *w)
 {
@@ -82,10 +165,21 @@ void app_main(void)
         audio_set_wake_source("rtc");
         ESP_LOGI(TAG, "Woke from RTC timer");
         break;
-    case ESP_SLEEP_WAKEUP_GPIO:
+    case ESP_SLEEP_WAKEUP_GPIO: {
+        uint64_t wake_pins = esp_sleep_get_gpio_wakeup_status();
+#if CONFIG_PCF85063_ENABLE
+        if (wake_pins & (1ULL << CONFIG_PCF85063_INT_GPIO)) {
+            audio_set_wake_source("rtc");
+            ESP_LOGI(TAG, "Woke from PCF85063 alarm (IO%d)", CONFIG_PCF85063_INT_GPIO);
+            pcf85063_clear_alarm_flag();
+            break;
+        }
+#endif
         audio_set_wake_source("btn");
-        ESP_LOGI(TAG, "Woke from GPIO (button)");
+        ESP_LOGI(TAG, "Woke from GPIO (button IO%d, status=0x%llX)",
+                 CONFIG_WAKEUP_GPIO, (unsigned long long)wake_pins);
         break;
+    }
     case ESP_SLEEP_WAKEUP_UNDEFINED:
         audio_set_wake_source("sys");
         ESP_LOGI(TAG, "Cold boot");
@@ -102,6 +196,9 @@ void app_main(void)
     gpio_hold_dis(PIN_NUM_RST);
     gpio_hold_dis(CONFIG_PIN_NS4168_CTRL);
     gpio_hold_dis(CONFIG_WAKEUP_GPIO);
+#if CONFIG_PCF85063_ENABLE
+    gpio_hold_dis(CONFIG_PCF85063_INT_GPIO);
+#endif
 
     /* Hold all control and SPI pins at known levels before SSD1322 init.
      * CS is hardwired to GND, so the SSD1322 SPI is always selected — any
@@ -149,6 +246,18 @@ void app_main(void)
 
     // Always set timezone after wake (TZ env var is lost during deep sleep)
     wifi_set_timezone();
+
+#if CONFIG_PCF85063_ENABLE
+    /* Init the external RTC and apply its time BEFORE WiFi/SNTP.
+     * wifi_set_timezone() above set TZ to local; apply_pcf85063_time() flips
+     * TZ to UTC internally for the conversion, then restores via the next
+     * wifi_set_timezone() call below. */
+    if (pcf85063_init() == ESP_OK) {
+        apply_pcf85063_time();
+    } else {
+        ESP_LOGW(TAG, "PCF85063 not present, time will come from SNTP only");
+    }
+#endif
 
     // Initialize LVGL before WiFi (clean heap avoids allocation failures)
     ESP_ERROR_CHECK(lvgl_adapter_init());
@@ -371,16 +480,33 @@ void app_main(void)
     gpio_set_pull_mode(CONFIG_WAKEUP_GPIO, GPIO_PULLUP_ONLY);
     gpio_hold_en(CONFIG_WAKEUP_GPIO);
 
-    // Configure GPIO3 low-level as wakeup source
+#if CONFIG_PCF85063_ENABLE
+    /* Arm the PCF85063 alarm before sleep. If successful, we'll wake from
+     * IO0 (PCF85063 INT#) instead of an internal RTC timer — the external
+     * crystal keeps ticking accurately while ESP32-C3 is fully powered down. */
+    bool use_pcf85063_wakeup = arm_pcf85063_alarm_wakeup();
+#else
+    bool use_pcf85063_wakeup = false;
+#endif
+
+    // Configure wakeup sources: button always; PCF85063 INT if available.
 #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
-    esp_deep_sleep_enable_gpio_wakeup((1ULL << CONFIG_WAKEUP_GPIO), ESP_GPIO_WAKEUP_GPIO_LOW);
-    ESP_LOGI(TAG, "Entering deep sleep, GPIO%d will wake on low level", CONFIG_WAKEUP_GPIO);
+    uint64_t wake_mask = (1ULL << CONFIG_WAKEUP_GPIO);
+#if CONFIG_PCF85063_ENABLE
+    if (use_pcf85063_wakeup) {
+        wake_mask |= (1ULL << CONFIG_PCF85063_INT_GPIO);
+        gpio_hold_en(CONFIG_PCF85063_INT_GPIO);
+    }
+#endif
+    esp_deep_sleep_enable_gpio_wakeup(wake_mask, ESP_GPIO_WAKEUP_GPIO_LOW);
+    ESP_LOGI(TAG, "Entering deep sleep, GPIO wakeup mask 0x%llX",
+             (unsigned long long)wake_mask);
 #else
     ESP_LOGW(TAG, "GPIO deep sleep wakeup not supported on this chip, wake by timer only");
 #endif
 
-    // Schedule timer wakeup at configured time (default 7:50)
-    {
+    // Fallback: schedule internal RTC timer wakeup if PCF85063 alarm isn't armed.
+    if (!use_pcf85063_wakeup) {
         time_t now = time(NULL);
         struct tm tm_now = {0};
         localtime_r(&now, &tm_now);
