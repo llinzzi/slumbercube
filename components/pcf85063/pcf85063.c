@@ -8,16 +8,12 @@
 #include "esp_log.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
+#include "i2c_bus.h"
 #include <string.h>
 
 #define TAG "PCF85063"
 
 /* BCD helpers live in pcf85063_bcd.c (host-testable). */
-
-#define I2C_SCL_GPIO  CONFIG_PCF85063_I2C_SCL_GPIO   /* default 9 */
-#define I2C_SDA_GPIO  CONFIG_PCF85063_I2C_SDA_GPIO   /* default 21 */
-#define I2C_FREQ_HZ   CONFIG_PCF85063_I2C_FREQ_HZ    /* default 400000 */
-
 #define PCF85063_ADDR CONFIG_PCF85063_I2C_ADDR        /* default 0x51 */
 
 /* Register map (datasheet §7) */
@@ -45,7 +41,6 @@
 #define CTRL2_HMI  0x10  /* half-minute interrupt */
 #define CTRL2_TF   0x08  /* timer flag */
 
-static i2c_master_bus_handle_t s_bus = NULL;
 static i2c_master_dev_handle_t s_dev = NULL;
 static bool s_present = false;
 
@@ -75,30 +70,21 @@ esp_err_t pcf85063_init(void)
 {
     if (s_present) return ESP_OK;
 
-    i2c_master_bus_config_t bus_cfg = {
-        .i2c_port = -1,
-        .sda_io_num = I2C_SDA_GPIO,
-        .scl_io_num = I2C_SCL_GPIO,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus);
+    esp_err_t err = i2c_bus_init();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "bus init failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "shared bus init failed: %s", esp_err_to_name(err));
         return err;
     }
+    i2c_master_bus_handle_t bus = i2c_bus_get();
 
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = PCF85063_ADDR,
-        .scl_speed_hz = I2C_FREQ_HZ,
+        .scl_speed_hz = CONFIG_I2C_BUS_FREQ_HZ,
     };
-    err = i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev);
+    err = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "add device failed: %s", esp_err_to_name(err));
-        i2c_del_master_bus(s_bus);
-        s_bus = NULL;
         return err;
     }
 
@@ -130,15 +116,13 @@ esp_err_t pcf85063_init(void)
     if (err != ESP_OK) goto fail;
 
     s_present = true;
-    ESP_LOGI(TAG, "PCF85063 detected at 0x%02X (SDA=%d SCL=%d)",
-             PCF85063_ADDR, I2C_SDA_GPIO, I2C_SCL_GPIO);
+    ESP_LOGI(TAG, "PCF85063 detected at 0x%02X on shared I2C bus",
+             PCF85063_ADDR);
     return ESP_OK;
 
 fail:
     i2c_master_bus_rm_device(s_dev);
     s_dev = NULL;
-    i2c_del_master_bus(s_bus);
-    s_bus = NULL;
     return ESP_ERR_NOT_FOUND;
 }
 
@@ -148,9 +132,7 @@ esp_err_t pcf85063_deinit(void)
     esp_err_t err = i2c_master_bus_rm_device(s_dev);
     s_dev = NULL;
     if (err != ESP_OK) return err;
-    err = i2c_del_master_bus(s_bus);
-    s_bus = NULL;
-    if (err != ESP_OK) return err;
+    /* Bus is owned by i2c_bus — leave it alone. */
     s_present = false;
     return ESP_OK;
 }

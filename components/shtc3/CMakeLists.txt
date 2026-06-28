@@ -1,3 +1,3 @@
 idf_component_register(SRCS "shtc3.c"
                        INCLUDE_DIRS "include"
-                       PRIV_REQUIRES driver)
+                       PRIV_REQUIRES driver i2c_bus)

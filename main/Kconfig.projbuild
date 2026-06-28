@@ -89,25 +89,28 @@ menu "SlumberCube Configuration"
             bool "Enable PCF85063 external RTC"
             default y
             help
-              PCF85063ATT/AJ external RTC chip on the I2C bus.
+              PCF85063ATT/AJ external RTC chip on the shared I2C bus.
               Provides accurate timekeeping during deep sleep so the
               ESP32-C3 does not need to keep its internal RTC running.
         config PCF85063_I2C_ADDR
             hex "PCF85063 I2C address (7-bit)"
             default 0x51
             range 0x00 0x7F
-        config PCF85063_I2C_SDA_GPIO
-            int "I2C SDA GPIO (shared with SHTC3)"
-            default 21
-        config PCF85063_I2C_SCL_GPIO
-            int "I2C SCL GPIO (shared with SHTC3)"
-            default 9
-        config PCF85063_I2C_FREQ_HZ
-            int "I2C bus frequency (Hz)"
-            default 400000
         config PCF85063_INT_GPIO
             int "PCF85063 INT# GPIO (RTC alarm/second interrupt)"
             default 0
+    endmenu
+
+    menu "I2C Bus Configuration"
+        config I2C_BUS_SDA_GPIO
+            int "Shared I2C SDA GPIO (SHTC3 + PCF85063)"
+            default 21
+        config I2C_BUS_SCL_GPIO
+            int "Shared I2C SCL GPIO (SHTC3 + PCF85063)"
+            default 9
+        config I2C_BUS_FREQ_HZ
+            int "Shared I2C bus frequency (Hz)"
+            default 400000
     endmenu
 
 endmenu
