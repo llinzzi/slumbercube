@@ -7,6 +7,7 @@
 #include "ui.h"
 #include "wifi.h"
 #include "wifi_provisioning.h"
+#include "agent_config.h"
 #include "clock_screen.h"
 #include "esp_sleep.h"
 #include <time.h>
@@ -39,6 +40,18 @@ static bool read_indoor_env(float *temp_c, float *humidity)
     *humidity = h;
     ESP_LOGI(TAG, "SHTC3: indoor %.1f°C, %.0f%%RH", t, h);
     return true;
+}
+
+/* When audio_play_url() returns a non-OK code, decide which user-facing
+ * message to show. The "Agent disabled" case is the most actionable — it
+ * tells the user to re-enable the agent in the captive portal. */
+static const char *audio_failure_station_name(void)
+{
+    agent_config_t cfg;
+    if (agent_config_load(&cfg) == ESP_OK && !cfg.enabled) {
+        return "Agent disabled";
+    }
+    return "WiFi failed";
 }
 
 static void apply_weather_and_indoor(const weather_data_t *w)
@@ -236,9 +249,15 @@ void app_main(void)
 
         if (audio_init() == ESP_OK) {
             /* 1. Single HTTP call — parses both weather and radio URL from /api/esp.
-             * Weather and URL are independent; one can succeed without the other. */
+             * Weather and URL are independent; one can succeed without the other.
+             * audio_fetch_api() returns ESP_ERR_NOT_SUPPORTED when the agent is
+             * disabled by config — clock-only mode, skip weather + radio. */
             clock_screen_set_station_name("Fetching weather...");
-            bool got_weather = (audio_fetch_api() == ESP_OK);
+            esp_err_t fetch_rc = audio_fetch_api();
+            bool got_weather = (fetch_rc == ESP_OK);
+            if (fetch_rc == ESP_ERR_NOT_SUPPORTED) {
+                ESP_LOGI(TAG, "Agent disabled by config, clock-only mode");
+            }
 
             /* Display whatever we got (best-effort) */
             const weather_data_t *w = audio_get_weather();
@@ -331,6 +350,8 @@ void app_main(void)
                             apply_weather_and_indoor(audio_get_weather());
                             clock_screen_set_audio_indicator(true);
                             s_audio_playing = true;
+                        } else {
+                            clock_screen_set_station_name(audio_failure_station_name());
                         }
                     }
                 } else {
@@ -343,6 +364,8 @@ void app_main(void)
                                 apply_weather_and_indoor(audio_get_weather());
                                 clock_screen_set_audio_indicator(true);
                                 s_audio_playing = true;
+                            } else {
+                                clock_screen_set_station_name(audio_failure_station_name());
                             }
                         }
                     } else {

@@ -204,23 +204,26 @@ flowchart TD
     N -->|否| P[WiFi STA 连接]
     P --> Q[SNTP 时间同步]
     Q --> R[读取 SHTC3 传感器]
-    R --> S[audio_fetch_api<br/>单次 HTTP GET /api/esp]
-    S --> T[解析天气 + 电台URL]
-    T --> U{有电台URL?}
-    U -->|是| V[audio_play_url<br/>HTTP 流 MP3 解码]
-    U -->|否| W[跳过音频]
+    R --> S{Agent 已启用?}
+    S -->|否| SA[clock-only 模式<br/>跳过 /api/esp]
+    S -->|是| T[audio_fetch_api<br/>单次 HTTP GET /api/esp]
+    T --> U[解析天气 + 电台URL]
+    U --> V{有电台URL?}
+    V -->|是| W[audio_play_url<br/>HTTP 流 MP3 解码]
+    V -->|否| WA[跳过音频]
 
-    V --> X[主循环 3600s]
-    O --> X
+    O --> X[主循环 3600s]
+    SA --> X
     W --> X
+    WA --> X
 
     X --> Y{每秒检查}
     Y -->|短按/超时| Z[深度睡眠]
     Y -->|长按| AA[切换播放/停止]
     Y -->|歌曲结束| AB[auto_advance<br/>请求下一首]
     Y -->|每10秒| AC[刷新 SHTC3 传感器]
-    AB --> V
-    AA --> V
+    AB --> T
+    AA --> T
     AC --> X
 ```
 
@@ -362,6 +365,54 @@ sequenceDiagram
 
 ---
 
+## 无 Agent 模式（配置 Server 地址）
+
+设备支持 **完全跳过 Agent 后端** 的运行模式——只显示时间 + 室内温湿度，不发起 `/api/esp` 请求，不播放音频。这种模式在 captive portal（SoftAP 配网页面）上配置。
+
+### 配置入口
+
+三击按键进入 WiFi 配网页面后，表单最下方多出两项：
+
+| 字段 | 说明 |
+|------|------|
+| ☑ **配置安睡小方Agent** | 复选框；未勾选 = 整机退化为无 Agent 模式 |
+| Server 地址 | 文本输入，默认 `192.168.8.192`（只填 host；端口 `:3000` 和路径 `/api/esp` 写死） |
+
+### 行为差异
+
+| 模式 | `/api/esp` 请求 | 天气显示 | 音频播放 | 屏幕底部 |
+|------|----------------|---------|---------|---------|
+| 启用 Agent（默认） | ✅ | ✅ | ✅ | 电台名 + 歌曲 |
+| **无 Agent 模式** | ❌ 跳过 | 仅默认图标 | ❌ 跳过 | 仅时间 + 室内温湿度 |
+
+未勾选复选框时：
+- `audio_fetch_api()` 直接返回 `ESP_ERR_NOT_SUPPORTED`，整个 HTTP 流程短路
+- `audio_play_url()` 同样短路，长按按键不会播放
+- 复选框未勾选但 host 输入框仍保留之前保存的地址——重新勾选即恢复，不必重输
+
+### 数据存储
+
+| 字段 | NVS namespace | Key | 类型 |
+|------|--------------|-----|------|
+| Host | `agent_cfg` | `host` | string (≤ 64) |
+| 启用标志 | `agent_cfg` | `enabled` | uint8 (0/1) |
+
+与 `wifi_cfg`、`clock` 命名空间平行。`wifi_creds_clear()` 不会动 `agent_cfg`，反之亦然。
+
+### Host 校验
+
+`api_wifi_handler` 在保存前调用 `sanitize_host()`：
+- 空字符串 / `NULL` → `192.168.8.192`
+- 包含 `:`、`/`、空格 → `192.168.8.192`（回退到默认 + 写一条 WARN）
+
+`/api/esp` 的端口 `:3000` 和路径 `/api/esp` 是与后端的契约，**用户不可配置**。
+
+### 重新配置
+
+三击按键 → SoftAP 重新启动 → 提交新表单 → 设备保存到 NVS → 自动重启 3 秒。重启后 `audio_init()` 从 NVS 重新读取 host + enabled。
+
+---
+
 ## 温度传感器 (SHTC3)
 
 ```mermaid
@@ -448,6 +499,8 @@ graph TB
 | 显示驱动 | `ssd1322_driver.c/h` | SSD1322 SPI 命令, 复位序列, 对比度控制 |
 | LVGL 适配 | `lvgl_adapter.c/h` | LVGL flush callback, L8→I4 格式转换 |
 | WiFi/对时 | `wifi.c/h` | STA 连接, SNTP 同步, 设备 ID (MAC) |
+| WiFi 配网 | `wifi_provisioning.c/h` | SoftAP + DNS 重定向 + captive portal + QR |
+| Agent 配置 | `agent_config.c/h` | NVS `agent_cfg` 命名空间, host + enabled |
 | 天气/电台 API | `audio_player_wrapper.c/h` | `/api/esp` HTTP + JSON 解析 + I2S 音频播放 |
 | 屏幕 UI | `clock_screen.c/h` | 时间/天气/温度/歌名布局 + Canvas 绘制 |
 | SHTC3 驱动 | `components/shtc3/shtc3.c/h` | I2C 传感器读取, CRC8 校验 |

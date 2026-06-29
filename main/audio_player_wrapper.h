@@ -43,6 +43,11 @@ void audio_set_indoor_env(float temp_c, float humidity);
  * The source is appended as ?wake=... on all /api/esp requests. */
 void audio_set_wake_source(const char *source);
 
+/* Reload agent config from NVS without going through audio_deinit() +
+ * audio_init(). Useful if some flow needs to pick up a new host without
+ * tearing down the I2S / mixer state. */
+esp_err_t audio_agent_reload(void);
+
 #ifdef __cplusplus
 }
 #endif

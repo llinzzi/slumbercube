@@ -1,5 +1,6 @@
 #include "wifi_provisioning.h"
 #include "wifi.h"
+#include "agent_config.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -180,6 +181,12 @@ static const char INDEX_HTML[] =
 "<input id=ssid_custom name=ssid_custom placeholder='or type hidden SSID' style='margin-top:8px'>"
 "<label for=pass>Password</label>"
 "<input id=pass name=pass type=password>"
+"<hr style='margin:20px 0;border:0;border-top:1px solid #eee'>"
+"<label style='display:flex;align-items:center;gap:8px;font-weight:600'>"
+"<input id=agent name=agent type=checkbox style='width:auto'>"
+"配置安睡小方Agent"
+"</label>"
+"<input id=host name=host placeholder='192.168.8.192' value='192.168.8.192'>"
 "<button type=submit>Connect</button>"
 "</form>"
 "<div id=msg class=msg></div>"
@@ -187,10 +194,14 @@ static const char INDEX_HTML[] =
 "async function load(){const r=await fetch('/scan');const a=await r.json();"
 "const s=document.getElementById('ssid');s.innerHTML=a.map(n=>`<option value=\"${n.ssid.replace(/\"/g,'&quot;')}\">${n.ssid} (${n.rssi}dBm)</option>`).join('')+'<option value=\"\">(hidden)</option>';}"
 "load();"
+"document.getElementById('host').disabled=!document.getElementById('agent').checked;"
+"document.getElementById('agent').onchange=e=>{document.getElementById('host').disabled=!e.target.checked;};"
 "document.getElementById('f').onsubmit=async e=>{e.preventDefault();"
 "const ssid=document.getElementById('ssid').value||document.getElementById('ssid_custom').value;"
 "const pass=document.getElementById('pass').value;"
-"const r=await fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,pass})});"
+"const agent=document.getElementById('agent').checked;"
+"const host=document.getElementById('host').value;"
+"const r=await fetch('/api/wifi',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,pass,agent,host})});"
 "const j=await r.json();const m=document.getElementById('msg');"
 "m.className='msg '+(j.ok?'ok':'err');m.textContent=j.ok?'Saved. Device will reboot in 3s.':j.error;m.style.display='block';};"
 "</script></body></html>";
@@ -298,21 +309,30 @@ static esp_err_t scan_handler(httpd_req_t *req)
     return send_ret;
 }
 
-/* Minimal JSON parser for {"ssid":"X","pass":"Y"}. Avoids pulling in cJSON
- * to keep heap pressure low during provisioning. Returns ESP_OK on success;
- * outputs are NUL-terminated and bounded by the supplied sizes. */
-static esp_err_t parse_wifi_post(const char *body, size_t body_len,
-                                 char *out_ssid, size_t ssid_size,
-                                 char *out_pass, size_t pass_size)
+/* Minimal JSON parser for {"ssid":"X","pass":"Y","agent":<bool>,"host":"Z"}.
+ * Avoids pulling in cJSON to keep heap pressure low during provisioning.
+ * Returns ESP_OK on success; outputs are NUL-terminated and bounded by the
+ * supplied sizes.
+ *
+ *   out_agent  : defaults to false if "agent" key is missing
+ *   out_host   : NUL-terminated; leading/trailing whitespace stripped
+ *                (SSID/pass keep their whitespace — see test_wifi_creds.c) */
+static esp_err_t parse_provisioning_post(const char *body, size_t body_len,
+                                         char *out_ssid, size_t ssid_size,
+                                         char *out_pass, size_t pass_size,
+                                         char *out_host, size_t host_size,
+                                         bool *out_agent)
 {
     if (body == NULL || body_len == 0) return ESP_ERR_INVALID_ARG;
+    if (out_agent) *out_agent = false;
+    if (out_host) out_host[0] = '\0';
 
     const char *p = body;
     const char *end = body + body_len;
 
-    /* Find "ssid":"..." and "pass":"..." keys. */
-    const char *ssid_key = strstr(p, "\"ssid\"");
-    const char *pass_key = strstr(p, "\"pass\"");
+    /* Find required "ssid" / "pass" keys. The agent fields are optional. */
+    const char *ssid_key  = strstr(p, "\"ssid\"");
+    const char *pass_key  = strstr(p, "\"pass\"");
     if (!ssid_key || !pass_key) return ESP_ERR_INVALID_ARG;
 
     /* Helper to extract the value following a key. */
@@ -337,13 +357,80 @@ static esp_err_t parse_wifi_post(const char *body, size_t body_len,
     #undef EXTRACT
 
     if (out_ssid[0] == '\0') return ESP_ERR_INVALID_ARG;
+
+    /* Optional: "agent":<bool|int|"on">. Accepts the JSON literals true/false,
+     * the integer 1, and the HTML form-encoded string "on". Anything else
+     * (including a missing key) leaves *out_agent at its false default. */
+    if (out_agent) {
+        const char *agent_key = strstr(p, "\"agent\"");
+        if (agent_key) {
+            const char *colon = strchr(agent_key, ':');
+            if (colon) {
+                colon++;
+                while (colon < end && (*colon == ' ' || *colon == '\t')) colon++;
+                if (colon < end && (*colon == 't' || *colon == '1')) {
+                    *out_agent = true;
+                }
+                /* 'f' / '0' / '"on"' with leading quote → leave at false. */
+            }
+        }
+    }
+
+    /* Optional: "host":"<bare host>". Strip leading/trailing whitespace so a
+     * stray space doesn't make esp_http_client fail with a malformed URL. */
+    if (out_host) {
+        const char *host_key = strstr(p, "\"host\"");
+        if (host_key) {
+            const char *colon = strchr(host_key, ':');
+            if (!colon) return ESP_ERR_INVALID_ARG;
+            colon++;
+            while (colon < end && (*colon == ' ' || *colon == '\t')) colon++;
+            if (colon >= end || *colon != '"') return ESP_ERR_INVALID_ARG;
+            colon++;
+
+            /* Skip leading whitespace inside the value. */
+            while (colon < end && (*colon == ' ' || *colon == '\t')) colon++;
+
+            size_t oi = 0;
+            while (colon < end && *colon != '"' && oi < host_size - 1) {
+                if (*colon == '\\' && colon + 1 < end) colon++;
+                out_host[oi++] = *colon++;
+            }
+            out_host[oi] = '\0';
+
+            /* Trim trailing whitespace. */
+            while (oi > 0 && (out_host[oi - 1] == ' ' || out_host[oi - 1] == '\t')) {
+                out_host[--oi] = '\0';
+            }
+        }
+    }
+
     return ESP_OK;
+}
+
+/* Validate a parsed host string. Returns the default if the input is empty
+ * or contains characters that would break the URL (':', '/', or any whitespace).
+ * Used by api_wifi_handler() before agent_config_save().
+ *
+ * Mirrored in tests/test_agent_config.c. */
+static const char *AGENT_HOST_DEFAULT = "192.168.8.192";
+
+static const char *sanitize_host(const char *host)
+{
+    if (host == NULL || host[0] == '\0') return AGENT_HOST_DEFAULT;
+    for (const char *p = host; *p; p++) {
+        if (*p == ':' || *p == '/' || *p == ' ' || *p == '\t') {
+            return AGENT_HOST_DEFAULT;
+        }
+    }
+    return host;
 }
 
 static esp_err_t api_wifi_handler(httpd_req_t *req)
 {
-    /* Read body up to 256 bytes (SSID max 32, pass max 64, plus JSON overhead). */
-    char body[256];
+    /* Read body up to 384 bytes (SSID 32, pass 64, host 63, plus JSON keys
+     * and overhead). */
+    char body[384];
     int recv_len = httpd_req_recv(req, body, sizeof(body) - 1);
     if (recv_len <= 0) {
         httpd_resp_set_status(req, "400 Bad Request");
@@ -353,14 +440,23 @@ static esp_err_t api_wifi_handler(httpd_req_t *req)
 
     char ssid[33] = {0};
     char pass[65] = {0};
-    esp_err_t err = parse_wifi_post(body, recv_len, ssid, sizeof(ssid), pass, sizeof(pass));
+    char host[AGENT_HOST_MAX + 1] = {0};
+    bool agent_enabled = false;
+    esp_err_t err = parse_provisioning_post(body, recv_len,
+                                            ssid, sizeof(ssid),
+                                            pass, sizeof(pass),
+                                            host, sizeof(host),
+                                            &agent_enabled);
     if (err != ESP_OK) {
         httpd_resp_set_status(req, "400 Bad Request");
         return httpd_resp_send(req, "{\"ok\":false,\"error\":\"bad json\"}", HTTPD_RESP_USE_STRLEN);
     }
 
-    ESP_LOGI(TAG, "POST /api/wifi ssid='%s' pass_len=%u", ssid, (unsigned)strlen(pass));
+    ESP_LOGI(TAG, "POST /api/wifi ssid='%s' pass_len=%u agent=%d host='%s'",
+             ssid, (unsigned)strlen(pass), agent_enabled, host);
 
+    /* Save WiFi creds first — if this fails, the user has bigger problems
+     * than a missing agent URL. */
     wifi_creds_t creds = { .configured = true };
     strncpy(creds.ssid, ssid, sizeof(creds.ssid) - 1);
     strncpy(creds.pass, pass, sizeof(creds.pass) - 1);
@@ -370,6 +466,24 @@ static esp_err_t api_wifi_handler(httpd_req_t *req)
     if (err != ESP_OK) {
         httpd_resp_set_status(req, "500 Internal Server Error");
         return httpd_resp_send(req, "{\"ok\":false,\"error\":\"save failed\"}", HTTPD_RESP_USE_STRLEN);
+    }
+
+    /* Save agent config. If the host is empty or contains URL-breaking
+     * characters (':', '/', whitespace), fall back to the default. Preserving
+     * the host when the checkbox is unchecked is intentional — re-checking
+     * later brings the user's typed host back. */
+    const char *safe_host = sanitize_host(host);
+    agent_config_t agent = {0};
+    strncpy(agent.host, safe_host, sizeof(agent.host) - 1);
+    agent.host[sizeof(agent.host) - 1] = '\0';
+    agent.enabled = agent_enabled;
+
+    esp_err_t agent_err = agent_config_save(&agent);
+    if (agent_err != ESP_OK) {
+        /* Don't fail the whole submission — WiFi creds are already saved
+         * and the user expects a reboot. */
+        ESP_LOGW(TAG, "agent_config_save failed: %s, continuing",
+                 esp_err_to_name(agent_err));
     }
 
     /* Signal the runner task. */

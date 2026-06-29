@@ -1,6 +1,7 @@
 #include "audio_player_wrapper.h"
 #include "weather_service.h"
 #include "wifi.h"
+#include "agent_config.h"
 #include "shtc3.h"
 #include "audio_mixer.h"
 #include "audio_stream.h"
@@ -17,7 +18,12 @@
 
 static const char *TAG = "AUDIO";
 
-#define RADIO_API_BASE "http://192.168.8.192:3000/api/esp"
+/* Backend contract: the user-configurable host is spliced into a fixed
+ * scheme / port / path prefix. Don't change these without coordinating
+ * with the SlumberCube Agent server. */
+#define RADIO_API_DEFAULT_HOST "192.168.8.192"
+#define RADIO_API_PORT         3000
+#define RADIO_API_PATH         "/api/esp"
 
 /* Latest indoor temp/RH (NaN = sensor absent / not yet read).
  * Updated via audio_set_indoor_env() right before each /api/esp fetch. */
@@ -37,6 +43,43 @@ static const char *s_wake_source = NULL;
 void audio_set_wake_source(const char *source)
 {
     s_wake_source = source;
+}
+
+/* Agent (SlumberCube backend) config cache. Populated from NVS by
+ * audio_agent_init() at the top of audio_init(); cleared by audio_deinit()
+ * so the re-provisioning flow re-reads freshly-saved values. */
+static agent_config_t s_agent = {
+    .host    = RADIO_API_DEFAULT_HOST,
+    .enabled = false,
+};
+static bool s_agent_loaded = false;
+
+/* Read agent_cfg from NVS. On error or absent entry, leaves s_agent at
+ * its compile-time defaults (host=192.168.8.192, enabled=false). */
+static void audio_agent_init(void)
+{
+    agent_config_t loaded = {0};
+    esp_err_t err = agent_config_load(&loaded);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "agent_config_load failed (%s), defaulting to disabled",
+                 esp_err_to_name(err));
+        s_agent.host[0] = '\0';
+        strncpy(s_agent.host, RADIO_API_DEFAULT_HOST, sizeof(s_agent.host) - 1);
+        s_agent.host[sizeof(s_agent.host) - 1] = '\0';
+        s_agent.enabled = false;
+    } else {
+        s_agent = loaded;
+    }
+    s_agent_loaded = true;
+    ESP_LOGI(TAG, "Agent: %s, host='%s'",
+             s_agent.enabled ? "enabled" : "disabled", s_agent.host);
+}
+
+esp_err_t audio_agent_reload(void)
+{
+    s_agent_loaded = false;
+    audio_agent_init();
+    return ESP_OK;
 }
 
 /* Query-string fragment "t=24.3&h=58" (no leading ? or &) — empty if no sensor.
@@ -64,11 +107,22 @@ static const char *indoor_query(void)
 
 static const char *radio_api_url(void)
 {
-    static char url[288] = {0};
+    static char url[384] = {0};
     static bool logged = false;
 
-    char qs[96]  = {0};
-    int  offset  = 0;
+    if (!s_agent.enabled) {
+        /* Caller must check via the audio_fetch_api() return code, not by
+         * inspecting the URL. An empty buffer here is a sentinel. */
+        if (!logged) {
+            ESP_LOGI(TAG, "Agent disabled by config — /api/esp calls skipped");
+            logged = true;
+        }
+        url[0] = '\0';
+        return url;
+    }
+
+    char qs[96] = {0};
+    int offset  = 0;
 
     /* Wake source is always the first query param (when present) */
     if (s_wake_source) {
@@ -83,8 +137,9 @@ static const char *radio_api_url(void)
                            "%c%s", (offset > 0) ? '&' : '?', indoor);
     }
 
-    snprintf(url, sizeof(url), "%s/%s%s",
-             RADIO_API_BASE, wifi_get_device_id(), qs);
+    snprintf(url, sizeof(url), "http://%s:%d%s/%s%s",
+             s_agent.host, RADIO_API_PORT, RADIO_API_PATH,
+             wifi_get_device_id(), qs);
 
     if (!logged) {
         ESP_LOGI(TAG, "API URL: %s", url);
@@ -188,6 +243,13 @@ static esp_err_t mute_fn(AUDIO_PLAYER_MUTE_SETTING setting)
 static esp_err_t audio_http_get_json(cJSON **out_root)
 {
     *out_root = NULL;
+
+    if (!s_agent.enabled) {
+        /* Sentinel: the agent is configured off. Caller handles the
+         * ESP_ERR_NOT_SUPPORTED return code (audio_fetch_api propagates it
+         * to main.c, which skips weather + radio display). */
+        return ESP_ERR_NOT_SUPPORTED;
+    }
 
     for (int attempt = 0; attempt < 2; attempt++) {
         if (attempt > 0) {
@@ -395,6 +457,11 @@ static esp_err_t audio_radio_fetch(void)
 
 esp_err_t audio_init(void)
 {
+    /* Load agent config on the first call per boot. Cleared by
+     * audio_deinit() so the re-provisioning flow re-reads NVS. */
+    if (!s_agent_loaded) {
+        audio_agent_init();
+    }
     if (s_i2s_ready) return ESP_OK;
 
     ESP_LOGI(TAG, "Init I2S (SDIN=%d SCLK=%d WS=%d)",
@@ -549,6 +616,11 @@ esp_err_t audio_play_url(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    if (!s_agent.enabled) {
+        ESP_LOGD(TAG, "audio_play_url: agent disabled");
+        return ESP_ERR_NOT_SUPPORTED;
+    }
+
     s_status = "Fetching radio...";
 
     /* Fetch radio config from /api/esp unless already cached by
@@ -642,6 +714,10 @@ const weather_data_t *audio_get_weather(void)
 void audio_deinit(void)
 {
     audio_stop();
+
+    /* Force the next audio_init() to re-read agent_cfg from NVS — the user
+     * may have just re-provisioned with a new host. */
+    s_agent_loaded = false;
 
     if (s_mixer_ready) {
         audio_mixer_deinit();

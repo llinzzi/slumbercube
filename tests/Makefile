@@ -5,16 +5,18 @@ CC      ?= cc
 CFLAGS  ?= -std=c99 -Wall -Wextra -Wpedantic -O2 -g
 BUILDDIR = build
 
-TESTS = test_wifi_creds
+TESTS = test_wifi_creds test_agent_config
 
 .PHONY: all test clean
 all: test
 
-test: $(BUILDDIR)/test_wifi_creds
-	@echo "==> running test_wifi_creds"
-	@./$(BUILDDIR)/test_wifi_creds
+test: $(addprefix $(BUILDDIR)/,$(TESTS))
+	@for t in $(TESTS); do \
+	    echo "==> running $$t"; \
+	    ./$(BUILDDIR)/$$t || exit 1; \
+	done
 
-$(BUILDDIR)/test_wifi_creds: test_wifi_creds.c | $(BUILDDIR)
+$(BUILDDIR)/test_%: test_%.c | $(BUILDDIR)
 	$(CC) $(CFLAGS) -I. $< -o $@
 
 $(BUILDDIR):
