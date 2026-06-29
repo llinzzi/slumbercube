@@ -6,6 +6,7 @@
 #include "lvgl_adapter.h"
 #include "ui.h"
 #include "wifi.h"
+#include "wifi_provisioning.h"
 #include "clock_screen.h"
 #include "esp_sleep.h"
 #include <time.h>
@@ -26,6 +27,7 @@ static volatile bool s_sleep_pending = false;
 
 static volatile bool s_audio_playing = false;
 static volatile bool s_audio_toggle_request = false;
+static volatile bool s_provisioning_request = false;   /* triple-click → reconfig */
 
 /* Try the on-board SHTC3 sensor. Returns true and fills *temp_c on success.
  * Hardware variant without the sensor just returns false; display omits the value. */
@@ -69,6 +71,13 @@ static void button_long_press_cb(void *button_handle, void *usr_data)
 #else
     ESP_LOGI(TAG, "Audio disabled, ignoring long press");
 #endif
+}
+
+/* Triple-click: re-enter WiFi provisioning. Main loop handles teardown. */
+static void button_triple_click_cb(void *button_handle, void *usr_data)
+{
+    ESP_LOGI(TAG, "Triple click — requesting WiFi re-provisioning");
+    s_provisioning_request = true;
 }
 
 void app_main(void)
@@ -142,7 +151,12 @@ void app_main(void)
     if (err == ESP_OK) {
         iot_button_register_cb(g_btn, BUTTON_SINGLE_CLICK, NULL, button_short_click_cb, NULL);
         iot_button_register_cb(g_btn, BUTTON_LONG_PRESS_START, NULL, button_long_press_cb, NULL);
-        ESP_LOGI(TAG, "Button initialized on GPIO%d (short=toggle audio, long=sleep)", CONFIG_BUTTON_GPIO);
+        /* Triple-click opens WiFi provisioning UI (user reconfigurable). */
+        button_event_args_t triple_args = { .multiple_clicks.clicks = 3 };
+        iot_button_register_cb(g_btn, BUTTON_MULTIPLE_CLICK, &triple_args,
+                               button_triple_click_cb, NULL);
+        ESP_LOGI(TAG, "Button initialized on GPIO%d (short=toggle, long=sleep, triple=WiFi setup)",
+                 CONFIG_BUTTON_GPIO);
     } else {
         ESP_LOGE(TAG, "Failed to init button on GPIO%d: %s", CONFIG_BUTTON_GPIO, esp_err_to_name(err));
     }
@@ -166,6 +180,20 @@ void app_main(void)
     vTaskDelay(pdMS_TO_TICKS(100));
 
     if (!clock_screen_is_night_time()) {
+        /* First-boot provisioning: if NVS has no creds (and the user hasn't
+         * disabled auto-provisioning in menuconfig), run the SoftAP captive
+         * portal BEFORE attempting STA. This blocks until the user submits
+         * creds OR times out. */
+#if CONFIG_WIFI_PROV_AUTO_ON_FIRST_BOOT
+        wifi_creds_t boot_creds;
+        if (wifi_creds_load(&boot_creds) != ESP_OK) {
+            ESP_LOGW(TAG, "No NVS creds, entering provisioning");
+            clock_screen_set_station_name("WiFi setup");
+            wifi_ensure_netif();
+            wifi_provisioning_run();
+        }
+#endif
+
         // Always init TCP/IP stack + start WiFi (needed for /api/esp)
         clock_screen_set_station_name("Connecting WiFi...");
         wifi_ensure_netif();
@@ -177,7 +205,20 @@ void app_main(void)
         /* Weather is fetched as part of audio_play_url() via /api/esp;
          * the display shows the default icon until that completes. */
     } else {
+        /* Night mode — but if no creds are saved, still need provisioning,
+         * otherwise the user can never get WiFi set up. */
+#if CONFIG_WIFI_PROV_AUTO_ON_FIRST_BOOT
+        wifi_creds_t night_creds;
+        if (wifi_creds_load(&night_creds) != ESP_OK) {
+            ESP_LOGW(TAG, "No NVS creds (night mode), entering provisioning");
+            wifi_ensure_netif();
+            wifi_provisioning_run();
+        } else {
+            ESP_LOGI(TAG, "Night mode, skipping network and weather fetch");
+        }
+#else
         ESP_LOGI(TAG, "Night mode, skipping network and weather fetch");
+#endif
     }
 
 #if CONFIG_AUDIO_ENABLE
@@ -231,6 +272,43 @@ void app_main(void)
     for (int i = 0; i < CONFIG_ACTIVE_DURATION_SECS; i++) {
         if (s_sleep_pending) {
             break;
+        }
+
+        /* Handle triple-click WiFi re-provisioning request. Tears down audio
+         * and STA, runs the provisioning flow, then reconnects with new
+         * credentials. */
+        if (s_provisioning_request) {
+            s_provisioning_request = false;
+            ESP_LOGI(TAG, "Re-entering WiFi provisioning (triple-click)");
+
+            clock_screen_set_station_name("WiFi setup");
+#if CONFIG_AUDIO_ENABLE
+            if (s_audio_playing) {
+                audio_stop();
+                audio_deinit();
+                s_audio_playing = false;
+            }
+#endif
+            wifi_prov_result_t pr = wifi_provisioning_run();
+            if (pr == WIFI_PROV_OK) {
+                ESP_LOGI(TAG, "New credentials saved — reconnecting STA");
+                /* Force re-init: s_wifi_inited is static inside wifi.c so we
+                 * can't reset it directly, but wifi_init_sta() handles the
+                 * "already inited but disconnected" path. */
+                wifi_init_sta();
+#if CONFIG_AUDIO_ENABLE
+                /* Re-init audio with new IP path / API URL. */
+                if (audio_init() == ESP_OK && audio_play_url() == ESP_OK) {
+                    clock_screen_set_station_name(audio_get_station_name());
+                    apply_weather_and_indoor(audio_get_weather());
+                    clock_screen_set_audio_indicator(true);
+                    s_audio_playing = true;
+                }
+#endif
+            } else {
+                ESP_LOGW(TAG, "Provisioning timed out, keeping existing STA");
+                clock_screen_set_station_name("WiFi unchanged");
+            }
         }
 
 #if CONFIG_AUDIO_ENABLE

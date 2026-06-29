@@ -15,4 +15,32 @@ void wifi_set_timezone(void);
  * Suitable for /api/esp/<device_id> endpoints. */
 const char *wifi_get_device_id(void);
 
+/* Set to true to keep the wifi event handler from auto-connecting to a
+ * stale STA while the SoftAP is up (used during provisioning). The flag
+ * affects WIFI_EVENT_STA_START and WIFI_EVENT_STA_DISCONNECTED handling. */
+void wifi_suppress_auto_connect(bool suppress);
+
+/* NVS-persisted WiFi credentials. Lengths sized for IEEE 802.11 max (32 SSID
+ * + 64 PSK) plus a NUL each. */
+typedef struct {
+    char ssid[33];
+    char pass[65];
+    bool configured;   /* true once a user has successfully provisioned */
+} wifi_creds_t;
+
+/* Read credentials from NVS namespace "wifi_cfg".
+ *   - ESP_OK                : out is populated
+ *   - ESP_ERR_NOT_FOUND     : no credentials saved (caller should fall back to
+ *                             menuconfig, or trigger provisioning)
+ *   - other                 : NVS error */
+esp_err_t wifi_creds_load(wifi_creds_t *out);
+
+/* Persist credentials. Sets configured=1 and commits.
+ * Validates non-empty ssid before writing; returns ESP_ERR_INVALID_ARG otherwise. */
+esp_err_t wifi_creds_save(const wifi_creds_t *c);
+
+/* Remove credentials from NVS. After this returns ESP_OK, wifi_creds_load
+ * returns ESP_ERR_NOT_FOUND. */
+esp_err_t wifi_creds_clear(void);
+
 #endif // WIFI_MANAGER_H

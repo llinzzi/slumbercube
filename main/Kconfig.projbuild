@@ -13,7 +13,7 @@ menu "SlumberCube Configuration"
         config NIGHT_START_HOUR
             int "Night mode start hour (0-23)"
             range 0 23
-            default 23
+            default 22
         config NIGHT_START_MINUTE
             int "Night mode start minute (0-59)"
             range 0 59
@@ -82,6 +82,31 @@ menu "SlumberCube Configuration"
             int "Audio volume (0-100)"
             range 0 100
             default 10
+    endmenu
+
+    menu "WiFi Provisioning"
+        config WIFI_PROV_AP_PASSWORD
+            string "SoftAP password (min 8 chars for WPA2)"
+            default "setup12345678"
+            help
+              Password for the SlumberCube-XXXX SoftAP. Must be at least 8
+              characters to enable WPA2-PSK; otherwise the AP falls back to
+              OPEN auth. Encoded into the QR code shown on the OLED.
+        config WIFI_PROV_TIMEOUT_SECS
+            int "Provisioning timeout (seconds)"
+            range 60 1800
+            default 300
+            help
+              How long to keep the AP + HTTP server alive without a successful
+              submission before giving up and falling back to menuconfig creds.
+        config WIFI_PROV_AUTO_ON_FIRST_BOOT
+            bool "Auto-enter provisioning on first boot"
+            default y
+            help
+              When enabled, the device starts the SoftAP + captive portal
+              automatically on first boot (when no NVS credentials exist).
+              When disabled, the user must triple-click the button to enter
+              provisioning mode.
     endmenu
 
 endmenu

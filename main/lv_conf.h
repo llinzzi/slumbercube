@@ -74,7 +74,7 @@
 #define LV_USE_BMP          0
 #define LV_USE_SJPG         0
 #define LV_USE_GIF          0
-#define LV_USE_QRCODE       0
+#define LV_USE_QRCODE       1
 #define LV_USE_BARCODE      0
 #define LV_USE_LZ4          0
 #define LV_USE_FFMPEG       0

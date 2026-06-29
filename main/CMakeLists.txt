@@ -1,4 +1,4 @@
-idf_component_register(SRCS "main.c"
+idf_component_register(SRCS "config_screen.c" "wifi_provisioning.c" "main.c"
                             "ssd1322_driver.c"
                             "lvgl_adapter.c"
                             "ui_wrapper.c"
@@ -12,4 +12,4 @@ idf_component_register(SRCS "main.c"
                             "ui/styles.c"
                             "audio_player_wrapper.c"
                     INCLUDE_DIRS "."
-                    REQUIRES lvgl__lvgl driver esp_netif esp_wifi lwip nvs_flash esp_http_client json mbedtls esp-audio-player esp_driver_i2s espressif__button esp-libhelix-mp3 shtc3)
+                    REQUIRES lvgl__lvgl driver esp_netif esp_wifi esp_http_server lwip nvs_flash esp_http_client json mbedtls esp-audio-player esp_driver_i2s espressif__button esp-libhelix-mp3 shtc3)
