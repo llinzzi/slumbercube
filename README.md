@@ -194,34 +194,42 @@ flowchart TD
     G --> H[ssd1322_init<br/>显示保持关闭]
     H --> I[按键初始化<br/>短按=睡眠, 长按=切歌]
     I --> J[wifi_set_timezone<br/>CST-8]
-    J --> K[lvgl_adapter_init<br/>L8→I4 DMA]
-    K --> L[clock_screen_create<br/>首帧渲染]
-    L --> M[ssd1322_display_on<br/>防白闪]
+    J --> K[pcf85063_init<br/>读RTC时间设到系统时钟]
+    K --> L[lvgl_adapter_init<br/>L8→I4 DMA]
+    L --> M[clock_screen_create<br/>首帧渲染]
+    M --> N[ssd1322_display_on<br/>防白闪]
 
-    M --> N{夜间模式?}
+    N --> O{夜间模式?}
 
-    N -->|是| O[跳过 WiFi/天气/音频<br/>7段数码管显示]
-    N -->|否| P[WiFi STA 连接]
-    P --> Q[SNTP 时间同步]
-    Q --> R[读取 SHTC3 传感器]
-    R --> S[audio_fetch_api<br/>单次 HTTP GET /api/esp]
-    S --> T[解析天气 + 电台URL]
-    T --> U{有电台URL?}
-    U -->|是| V[audio_play_url<br/>HTTP 流 MP3 解码]
-    U -->|否| W[跳过音频]
+    O -->|是| P[跳过 WiFi/天气/音频<br/>7段数码管显示]
+    O -->|否| Q[WiFi STA 连接]
+    Q --> R[SNTP 时间同步]
+    R --> S[pcf85063_sync_from_system<br/>回写精确时间到RTC]
+    S --> T[读取 SHTC3 传感器]
+    T --> U[audio_fetch_api<br/>单次 HTTP GET /api/esp]
+    U --> V[解析天气 + 电台URL + alarm]
+    V --> W{alarm.valid?}
+    W -->|是 + 非周末抑制| X{有电台URL?}
+    W -->|否/抑制| P2[跳过音频<br/>display 仍显示]
+    X -->|是| Y[audio_play_url<br/>HTTP 流 MP3 解码]
+    X -->|否| P2
 
-    V --> X[主循环 3600s]
-    O --> X
-    W --> X
+    Y --> Z[主循环 3600s]
+    P --> Z
+    P2 --> Z
 
-    X --> Y{每秒检查}
-    Y -->|短按/超时| Z[深度睡眠]
-    Y -->|长按| AA[切换播放/停止]
-    Y -->|歌曲结束| AB[auto_advance<br/>请求下一首]
-    Y -->|每10秒| AC[刷新 SHTC3 传感器]
-    AB --> V
-    AA --> V
-    AC --> X
+    Z --> AA{每秒检查}
+    AA -->|短按/超时| AB[深度睡眠]
+    AB --> AC[arm_pcf85063_alarm_wakeup<br/>用 alarm.time 或 Kconfig]
+    AB -.->|alarm 缺失| AD[只设 GPIO 唤醒<br/>只能按键唤醒]
+    AC --> AE[esp_deep_sleep_start]
+    AD --> AE
+    AA -->|长按| AF[切换播放/停止]
+    AA -->|歌曲结束| AG[auto_advance<br/>请求下一首]
+    AA -->|每10秒| AH[刷新 SHTC3 传感器]
+    AG --> Y
+    AF --> Y
+    AH --> Z
 ```
 
 ---
@@ -260,11 +268,22 @@ y=36  │              [ 歌曲名居中滚动 ]                          │
 
 | 唤醒源 | `?wake=` | 说明 |
 |--------|----------|------|
-| RTC 定时器 (默认 7:50) | `rtc` | 每天定时唤醒 |
+| PCF85063 RTC 闹钟 | `rtc` | 每天定时唤醒，时间由 `/api/esp` 提供，缺失时 fallback 到 Kconfig `WAKEUP_HOUR:WAKEUP_MINUTE` (默认 7:50) |
 | GPIO3 按键 | `btn` | 手动按按键唤醒 |
 | 冷启动 (上电/烧录) | `sys` | 第一次启动 |
 
 唤醒源在启动最早期通过 `esp_sleep_get_wakeup_cause()` 检测，随后拼接到 `/api/esp` URL 中。
+
+### 闹钟时间策略
+
+```
+优先级从高到低：
+1. /api/esp 响应中 alarm.time 字段（HH:MM）
+2. /api/esp 失败 → Kconfig WAKEUP_HOUR:WAKEUP_MINUTE 兜底
+3. /api/esp 成功但无 alarm 字段 → 取消闹钟，只能按键唤醒
+```
+
+完整说明见 [闹铃时序](#闹铃时序)。
 
 ---
 
@@ -432,15 +451,18 @@ graph TB
     end
 
     subgraph Audio
-        AUDIO_WRAP[audio_player_wrapper.c]
+        AUDIO_WRAP[audio_player_wrapper.c<br/>alarm 解析]
+        ALARM_PARSE[alarm_time_parse.c<br/>HH:MM 校验]
         MIXER[audio_mixer]
         MP3[esp-libhelix-mp3]
         I2S[esp_driver_i2s]
         NS4168[NS4168 功放]
     end
 
-    subgraph Sensor
-        SHTC3[shtc3.c<br/>I2C 温湿度]
+    subgraph Sensor_Bus
+        I2C_BUS[i2c_bus.c<br/>共享 I2C master]
+        SHTC3[shtc3.c<br/>地址 0x70]
+        PCF85063[pcf85063.c<br/>地址 0x51<br/>RTC + 闹钟]
     end
 
     subgraph UI_FW
@@ -453,6 +475,7 @@ graph TB
     MAIN --> WIFI
     MAIN --> AUDIO_WRAP
     MAIN --> SHTC3
+    MAIN --> PCF85063
 
     LVGL_ADAPT --> SSD1322
     CLOCK --> FONT_D
@@ -461,24 +484,32 @@ graph TB
 
     AUDIO_WRAP --> HTTP
     AUDIO_WRAP --> JSON
+    AUDIO_WRAP --> ALARM_PARSE
     AUDIO_WRAP --> MIXER
     AUDIO_WRAP --> MP3
     MIXER --> I2S
     MP3 --> MIXER
     I2S --> NS4168
+
+    SHTC3 --> I2C_BUS
+    PCF85063 --> I2C_BUS
+    PCF85063 -.->|INT# IO0| MAIN
 ```
 
 ### 核心模块
 
 | 模块 | 文件 | 说明 |
 |------|------|------|
-| 入口 | `main.c` | 初始化 + 主循环 + 深度睡眠 + 唤醒检测 + SHTC3 定时刷新 |
+| 入口 | `main.c` | 初始化 + 主循环 + 深度睡眠 + 唤醒检测 + SHTC3/PCF 定时刷新 |
 | 显示驱动 | `ssd1322_driver.c/h` | SSD1322 SPI 命令, 复位序列, 对比度控制 |
 | LVGL 适配 | `lvgl_adapter.c/h` | LVGL flush callback, L8→I4 格式转换 |
 | WiFi/对时 | `wifi.c/h` | STA 连接, SNTP 同步, 设备 ID (MAC) |
-| 天气/电台 API | `audio_player_wrapper.c/h` | `/api/esp` HTTP + JSON 解析 + I2S 音频播放 |
+| 天气/电台/闹钟 API | `main/audio_player_wrapper.c/h` | `/api/esp` HTTP + JSON 解析 (天气/电台URL/alarm) + I2S 音频播放 |
+| Alarm 解析 | `components/audio_player_wrapper/alarm_time_parse.c/h` | 严格 "HH:MM" 24h 字符串解析 (host 可测) |
 | 屏幕 UI | `clock_screen.c/h` | 时间/天气/温度/歌名布局 + Canvas 绘制 |
-| SHTC3 驱动 | `components/shtc3/shtc3.c/h` | I2C 传感器读取, CRC8 校验 |
+| I²C 总线 | `components/i2c_bus/` | 共享 i2c_master 总线, SHTC3 + PCF85063 复用 |
+| SHTC3 驱动 | `components/shtc3/shtc3.c/h` | I2C 温湿度传感器, CRC8 校验 |
+| PCF85063 驱动 | `components/pcf85063/pcf85063.c/h` | 实时时钟 + 闹钟 (BCD 编解码, weekday alarm) |
 | UI 框架 | `ui/screens.c, ui/styles.c, ui/ui.c` | EEZ Studio 生成 |
 | 数字字体 | `font_digital.c/h` | digital-7 48px 4bpp (时钟) |
 | 通用字体 | `font_station.c/h` | fusion-pixel 10px 1bpp (11031 CJK + ASCII + 标点) |
@@ -533,7 +564,10 @@ lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
 | 分类 | 选项 | 说明 |
 |------|------|------|
 | WiFi | SSID, 密码 | |
-| Sleep | 活跃时长, 唤醒 GPIO, 闹钟时间 | 默认 3600s, GPIO3, 7:50 |
+| Sleep | 活跃时长, 唤醒 GPIO | 默认 3600s, GPIO3 |
+| Sleep | **Fallback 闹钟时间** (WAKEUP_HOUR/MINUTE) | **仅在 /api/esp 不可达时使用** (默认 7:50)。正常情况下闹钟时间由服务器 `/api/esp` 的 `alarm.time` 字段控制 |
+| PCF85063 RTC | 启用, I2C 地址, INT GPIO | 默认启用, 0x51, IO0 |
+| I²C Bus | SDA/SCL/频率 | 默认 IO21/IO9, 400kHz |
 | Night | 开始/结束小时 | 默认 22→6 |
 | Audio | 默认音量 | 0–100 |
 | GPIO | SPI/I2S/NS4168/按键 | 默认值见上文 GPIO 连接表 |
@@ -576,4 +610,4 @@ lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
 
 ---
 
-*SlumberCube 安睡小方 · 固件 v2.2 · 2026-06-27 · 原理图 Schematic1_9*
+*SlumberCube 安睡小方 · 固件 v2.3 · 2026-06-28 · 原理图 Schematic1_9*
