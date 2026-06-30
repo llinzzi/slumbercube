@@ -91,6 +91,25 @@ esp_err_t lvgl_adapter_init(void)
 
     lv_display_set_flush_cb(g_disp, lvgl_flush_cb);
 
+    /* Critical: paint the default LVGL screen BLACK right now. The lvgl_task
+     * is about to start calling lv_timer_handler() at 10 ms intervals, which
+     * triggers a flush of whatever the active screen is — and at this moment
+     * nobody has loaded a real screen yet, so it'd be LVGL's default white
+     * background. The OLED is still off (ssd1322_display_on hasn't run), so
+     * the white never reaches the panel — BUT ssd1322_flush_cb writes the
+     * same colour into GDDRAM. When ssd1322_display_on() flips the panel
+     * on a frame later, the user sees the stale GDDRAM contents flash white
+     * for one frame before the real screen's first flush lands.
+     *
+     * Forcing the default screen to black here means those early flushes
+     * write black into GDDRAM, which is invisible against the still-off panel.
+     * Once the real screen (QR or clock) is loaded and force-flushed, it
+     * overwrites the black and the user sees the intended first frame. */
+    lv_obj_t *boot_scr = lv_display_get_screen_active(g_disp);
+    lv_obj_set_style_bg_color(boot_scr, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, LV_PART_MAIN);
+
     xTaskCreate(lvgl_task, "lvgl_task", 8192, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "LVGL adapter initialized");

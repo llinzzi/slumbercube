@@ -15,33 +15,33 @@ static lv_obj_t *s_lbl_brand    = NULL;
 static lv_obj_t *s_lbl_action   = NULL;
 static lv_obj_t *s_lbl_hints    = NULL;
 
-/* Layout (128×64):
+/* Layout (128×64) — 4 short lines so each fits in the 82-px text column:
  *
- *   ┌──────────┬────────────────────────────┐
- *   │          │  安睡小方                    │  y=4   (18 px)
- *   │   QR     │                             │
- *   │  56×56   │  扫码配网                    │  y=24  (18 px)
- *   │          │                             │
- *   │  x=4     │  短按睡眠·三击重置           │  y=44  (18 px)
- *   │  y=4     │                             │
- *   └──────────┴────────────────────────────┘
+ *   ┌──────────┬──────────────────────────────────┐
+ *   │          │  安睡小方                          │  y=0   (15 px)
+ *   │   QR     │                                   │
+ *   │  44×44   │  扫码配网                          │  y=16  (15 px)
+ *   │          │                                   │
+ *   │  x=0     │  短按=睡眠                         │  y=32  (15 px)
+ *   │  y=10    │                                   │
+ *   │          │  三击=重置                         │  y=48  (15 px)
+ *   └──────────┴──────────────────────────────────┘
  *
- * IMPORTANT: font_station reports line_height=18 and base_line=5. A label
- * shorter than ~14 px clips the descender row → text reads as half-height.
- * clock_screen dodges this by never calling set_size() (LVGL auto-grows to
- * the font's line height). We must explicitly set 18 px here because the
- * layout needs deterministic positioning.
+ * font_station's monospaced CJK glyph has adv_w=80 (1/8 px) = 10 px/char.
+ * "短按睡眠·三击重置" is 9 chars → 90 px, doesn't fit even in an 82-px
+ * column. Splitting into "短按=睡眠" (5 chars = 50 px) and "三击=重置"
+ * (5 chars = 50 px) keeps each line well under the 82-px budget.
  *
- * 3 lines × 18 px = 54 px. With a 4 px top margin, we end at y=58. Fits
- * comfortably in 64 px. The QR + text columns share the same vertical
- * range (y=4..y=60) for a clean grid. */
-#define QR_SIZE  56
-#define QR_X     4
-#define QR_Y     4
+ * Label height 15 px: 9-px char + 3 px padding top + 3 px padding bottom,
+ * centred vertically. 4 lines × 15 + 3 × 1 px gaps = 63 px → fits in 64. */
+#define QR_SIZE  44
+#define QR_X     0
+#define QR_Y     10
 
-#define TXT_X    64
-#define TXT_W    62    /* 128 - 64 - 2 right margin */
-#define LINE_H   18
+#define TXT_X    46
+#define TXT_W    82
+#define LINE_H   15
+#define LINE_GAP 1
 
 /* Build the QR payload: WIFI:T:WPA;S:<ssid>;P:<pass>;;.
  * On Android & iOS, scanning this auto-joins the AP and triggers the
@@ -92,10 +92,12 @@ void config_screen_init(const char *ap_ssid, const char *ap_pass)
     build_qr_payload(ap_ssid, ap_pass, qr_text, sizeof(qr_text));
     lv_qrcode_update(s_qr, qr_text, strlen(qr_text));
 
-    /* Right: brand → action → combined hint, 18 px each. */
-    s_lbl_brand  = make_line(4,  "安睡小方");
-    s_lbl_action = make_line(24, "扫码配网");
-    s_lbl_hints  = make_line(44, "短按睡眠·三击重置");
+    /* Right: brand → action → two short hint lines. 15 px tall + 1 px gap. */
+    s_lbl_brand  = make_line(0,                    "安睡小方");
+    s_lbl_action = make_line(0  + LINE_H + LINE_GAP, "扫码配网");
+    s_lbl_hints  = make_line(0  + (LINE_H + LINE_GAP) * 2, "短按=睡眠");
+    lv_obj_t *reset = make_line(0  + (LINE_H + LINE_GAP) * 3, "三击=重置");
+    (void)reset;
 }
 
 void config_screen_show(void)

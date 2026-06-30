@@ -249,6 +249,14 @@ void app_main(void)
         config_screen_show();
     }
 
+    /* Force a synchronous flush so the active screen is in GDDRAM *before*
+     * we turn the panel on. The lvgl_task is running at 10 ms intervals and
+     * may have queued a flush of the default (now black) screen; the sync
+     * flush here runs immediately and overwrites GDDRAM with the real screen.
+     * This is the second half of the anti-white-flash fix (the first half
+     * is painting the default screen black in lvgl_adapter_init). */
+    lv_refr_now(lv_disp_get_default());
+
     // Turn on display AFTER first frame is in GDDRAM — eliminates white flash on wake
     ssd1322_display_on();
 
