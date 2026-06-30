@@ -7,24 +7,41 @@
 #include "lvgl.h"
 #include "esp_log.h"
 
-static const char *TAG = "CFG_SCREEN";
+static const char *TAG = "QR_PAGE";
 
-/* Persisted across hide/show cycles. NULL until the first show. */
-static lv_obj_t *s_cfg_root  = NULL;
-static lv_obj_t *s_ap_label  = NULL;
-static lv_obj_t *s_qr        = NULL;
-static lv_obj_t *s_url_label = NULL;
-/* Screen to restore on hide() — captured the first time show() runs. */
-static lv_obj_t *s_prev_screen = NULL;
+static lv_obj_t *s_qr_root      = NULL;
+static lv_obj_t *s_qr           = NULL;
+static lv_obj_t *s_lbl_brand    = NULL;
+static lv_obj_t *s_lbl_action   = NULL;
+static lv_obj_t *s_lbl_hints    = NULL;
 
-/* Layout (128x64):
- *   y=0..7   : AP SSID label  (8 px)
- *   y=8..63  : QR code        (56 px, centered horizontally)
- * 56 / 29 modules = ~1.93 px/module — slightly smaller than full-screen but
- * still scannable, and the label tells the user which AP they're looking at. */
-#define CFG_QR_SIZE  56
-#define CFG_QR_X     36   /* (128 - 56) / 2 — center horizontally */
-#define CFG_QR_Y     8
+/* Layout (128×64):
+ *
+ *   ┌──────────┬────────────────────────────┐
+ *   │          │  安睡小方                    │  y=4   (18 px)
+ *   │   QR     │                             │
+ *   │  56×56   │  扫码配网                    │  y=24  (18 px)
+ *   │          │                             │
+ *   │  x=4     │  短按睡眠·三击重置           │  y=44  (18 px)
+ *   │  y=4     │                             │
+ *   └──────────┴────────────────────────────┘
+ *
+ * IMPORTANT: font_station reports line_height=18 and base_line=5. A label
+ * shorter than ~14 px clips the descender row → text reads as half-height.
+ * clock_screen dodges this by never calling set_size() (LVGL auto-grows to
+ * the font's line height). We must explicitly set 18 px here because the
+ * layout needs deterministic positioning.
+ *
+ * 3 lines × 18 px = 54 px. With a 4 px top margin, we end at y=58. Fits
+ * comfortably in 64 px. The QR + text columns share the same vertical
+ * range (y=4..y=60) for a clean grid. */
+#define QR_SIZE  56
+#define QR_X     4
+#define QR_Y     4
+
+#define TXT_X    64
+#define TXT_W    62    /* 128 - 64 - 2 right margin */
+#define LINE_H   18
 
 /* Build the QR payload: WIFI:T:WPA;S:<ssid>;P:<pass>;;.
  * On Android & iOS, scanning this auto-joins the AP and triggers the
@@ -32,77 +49,60 @@ static lv_obj_t *s_prev_screen = NULL;
 static void build_qr_payload(const char *ssid, const char *pass,
                              char *out, size_t out_len)
 {
-    /* Escape any backslash/semicolon in ssid/pass defensively. */
     snprintf(out, out_len, "WIFI:T:WPA;S:%s;P:%s;;", ssid, pass);
 }
 
-void config_screen_show(const char *ap_ssid, const char *ap_pass)
+/* Helper: a single-line, no-scrollbar label at (TXT_X, y) with the given
+ * text. Uses the font's full line height so no glyph rows are clipped. */
+static lv_obj_t *make_line(int32_t y, const char *text)
 {
-    ESP_LOGI(TAG, "Showing config screen: AP='%s'", ap_ssid);
+    lv_obj_t *lbl = lv_label_create(s_qr_root);
+    lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+    lv_obj_set_style_text_font(lbl, &lv_font_station, 0);
+    lv_label_set_long_mode(lbl, LV_LABEL_LONG_CLIP);
+    lv_label_set_text(lbl, text);
+    lv_obj_set_size(lbl, TXT_W, LINE_H);
+    lv_obj_set_pos(lbl, TXT_X, y);
+    lv_obj_set_scrollbar_mode(lbl, LV_SCROLLBAR_MODE_OFF);
+    return lbl;
+}
 
-    if (s_cfg_root == NULL) {
-        s_cfg_root = lv_obj_create(NULL);
-        lv_obj_set_size(s_cfg_root, 128, 64);
-        lv_obj_set_style_bg_color(s_cfg_root, lv_color_black(), 0);
-        lv_obj_set_style_bg_opa(s_cfg_root, LV_OPA_COVER, 0);
-        lv_obj_set_style_border_width(s_cfg_root, 0, 0);
-        lv_obj_set_style_pad_all(s_cfg_root, 0, 0);
+void config_screen_init(const char *ap_ssid, const char *ap_pass)
+{
+    ESP_LOGI(TAG, "Init QR page: AP='%s'", ap_ssid);
 
-        /* Top: AP SSID label so the user can tell which device they're
-         * looking at (handy if more than one SlumberCube is nearby). */
-        s_ap_label = lv_label_create(s_cfg_root);
-        lv_obj_set_style_text_color(s_ap_label, lv_color_white(), 0);
-        lv_obj_set_style_text_font(s_ap_label, &lv_font_station, 0);
-        lv_obj_set_pos(s_ap_label, 0, 0);
-        lv_obj_set_size(s_ap_label, 128, 8);
-        lv_label_set_long_mode(s_ap_label, LV_LABEL_LONG_DOT);
-        lv_obj_set_style_text_align(s_ap_label, LV_TEXT_ALIGN_CENTER, 0);
+    s_qr_root = lv_obj_create(NULL);
+    lv_obj_set_size(s_qr_root, 128, 64);
+    lv_obj_set_style_bg_color(s_qr_root, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(s_qr_root, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(s_qr_root, 0, 0);
+    lv_obj_set_style_pad_all(s_qr_root, 0, 0);
+    lv_obj_set_scrollbar_mode(s_qr_root, LV_SCROLLBAR_MODE_OFF);
+    lv_obj_clear_flag(s_qr_root, LV_OBJ_FLAG_SCROLLABLE);
 
-        /* Middle: QR code. Quiet zone off so all 56 px are modules. */
-        s_qr = lv_qrcode_create(s_cfg_root);
-        lv_qrcode_set_dark_color(s_qr, lv_color_white());
-        lv_qrcode_set_light_color(s_qr, lv_color_black());
-        lv_qrcode_set_size(s_qr, CFG_QR_SIZE);
-        lv_qrcode_set_quiet_zone(s_qr, false);
-        lv_obj_set_pos(s_qr, CFG_QR_X, CFG_QR_Y);
+    /* Left: QR. Quiet zone off so all 56 px are modules. */
+    s_qr = lv_qrcode_create(s_qr_root);
+    lv_qrcode_set_dark_color(s_qr, lv_color_white());
+    lv_qrcode_set_light_color(s_qr, lv_color_black());
+    lv_qrcode_set_size(s_qr, QR_SIZE);
+    lv_qrcode_set_quiet_zone(s_qr, false);
+    lv_obj_set_pos(s_qr, QR_X, QR_Y);
 
-        /* Bottom: action hint. Make sure the user knows they need to
-         * actively open the browser on their phone — scanning alone just
-         * joins the AP. */
-        s_url_label = lv_label_create(s_cfg_root);
-        lv_obj_set_style_text_color(s_url_label, lv_color_white(), 0);
-        lv_obj_set_style_text_font(s_url_label, &lv_font_station, 0);
-        lv_label_set_text(s_url_label, "scan:join  open:submit");
-        lv_obj_align(s_url_label, LV_ALIGN_BOTTOM_MID, 0, 0);
-    }
-
-    /* Update payload in case the AP identity changed (it won't, since it's
-     * derived from the device MAC, but updating keeps the function idempotent
-     * and safe to call from a re-provisioning flow). */
     char qr_text[160];
     build_qr_payload(ap_ssid, ap_pass, qr_text, sizeof(qr_text));
     lv_qrcode_update(s_qr, qr_text, strlen(qr_text));
 
-    /* Refresh the SSID label. */
-    char hdr[40];
-    snprintf(hdr, sizeof(hdr), "%.17s", ap_ssid);  /* truncate for narrow display */
-    lv_label_set_text(s_ap_label, hdr);
-
-    /* Capture the screen we displaced (the EEZ-generated main screen, with
-     * the clock widgets on it). Used by config_screen_hide() to restore. */
-    if (s_prev_screen == NULL) {
-        s_prev_screen = lv_screen_active();
-    }
-
-    /* Load this screen onto the display. Since ssd1322_display_on() was
-     * already called at boot, runtime screen swaps go straight to GDDRAM
-     * — no anti-white-flash concern here. */
-    lv_screen_load(s_cfg_root);
+    /* Right: brand → action → combined hint, 18 px each. */
+    s_lbl_brand  = make_line(4,  "安睡小方");
+    s_lbl_action = make_line(24, "扫码配网");
+    s_lbl_hints  = make_line(44, "短按睡眠·三击重置");
 }
 
-void config_screen_hide(void)
+void config_screen_show(void)
 {
-    if (s_prev_screen != NULL && s_prev_screen != s_cfg_root) {
-        lv_screen_load(s_prev_screen);
+    if (s_qr_root == NULL) {
+        ESP_LOGE(TAG, "config_screen_show before init");
+        return;
     }
+    lv_screen_load(s_qr_root);
 }

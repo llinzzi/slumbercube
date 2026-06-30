@@ -246,6 +246,12 @@ static const char INDEX_HTML[] =
 "const cb=document.getElementById('agent'),hi=document.getElementById('host'),tg=document.getElementById('tg');"
 "function sync(){hi.disabled=!cb.checked;tg.classList.toggle('off',!cb.checked);}"
 "sync();cb.onchange=sync;"
+/* If the user types anything into the host field, treat that as intent to
+ * use the agent. The form's two-state UX (checkbox + host input) is easy
+ * to misread: someone may edit the host IP, see the field become active,
+ * and submit without explicitly ticking the checkbox. Auto-tick on host
+ * input so the submitted JSON matches the user's actual intent. */
+"hi.oninput=()=>{if(hi.value.trim()){cb.checked=true;sync();}};"
 "document.getElementById('f').onsubmit=async e=>{e.preventDefault();"
 "const btn=document.getElementById('btn');btn.disabled=true;btn.textContent='保存中…';"
 "const ssid=document.getElementById('ssid').value||document.getElementById('ssid_custom').value;"
@@ -665,12 +671,6 @@ wifi_prov_result_t wifi_provisioning_run(void)
 {
     ESP_LOGI(TAG, "Starting provisioning AP");
 
-    /* Block the STA event handler from auto-connecting. Without this, the
-     * moment we bring up APSTA mode the handler fires esp_wifi_connect()
-     * from the WIFI_EVENT_STA_START callback, putting the radio in a
-     * permanent "connecting" state that we can't escape to set config. */
-    wifi_suppress_auto_connect(true);
-
     /* Ensure WiFi driver + STA netif are up before we try to add the AP netif
      * or call esp_wifi_set_mode(APSTA). On first boot (NVS empty), main.c
      * hasn't called wifi_init_sta() yet, so the driver is uninitialised —
@@ -679,6 +679,12 @@ wifi_prov_result_t wifi_provisioning_run(void)
     /* Best-effort: if NVS has creds, this connects; if not, it fails after 30 s
      * with menuconfig fallback. Either way, the driver is up afterward. */
     (void)wifi_init_sta();
+
+    /* Block the STA event handler from auto-connecting. Must come AFTER
+     * wifi_init_sta() — the handler skips esp_wifi_connect() when this flag
+     * is set, so calling wifi_init_sta() with suppression on would deadlock
+     * wifi_wait_connected() for 30s (STA_START fires, no connect, no IP). */
+    wifi_suppress_auto_connect(true);
 
     /* Build AP identity from device MAC. */
     char ap_ssid[32];
@@ -707,11 +713,8 @@ wifi_prov_result_t wifi_provisioning_run(void)
         return WIFI_PROV_ERROR;
     }
 
-    /* Notify the UI layer to draw the QR + SSID on the OLED. The OLED update
-     * is fire-and-forget — config_screen_show() runs in the caller's task
-     * context, so the screen swap blocks us briefly but stays under 100 ms. */
-    extern void config_screen_show(const char *ap_ssid, const char *ap_pass);
-    config_screen_show(ap_ssid, ap_pass);
+    /* The QR page was already initialised and loaded by main.c at boot
+     * (no NVS creds → routed to the QR page). Nothing to do here. */
 
     ESP_LOGI(TAG, "Waiting for credentials (timeout %ds)", CONFIG_WIFI_PROV_TIMEOUT_SECS);
 
@@ -725,9 +728,8 @@ wifi_prov_result_t wifi_provisioning_run(void)
     stop_dns_redirect();
     stop_softap();
 
-    /* Hand the screen back to the clock widget. */
-    extern void config_screen_hide(void);
-    config_screen_hide();
+    /* The QR page stays loaded — caller decides whether to reboot (success)
+     * or to keep it visible while it falls through to menuconfig fallback. */
 
     /* Switch WiFi mode back to STA-only so the next wifi_init_sta() call
      * finds a clean state. esp_wifi_set_mode is safe to call repeatedly. */

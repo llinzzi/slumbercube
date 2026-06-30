@@ -41,6 +41,11 @@ const char *wifi_get_device_id(void)
 static EventGroupHandle_t s_wifi_event_group;
 static int s_retry_num = 0;
 static bool s_wifi_connected = false;
+/* True when wifi_init_sta() is using NVS-saved creds (vs. the menuconfig
+ * fallback). Used to distinguish "wrong password" (NVS creds, recoverable
+ * via factory reset → re-provisioning) from "first-boot probe of menuconfig
+ * fallback" (no creds yet, provisioning already handles it). */
+static bool s_using_nvs_creds = false;
 
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
@@ -62,8 +67,29 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
             ESP_LOGI(TAG, "WIFI_DISCONNECTED suppressed (provisioning)");
             return;
         }
-        if (s_retry_num == 0 || s_retry_num >= MAX_RETRY || s_retry_num % 5 == 0) {
-            ESP_LOGI(TAG, "WIFI_DISCONNECTED, retry=%d", s_retry_num);
+        /* Always log the disconnect reason — without it, instability (e.g.
+         * AP-side 3-second kick) is a guessing game. */
+        wifi_event_sta_disconnected_t *disc = (wifi_event_sta_disconnected_t *)event_data;
+        ESP_LOGW(TAG, "WIFI_DISCONNECTED reason=%d (rssi=%d) retry=%d",
+                 (int)disc->reason, disc->rssi, s_retry_num);
+
+        /* Self-heal: if NVS-saved creds repeatedly fail 4-way handshake, the
+         * password is wrong (or the AP changed). Bouncing the radio for the
+         * full 30s wait buys nothing — nuke NVS and reboot into the captive
+         * portal so the user can re-enter creds. Skip when s_using_nvs_creds
+         * is false (first-boot probe of menuconfig fallback) — that case is
+         * already inside the provisioning flow. */
+        if (s_using_nvs_creds && s_retry_num >= 2 &&
+            (disc->reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
+             disc->reason == WIFI_REASON_HANDSHAKE_TIMEOUT ||
+             disc->reason == WIFI_REASON_802_1X_AUTH_FAILED ||
+             disc->reason == WIFI_REASON_AUTH_FAIL)) {
+            ESP_LOGE(TAG, "NVS creds rejected by AP after %d retries (reason=%d) — "
+                          "erasing NVS and rebooting into provisioning",
+                     s_retry_num, (int)disc->reason);
+            nvs_flash_erase();
+            vTaskDelay(pdMS_TO_TICKS(100));
+            esp_restart();
         }
         if (s_retry_num < MAX_RETRY) {
             esp_wifi_connect();
@@ -198,6 +224,21 @@ esp_err_t wifi_init_sta(void)
         ESP_LOGI(TAG, "wifi driver initialized");
     }
 
+    /* Idempotent fast path: if the radio is already up and the STA is
+     * connected, the caller (e.g. the triple-click → captive-portal entry)
+     * doesn't need to bounce WiFi. The full restart path below would:
+     *   1. Call esp_wifi_stop() (5–10s reconnect)
+     *   2. Race with the auto-connect suppress flag set right after by
+     *      wifi_provisioning_run() — the handler skips esp_wifi_connect()
+     *      when suppressed, so reconnection would be blocked for 30 s.
+     * The post-provisioning caller path (apply-new-creds after a successful
+     * submission) tears down WiFi first via esp_wifi_stop() in its caller,
+     * so s_wifi_connected is false there and we fall through to the full
+     * path correctly. */
+    if (s_wifi_started && s_wifi_connected) {
+        return ESP_OK;
+    }
+
     s_retry_num     = 0;
     s_wifi_connected = false;
 
@@ -210,10 +251,12 @@ esp_err_t wifi_init_sta(void)
 
     wifi_creds_t creds;
     if (wifi_creds_load(&creds) == ESP_OK) {
+        s_using_nvs_creds = true;
         strncpy((char *)wifi_config.sta.ssid,     creds.ssid, sizeof(wifi_config.sta.ssid) - 1);
         strncpy((char *)wifi_config.sta.password, creds.pass, sizeof(wifi_config.sta.password) - 1);
         ESP_LOGI(TAG, "Using NVS creds for SSID:'%s'", creds.ssid);
     } else {
+        s_using_nvs_creds = false;
         strncpy((char *)wifi_config.sta.ssid, CONFIG_WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
         strncpy((char *)wifi_config.sta.password, CONFIG_WIFI_PASS, sizeof(wifi_config.sta.password) - 1);
         ESP_LOGW(TAG, "NVS creds missing, using menuconfig fallback SSID:'%s'", CONFIG_WIFI_SSID);

@@ -4,12 +4,17 @@
 #include "freertos/task.h"
 #include "ssd1322_driver.h"
 #include "lvgl_adapter.h"
+#include "lvgl.h"
 #include "ui.h"
 #include "wifi.h"
 #include "wifi_provisioning.h"
+#include "config_screen.h"
 #include "agent_config.h"
 #include "clock_screen.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
+#include "esp_mac.h"
+#include "nvs_flash.h"
 #include <time.h>
 #include "iot_button.h"
 #include "button_gpio.h"
@@ -29,6 +34,7 @@ static volatile bool s_sleep_pending = false;
 static volatile bool s_audio_playing = false;
 static volatile bool s_audio_toggle_request = false;
 static volatile bool s_provisioning_request = false;   /* triple-click → reconfig */
+static volatile bool s_in_provisioning    = false;     /* true while captive portal is up */
 
 /* Try the on-board SHTC3 sensor. Returns true and fills *temp_c on success.
  * Hardware variant without the sensor just returns false; display omits the value. */
@@ -66,10 +72,16 @@ static void apply_weather_and_indoor(const weather_data_t *w)
     }
 }
 
-/* Short click: sleep */
+/* Short click: sleep. If we're currently in the captive portal (which is
+ * blocking the main loop in wifi_provisioning_run()), unblock it first so
+ * the sleep path can run; otherwise the press would be ignored for up to
+ * CONFIG_WIFI_PROV_TIMEOUT_SECS. */
 static void button_short_click_cb(void *button_handle, void *usr_data)
 {
     ESP_LOGI(TAG, "Short click, going to sleep");
+    if (s_in_provisioning) {
+        wifi_provisioning_abort();
+    }
     s_sleep_pending = true;
 }
 
@@ -86,11 +98,49 @@ static void button_long_press_cb(void *button_handle, void *usr_data)
 #endif
 }
 
-/* Triple-click: re-enter WiFi provisioning. Main loop handles teardown. */
+/* Triple-click: factory reset. Erase all NVS and reboot. The next boot
+ * sees no NVS creds and falls into the captive portal automatically —
+ * a single state machine (factory-reset → portal → reboot → normal).
+ *
+ * If the captive portal is currently up (which is blocking the main loop
+ * in wifi_provisioning_run()), abort it first so the reset path can run
+ * within a second or two instead of waiting for the 5-minute timeout. */
 static void button_triple_click_cb(void *button_handle, void *usr_data)
 {
-    ESP_LOGI(TAG, "Triple click — requesting WiFi re-provisioning");
+    ESP_LOGI(TAG, "Triple click — factory reset");
+    if (s_in_provisioning) {
+        wifi_provisioning_abort();
+    }
     s_provisioning_request = true;
+}
+
+/* Wipe NVS and reboot. Shared by the main-loop triple-click handler and the
+ * boot-time provisioning path (so triple-click during the first-boot
+ * captive portal takes effect right after the function returns, not after
+ * a 5-min timeout). */
+static void do_factory_reset(void)
+{
+    s_provisioning_request = false;
+    ESP_LOGI(TAG, "Factory reset: erasing NVS and rebooting");
+
+#if CONFIG_AUDIO_ENABLE
+    if (s_audio_playing) {
+        audio_stop();
+        audio_deinit();
+        s_audio_playing = false;
+    }
+#endif
+    /* Blank the OLED so the post-reboot splash doesn't show partial state. */
+    ssd1322_display_off();
+
+    /* nvs_flash_erase clears every namespace — wifi_cfg, agent_cfg, clock. */
+    esp_err_t er = nvs_flash_erase();
+    ESP_LOGW(TAG, "nvs_flash_erase: %s", esp_err_to_name(er));
+
+    /* Brief delay so the log line makes it to the UART before the reboot
+     * tears the port down. */
+    vTaskDelay(pdMS_TO_TICKS(100));
+    esp_restart();
 }
 
 void app_main(void)
@@ -183,8 +233,21 @@ void app_main(void)
     // Wait for LVGL task to start
     vTaskDelay(pdMS_TO_TICKS(100));
 
-    // Create UI (first frame rendered and flushed to GDDRAM inside this call)
-    ESP_ERROR_CHECK(ui_wrapper_init());
+    /* Route to one of two pages based on NVS state. No more init-both-then-swap:
+     * clock and QR are independent LVGL screens, each loaded only on its own path. */
+    wifi_creds_t boot_creds;
+    bool has_creds = (wifi_creds_load(&boot_creds) == ESP_OK);
+
+    if (has_creds) {
+        ESP_ERROR_CHECK(ui_wrapper_init());
+    } else {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        char ap_ssid[32];
+        snprintf(ap_ssid, sizeof(ap_ssid), "SlumberCube-%02X%02X", mac[4], mac[5]);
+        config_screen_init(ap_ssid, CONFIG_WIFI_PROV_AP_PASSWORD);
+        config_screen_show();
+    }
 
     // Turn on display AFTER first frame is in GDDRAM — eliminates white flash on wake
     ssd1322_display_on();
@@ -198,12 +261,27 @@ void app_main(void)
          * portal BEFORE attempting STA. This blocks until the user submits
          * creds OR times out. */
 #if CONFIG_WIFI_PROV_AUTO_ON_FIRST_BOOT
-        wifi_creds_t boot_creds;
-        if (wifi_creds_load(&boot_creds) != ESP_OK) {
+        if (!has_creds) {
             ESP_LOGW(TAG, "No NVS creds, entering provisioning");
-            clock_screen_set_station_name("WiFi setup");
             wifi_ensure_netif();
-            wifi_provisioning_run();
+            s_in_provisioning = true;
+            wifi_prov_result_t pr = wifi_provisioning_run();
+            s_in_provisioning = false;
+            if (pr == WIFI_PROV_OK) {
+                /* Creds are now in NVS. Reboot so the device starts clean
+                 * (driver init, SNTP, audio) on the freshly-saved WiFi. */
+                ESP_LOGI(TAG, "Credentials saved — rebooting into normal mode");
+                vTaskDelay(pdMS_TO_TICKS(100));
+                esp_restart();
+            }
+            /* Triple-click during the boot-time portal aborts provisioning
+             * and sets s_provisioning_request. Honour it now — before any
+             * wifi/audio init — so the user doesn't sit through 30s of
+             * menuconfig-fallback retries. */
+            if (s_provisioning_request) {
+                do_factory_reset();
+            }
+            ESP_LOGW(TAG, "Provisioning did not save creds, continuing with menuconfig fallback");
         }
 #endif
 
@@ -221,11 +299,19 @@ void app_main(void)
         /* Night mode — but if no creds are saved, still need provisioning,
          * otherwise the user can never get WiFi set up. */
 #if CONFIG_WIFI_PROV_AUTO_ON_FIRST_BOOT
-        wifi_creds_t night_creds;
-        if (wifi_creds_load(&night_creds) != ESP_OK) {
+        if (!has_creds) {
             ESP_LOGW(TAG, "No NVS creds (night mode), entering provisioning");
             wifi_ensure_netif();
-            wifi_provisioning_run();
+            s_in_provisioning = true;
+            wifi_prov_result_t pr = wifi_provisioning_run();
+            s_in_provisioning = false;
+            if (pr == WIFI_PROV_OK) {
+                vTaskDelay(pdMS_TO_TICKS(100));
+                esp_restart();
+            }
+            if (s_provisioning_request) {
+                do_factory_reset();
+            }
         } else {
             ESP_LOGI(TAG, "Night mode, skipping network and weather fetch");
         }
@@ -257,6 +343,10 @@ void app_main(void)
             bool got_weather = (fetch_rc == ESP_OK);
             if (fetch_rc == ESP_ERR_NOT_SUPPORTED) {
                 ESP_LOGI(TAG, "Agent disabled by config, clock-only mode");
+                /* Override the "Fetching weather..." placeholder — without
+                 * this, the label stays stuck because the success path
+                 * below is skipped. */
+                clock_screen_set_station_name(audio_failure_station_name());
             }
 
             /* Display whatever we got (best-effort) */
@@ -293,41 +383,10 @@ void app_main(void)
             break;
         }
 
-        /* Handle triple-click WiFi re-provisioning request. Tears down audio
-         * and STA, runs the provisioning flow, then reconnects with new
-         * credentials. */
+        /* Handle triple-click factory reset. Wipe NVS and reboot — the next
+         * boot sees no saved creds and falls into the captive portal. */
         if (s_provisioning_request) {
-            s_provisioning_request = false;
-            ESP_LOGI(TAG, "Re-entering WiFi provisioning (triple-click)");
-
-            clock_screen_set_station_name("WiFi setup");
-#if CONFIG_AUDIO_ENABLE
-            if (s_audio_playing) {
-                audio_stop();
-                audio_deinit();
-                s_audio_playing = false;
-            }
-#endif
-            wifi_prov_result_t pr = wifi_provisioning_run();
-            if (pr == WIFI_PROV_OK) {
-                ESP_LOGI(TAG, "New credentials saved — reconnecting STA");
-                /* Force re-init: s_wifi_inited is static inside wifi.c so we
-                 * can't reset it directly, but wifi_init_sta() handles the
-                 * "already inited but disconnected" path. */
-                wifi_init_sta();
-#if CONFIG_AUDIO_ENABLE
-                /* Re-init audio with new IP path / API URL. */
-                if (audio_init() == ESP_OK && audio_play_url() == ESP_OK) {
-                    clock_screen_set_station_name(audio_get_station_name());
-                    apply_weather_and_indoor(audio_get_weather());
-                    clock_screen_set_audio_indicator(true);
-                    s_audio_playing = true;
-                }
-#endif
-            } else {
-                ESP_LOGW(TAG, "Provisioning timed out, keeping existing STA");
-                clock_screen_set_station_name("WiFi unchanged");
-            }
+            do_factory_reset();
         }
 
 #if CONFIG_AUDIO_ENABLE
