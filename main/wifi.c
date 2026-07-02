@@ -46,6 +46,7 @@ static bool s_wifi_connected = false;
  * via factory reset → re-provisioning) from "first-boot probe of menuconfig
  * fallback" (no creds yet, provisioning already handles it). */
 static bool s_using_nvs_creds = false;
+static bool s_wifi_started = false;
 
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
@@ -77,7 +78,8 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
          * password is wrong (or the AP changed). Bouncing the radio for the
          * full 30s wait buys nothing — nuke NVS and reboot into the captive
          * portal so the user can re-enter creds. Skip when s_using_nvs_creds
-         * is false (first-boot probe of menuconfig fallback) — that case is
+         * is false (NVS is empty, no creds to try, no menuconfig fallback
+         * anymore) — that case is
          * already inside the provisioning flow. */
         if (s_using_nvs_creds && s_retry_num >= 2 &&
             (disc->reason == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
@@ -118,6 +120,11 @@ void wifi_suppress_auto_connect(bool suppress)
 {
     s_suppress_auto_connect = suppress;
     ESP_LOGI(TAG, "auto-connect %s", suppress ? "suppressed" : "enabled");
+}
+
+void wifi_mark_radio_started(void)
+{
+    s_wifi_started = true;
 }
 
 static void sntp_init_time(void)
@@ -172,7 +179,6 @@ esp_err_t wifi_ensure_netif(void)
 }
 
 static bool s_wifi_inited = false;
-static bool s_wifi_started = false;
 
 static esp_err_t wifi_wait_connected(int timeout_ms)
 {
@@ -257,9 +263,13 @@ esp_err_t wifi_init_sta(void)
         ESP_LOGI(TAG, "Using NVS creds for SSID:'%s'", creds.ssid);
     } else {
         s_using_nvs_creds = false;
-        strncpy((char *)wifi_config.sta.ssid, CONFIG_WIFI_SSID, sizeof(wifi_config.sta.ssid) - 1);
-        strncpy((char *)wifi_config.sta.password, CONFIG_WIFI_PASS, sizeof(wifi_config.sta.password) - 1);
-        ESP_LOGW(TAG, "NVS creds missing, using menuconfig fallback SSID:'%s'", CONFIG_WIFI_SSID);
+        /* No saved credentials. Do NOT fall back to a baked-in
+         * menuconfig SSID — silently connecting to a factory-default
+         * network is surprising and a security smell (the password
+         * lives in the shipped binary). Return ESP_FAIL so the caller
+         * (main.c boot path) routes to QR provisioning instead. */
+        ESP_LOGW(TAG, "NVS creds missing, refusing to connect without provisioning");
+        return ESP_FAIL;
     }
 
     if (s_wifi_started) {

@@ -35,6 +35,16 @@ static volatile bool s_audio_playing = false;
 static volatile bool s_audio_toggle_request = false;
 static volatile bool s_provisioning_request = false;   /* triple-click → reconfig */
 static volatile bool s_in_provisioning    = false;     /* true while captive portal is up */
+static bool s_normal_mode              = false;     /* true only when we reached the
+                                                        * post-provisioning "normal operation"
+                                                        * page (NVS creds at boot, OR
+                                                        * provisioning just submitted OK and
+                                                        * we're about to reboot). Never set
+                                                        * in clock-only / provisioning pages,
+                                                        * so audio (I2S) and the SHTC3 I2C
+                                                        * sensor stay completely uninitialised
+                                                        * until the user actually gets WiFi
+                                                        * working. */
 
 /* Try the on-board SHTC3 sensor. Returns true and fills *temp_c on success.
  * Hardware variant without the sensor just returns false; display omits the value. */
@@ -237,6 +247,7 @@ void app_main(void)
      * clock and QR are independent LVGL screens, each loaded only on its own path. */
     wifi_creds_t boot_creds;
     bool has_creds = (wifi_creds_load(&boot_creds) == ESP_OK);
+    s_normal_mode = has_creds;  /* unless provisioning later turns this off */
 
     if (has_creds) {
         ESP_ERROR_CHECK(ui_wrapper_init());
@@ -289,7 +300,8 @@ void app_main(void)
             if (s_provisioning_request) {
                 do_factory_reset();
             }
-            ESP_LOGW(TAG, "Provisioning did not save creds, continuing with menuconfig fallback");
+            ESP_LOGW(TAG, "Provisioning did not save creds, clock-only mode (no WiFi)");
+            s_normal_mode = false;  /* no creds → no audio, no SHTC3 */
         }
 #endif
 
@@ -330,10 +342,11 @@ void app_main(void)
 
 #if CONFIG_AUDIO_ENABLE
     /* Start audio playback (non-blocking: mixer + decoder + HTTP tasks run in background).
-     * Skip in night mode since WiFi is not available.
-     * Read SHTC3 early so indoor temp appears in the very first /api/esp URL,
-     * avoiding a second HTTP round-trip with different query params. */
-    if (!clock_screen_is_night_time()) {
+     * Only run after we have a real WiFi connection — the QR provisioning page
+     * and clock-only mode should not touch I2S (audio amp) or the SHTC3 sensor.
+     * Skipping these on the provisioning page also makes the device silent
+     * during the captive-portal "scan to connect" flow. */
+    if (s_normal_mode && !clock_screen_is_night_time()) {
         /* Read indoor sensor before any network call */
         float t = 0, h = 0;
         if (shtc3_read(&t, &h)) {

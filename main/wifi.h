@@ -20,6 +20,12 @@ const char *wifi_get_device_id(void);
  * affects WIFI_EVENT_STA_START and WIFI_EVENT_STA_DISCONNECTED handling. */
 void wifi_suppress_auto_connect(bool suppress);
 
+/* Mark the WiFi radio as started (called by start_softap after esp_wifi_start).
+ * Keeps wifi.c's internal s_wifi_started flag in sync so a later
+ * wifi_init_sta() call knows to stop+bounce the radio before switching to
+ * STA mode. */
+void wifi_mark_radio_started(void);
+
 /* NVS-persisted WiFi credentials. Lengths sized for IEEE 802.11 max (32 SSID
  * + 64 PSK) plus a NUL each. */
 typedef struct {

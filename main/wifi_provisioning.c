@@ -111,6 +111,12 @@ static void dns_redirect_task(void *arg)
         resp[7] = 0x01;
         /* NSCOUNT / ARCOUNT = 0 */
 
+        /* Yield between queries so we don't busy-loop on the phone's
+         * aggressive captive-portal probe burst (10s of DNS queries/sec).
+         * Without this, at priority 5 we'd preempt the lvgl_task (prio 1)
+         * and IDLE long enough to trip the WDT. */
+        taskYIELD();
+
         /* Skip past the question section. The query format is:
          *  [QNAME: len-prefixed labels], QTYPE(2), QCLASS(2).
          * QNAME ends at the first 0x00 byte. */
@@ -240,8 +246,11 @@ static const char INDEX_HTML[] =
 "<div id=msg class=msg></div>"
 "</form></div>"
 "<script>"
-"async function load(){const r=await fetch('/scan');const a=await r.json();"
-"const s=document.getElementById('ssid');s.innerHTML=a.map(n=>`<option value=\"${n.ssid.replace(/\"/g,'&quot;')}\">${n.ssid} (${n.rssi}dBm)</option>`).join('')+'<option value=\"\">(hidden)</option>';}"
+"async function load(){const r=await fetch('/scan');let a=[];try{a=await r.json();}catch(e){console.warn('/scan parse failed',e);}"
+"if(!Array.isArray(a))a=[];"
+"const s=document.getElementById('ssid');"
+"const opts=a.map(n=>`<option value=\"${n.ssid.replace(/\"/g,'&quot;')}\">${n.ssid} (${n.rssi}dBm)</option>`).join('');"
+"s.innerHTML=opts+(opts?'<option value=\"\">(隐藏网络)</option>':'<option value=\"\">(未扫到网络 — 手动输入)</option>');}"
 "load();"
 "const cb=document.getElementById('agent'),hi=document.getElementById('host'),tg=document.getElementById('tg');"
 "function sync(){hi.disabled=!cb.checked;tg.classList.toggle('off',!cb.checked);}"
@@ -295,7 +304,11 @@ static esp_err_t captive_redirect_handler(httpd_req_t *req)
  * Runs a fresh scan each call (small STA scan). Blocks the handler briefly. */
 static esp_err_t scan_handler(httpd_req_t *req)
 {
-    /* Default scan config — active scan, ~1 s. */
+    /* Default scan config — active scan, 100/300 ms dwell. This was the
+     * value that reliably found "Happy" before; the longer 200/500 ms
+     * dwell occasionally caused the scan to return 0 in APSTA mode (the
+     * AP's own beacon floods the radio during the longer listen window).
+     * Keep what worked. */
     wifi_scan_config_t scan_cfg = {
         .ssid        = NULL,
         .bssid       = NULL,
@@ -307,12 +320,15 @@ static esp_err_t scan_handler(httpd_req_t *req)
     esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "scan failed: %s", esp_err_to_name(err));
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        return httpd_resp_send(req, "{\"error\":\"scan failed\"}", HTTPD_RESP_USE_STRLEN);
+        /* Always return a JSON array so the JS .map() doesn't throw on a
+         * non-array body — empty array = "no networks", the form still
+         * offers the manual SSID input below. */
+        return httpd_resp_send(req, "[]", HTTPD_RESP_USE_STRLEN);
     }
 
     uint16_t ap_count = 0;
     esp_wifi_scan_get_ap_num(&ap_count);
+    ESP_LOGI(TAG, "scan found %u APs", ap_count);
     if (ap_count == 0) {
         return httpd_resp_send(req, "[]", HTTPD_RESP_USE_STRLEN);
     }
@@ -322,7 +338,7 @@ static esp_err_t scan_handler(httpd_req_t *req)
     wifi_ap_record_t *records = calloc(ap_count, sizeof(*records));
     if (records == NULL) {
         httpd_resp_set_status(req, "500 Internal Server Error");
-        return httpd_resp_send(req, "{\"error\":\"oom\"}", HTTPD_RESP_USE_STRLEN);
+        return httpd_resp_send(req, "[]", HTTPD_RESP_USE_STRLEN);
     }
     esp_wifi_scan_get_ap_records(&ap_count, records);
 
@@ -332,13 +348,17 @@ static esp_err_t scan_handler(httpd_req_t *req)
     if (buf == NULL) {
         free(records);
         httpd_resp_set_status(req, "500 Internal Server Error");
-        return httpd_resp_send(req, "{\"error\":\"oom\"}", HTTPD_RESP_USE_STRLEN);
+        return httpd_resp_send(req, "[]", HTTPD_RESP_USE_STRLEN);
     }
     size_t off = 0;
     off += snprintf(buf + off, 2048 - off, "[");
+    bool first = true;
     for (uint16_t i = 0; i < ap_count && off < 2000; i++) {
         /* Skip hidden / empty SSIDs. */
         if (records[i].ssid[0] == 0) continue;
+
+        ESP_LOGI(TAG, "  AP[%u]: ssid='%s' rssi=%d auth=%d",
+                 i, records[i].ssid, records[i].rssi, records[i].authmode);
 
         /* JSON-escape the SSID. */
         char esc[80];
@@ -354,8 +374,9 @@ static esp_err_t scan_handler(httpd_req_t *req)
 
         off += snprintf(buf + off, 2048 - off,
                         "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
-                        (i == 0 ? "" : ","), esc,
+                        first ? "" : ",", esc,
                         records[i].rssi, records[i].authmode);
+        first = false;
     }
     off += snprintf(buf + off, 2048 - off, "]");
 
@@ -644,6 +665,17 @@ static esp_err_t start_softap(const char *ssid, const char *pass)
         return err;
     }
 
+    /* Start the radio. wifi_init_sta() (called just above) initialised the
+     * driver and netif but — when NVS is empty — returns early without calling
+     * esp_wifi_start(). Without this the AP is configured but silent: no
+     * beacons, invisible to phones. */
+    err = esp_wifi_start();
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "esp_wifi_start failed: %s", esp_err_to_name(err));
+        return err;
+    }
+    wifi_mark_radio_started();  /* keep wifi.c's s_wifi_started in sync */
+
     ESP_LOGI(TAG, "SoftAP started: SSID='%s' (channel %d)", ssid, ap_cfg.ap.channel);
     return ESP_OK;
 }
@@ -677,7 +709,9 @@ wifi_prov_result_t wifi_provisioning_run(void)
      * which is what blew up on real hardware. */
     extern esp_err_t wifi_init_sta(void);   /* forward decl — see main/wifi.c */
     /* Best-effort: if NVS has creds, this connects; if not, it fails after 30 s
-     * with menuconfig fallback. Either way, the driver is up afterward. */
+     * ESP_FAIL if NVS is empty (no menuconfig fallback any more — the device
+     * refuses to silently connect to a baked-in SSID). Either way, the driver
+     * is up afterward. */
     (void)wifi_init_sta();
 
     /* Block the STA event handler from auto-connecting. Must come AFTER
@@ -729,7 +763,7 @@ wifi_prov_result_t wifi_provisioning_run(void)
     stop_softap();
 
     /* The QR page stays loaded — caller decides whether to reboot (success)
-     * or to keep it visible while it falls through to menuconfig fallback. */
+     * or to keep it visible while main.c falls through to clock-only mode. */
 
     /* Switch WiFi mode back to STA-only so the next wifi_init_sta() call
      * finds a clean state. esp_wifi_set_mode is safe to call repeatedly. */

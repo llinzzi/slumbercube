@@ -5,7 +5,6 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "esp_task_wdt.h"
 #include "ui/ui.h"
 
 static const char *TAG = "LVGL_ADAPTER";
@@ -110,7 +109,7 @@ esp_err_t lvgl_adapter_init(void)
     lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, LV_PART_MAIN);
 
-    xTaskCreate(lvgl_task, "lvgl_task", 8192, NULL, 5, NULL);
+    xTaskCreate(lvgl_task, "lvgl_task", 8192, NULL, 1, NULL);
 
     ESP_LOGI(TAG, "LVGL adapter initialized");
     return ESP_OK;
@@ -119,16 +118,17 @@ esp_err_t lvgl_adapter_init(void)
 static void lvgl_task(void *arg)
 {
     ESP_LOGI(TAG, "Starting LVGL task");
-    esp_task_wdt_add(NULL);
     uint32_t count = 0;
     while (1) {
-        esp_task_wdt_reset();
+        uint32_t t0 = lv_tick_get();
         lv_timer_handler();
-        /* Call ui_tick every 100 iterations (~1 second) */
+        uint32_t dt = lv_tick_elaps(t0);
+        if (dt > 200) {
+            ESP_LOGW(TAG, "lv_timer_handler slow: %u ms", (unsigned)dt);
+        }
         count++;
         if (count % 100 == 0) {
             ui_tick();
-            /* alive log disabled */
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }

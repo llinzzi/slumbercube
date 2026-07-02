@@ -1,14 +1,5 @@
 menu "SlumberCube Configuration"
 
-    menu "WiFi Configuration"
-        config WIFI_SSID
-            string "WiFi SSID"
-            default "Happy"
-        config WIFI_PASS
-            string "WiFi Password"
-            default "ping8275"
-    endmenu
-
     menu "Night Mode Configuration"
         config NIGHT_START_HOUR
             int "Night mode start hour (0-23)"

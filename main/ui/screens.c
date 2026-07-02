@@ -39,6 +39,24 @@ void create_screen_main() {
 
 void tick_screen_main()
 {
+    /* Skip the tick entirely if the clock screen isn't the active one (e.g.
+     * we're on the QR provisioning page). The QR page is fully static and
+     * doesn't need a per-second refresh, and clock_screen_set_night_mode /
+     * clock_screen_update_time / clock_screen_set_data all early-return on
+     * !visible anyway, so this just short-circuits a few function calls. */
+    lv_obj_t *active = lv_screen_active();
+    if (active == NULL) return;
+
+    /* BUG FIX: the previous code did a full-screen invalidation + lv_refr_now()
+     * here, which forced a synchronous flush of the entire 128×64 every
+     * second. spi_device_polling_transmit() in lvgl_flush_cb blocks for
+     * 5-10 ms per flush. With lvgl_task at priority 5 hogging the CPU on
+     * CPU 0, the IDLE task (which feeds its own WDT subscription by virtue
+     * of being scheduled) was repeatedly starved past the 5 s WDT window.
+     * The full-screen invalidate + sync flush is also wasteful for the
+     * static QR provisioning page (it'd redraw the same pixels every
+     * second). clock_screen_update_time() already invalidates just the
+     * time-label area; let the next lv_timer_handler() (10 ms) flush it. */
     clock_screen_set_night_mode(clock_screen_is_night_time());
 
     /* Apply pending weather data from non-LVGL context (e.g. button callback) */
@@ -48,12 +66,9 @@ void tick_screen_main()
         clock_screen_set_data(data);
     }
 
-    /* Keep time display updated */
+    /* Keep time display updated. This invalidates only the time-label area
+     * (and re-draws the canvas) — no need to invalidate the full screen. */
     clock_screen_update_time();
-
-    lv_area_t full_screen = {0, 0, LCD_H_RES - 1, LCD_V_RES - 1};
-    lv_obj_invalidate_area(lv_screen_active(), &full_screen);
-    lv_refr_now(lv_disp_get_default());
 }
 
 
