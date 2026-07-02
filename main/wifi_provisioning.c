@@ -665,6 +665,15 @@ static esp_err_t start_softap(const char *ssid, const char *pass)
         return err;
     }
 
+    /* Limit both interfaces to 802.11b/g. Excluding 802.11n (HT) avoids
+     * compatibility issues with routers — notably Xiaomi — that don't respond
+     * to HT probe requests. wifi_init_sta() does the same for the STA-only
+     * path; here we apply it before the first esp_wifi_start() in the APSTA
+     * path (wifi_init_sta returned early when NVS was empty, so the protocol
+     * was never configured — defaulted to 11b/g/n). */
+    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G));
+    ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G));
+
     /* Start the radio. wifi_init_sta() (called just above) initialised the
      * driver and netif but — when NVS is empty — returns early without calling
      * esp_wifi_start(). Without this the AP is configured but silent: no
