@@ -1,12 +1,22 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stdint.h>
 #include "esp_err.h"
 #include "weather_service.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* Alarm config parsed from /api/esp "alarm" field (HH:MM string). */
+typedef struct {
+    bool valid;            /* true after a successful parse */
+    uint8_t hour;
+    uint8_t minute;
+    bool weekend_saturday; /* false → skip alarm on Saturday */
+    bool weekend_sunday;   /* false → skip alarm on Sunday */
+} audio_alarm_config_t;
 
 esp_err_t audio_init(void);
 esp_err_t audio_play_url(void);
@@ -47,6 +57,10 @@ void audio_set_wake_source(const char *source);
  * audio_init(). Useful if some flow needs to pick up a new host without
  * tearing down the I2S / mixer state. */
 esp_err_t audio_agent_reload(void);
+
+/* Alarm time from the latest /api/esp response. Returns pointer to static
+ * struct. valid=false until the first successful fetch. */
+const audio_alarm_config_t *audio_get_alarm_config(void);
 
 #ifdef __cplusplus
 }

@@ -3,6 +3,7 @@
  * Reference: SHTC3 datasheet (rev 5, May 2023).
  */
 #include "shtc3.h"
+#include "i2c_bus.h"
 #include "driver/i2c_master.h"
 #include "esp_log.h"
 #include "esp_err.h"
@@ -11,10 +12,6 @@
 #include <string.h>
 
 #define TAG "SHTC3"
-
-#define I2C_SCL_GPIO  9
-#define I2C_SDA_GPIO  21
-#define I2C_FREQ_HZ   400000
 
 #define SHTC3_ADDR    0x70
 
@@ -30,7 +27,6 @@
  * Use 20ms to accommodate clones with slower conversion. */
 #define MEAS_DELAY_MS    20
 
-static i2c_master_bus_handle_t s_bus = NULL;
 static i2c_master_dev_handle_t s_dev = NULL;
 static bool s_present = false;
 
@@ -61,10 +57,14 @@ static esp_err_t read_bytes(uint8_t *out, size_t len)
 /* Try a single measurement with the given command. Returns true on success. */
 static bool try_measure(uint16_t meas_cmd, float *temp_c, float *humidity)
 {
+    /* Sensor stays in idle mode between reads (no SLEEP), so a single
+     * WAKE is sufficient and harmless. 1 ms delay matches datasheet
+     * wake-up time (240 μs typical). */
     if (write_cmd(CMD_WAKE) != ESP_OK) {
         ESP_LOGW(TAG, "wake cmd I2C error");
         return false;
     }
+    vTaskDelay(pdMS_TO_TICKS(1));
     vTaskDelay(pdMS_TO_TICKS(1));
 
     if (write_cmd(meas_cmd) != ESP_OK) {
@@ -104,30 +104,21 @@ bool shtc3_init(void)
 {
     if (s_present) return true;
 
-    i2c_master_bus_config_t bus_cfg = {
-        .i2c_port = -1,
-        .sda_io_num = I2C_SDA_GPIO,
-        .scl_io_num = I2C_SCL_GPIO,
-        .clk_source = I2C_CLK_SRC_DEFAULT,
-        .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
-    };
-    esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus);
+    esp_err_t err = i2c_bus_init();
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "bus init failed: %s", esp_err_to_name(err));
+        ESP_LOGW(TAG, "shared bus init failed: %s", esp_err_to_name(err));
         return false;
     }
+    i2c_master_bus_handle_t bus = i2c_bus_get();
 
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = SHTC3_ADDR,
-        .scl_speed_hz = I2C_FREQ_HZ,
+        .scl_speed_hz = CONFIG_I2C_BUS_FREQ_HZ,
     };
-    err = i2c_master_bus_add_device(s_bus, &dev_cfg, &s_dev);
+    err = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "add device failed: %s", esp_err_to_name(err));
-        i2c_del_master_bus(s_bus);
-        s_bus = NULL;
         return false;
     }
 
@@ -155,10 +146,10 @@ bool shtc3_init(void)
     uint16_t id = ((uint16_t)id_buf[0] << 8) | id_buf[1];
     ESP_LOGI(TAG, "SHTC3 detected (ID=0x%04X)", id);
 
-    /* Leave sensor in sleep mode until first measurement */
-    if (write_cmd(CMD_SLEEP) != ESP_OK) {
-        ESP_LOGW(TAG, "sleep cmd failed (non-fatal)");
-    }
+    /* Leave sensor in idle mode (don't SLEEP). On shared I2C buses the
+     * sleep→wake transition is unreliable — WAKE commands sometimes
+     * fail to bring the sensor out of sleep. Idle current is ~200 μA,
+     * negligible for the 30-min active window. */
 
     s_present = true;
     return true;
@@ -166,8 +157,7 @@ bool shtc3_init(void)
 fail:
     i2c_master_bus_rm_device(s_dev);
     s_dev = NULL;
-    i2c_del_master_bus(s_bus);
-    s_bus = NULL;
+    /* Bus is owned by i2c_bus — leave it alive for PCF85063. */
     return false;
 }
 
@@ -176,9 +166,12 @@ bool shtc3_read(float *temp_c, float *humidity)
     if (!s_present && !shtc3_init()) return false;
     if (!temp_c || !humidity) return false;
 
-    /* Attempt 1: clock-stretching disabled (faster) */
+    /* Attempt 1: clock-stretching disabled (faster).
+     * Leave the sensor in idle mode (don't SLEEP) so the next read
+     * doesn't need WAKE — avoids the unreliable sleep→wake transition
+     * on shared I2C buses. On battery power the sensor draws ~200 μA
+     * idle vs ~0.5 μA sleep, acceptable for a 30-min active window. */
     if (try_measure(CMD_MEAS_T_RH, temp_c, humidity)) {
-        write_cmd(CMD_SLEEP);
         return true;
     }
 
@@ -189,7 +182,6 @@ bool shtc3_read(float *temp_c, float *humidity)
     vTaskDelay(pdMS_TO_TICKS(2));
 
     if (try_measure(CMD_MEAS_T_RH, temp_c, humidity)) {
-        write_cmd(CMD_SLEEP);
         return true;
     }
 
@@ -199,7 +191,6 @@ bool shtc3_read(float *temp_c, float *humidity)
     vTaskDelay(pdMS_TO_TICKS(10));
 
     if (try_measure(CMD_MEAS_T_RH_CS, temp_c, humidity)) {
-        write_cmd(CMD_SLEEP);
         return true;
     }
 

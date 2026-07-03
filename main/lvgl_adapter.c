@@ -37,6 +37,13 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
             }
         }
 
+        /* Protect the entire SPI command+data sequence from task
+         * preemption. Higher-priority tasks (WiFi at 23, audio)
+         * preempting spi_device_polling_transmit mid-transfer
+         * starves the SSD1322 of SPI clock, corrupting its state
+         * machine and causing progressive row shifting ("花屏"). */
+        portDISABLE_INTERRUPTS();
+
         ssd1322_send_cmd(0x15);
         ssd1322_send_data((x_start / 4) + 0x1C);
         ssd1322_send_data((x_end / 4) + 0x1C);
@@ -54,6 +61,8 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
             .tx_buffer = g_i4_buffer
         };
         spi_device_polling_transmit(ssd1322_get_spi_handle(), &t);
+
+        portENABLE_INTERRUPTS();
     }
 
     lv_display_flush_ready(disp);
@@ -90,26 +99,13 @@ esp_err_t lvgl_adapter_init(void)
 
     lv_display_set_flush_cb(g_disp, lvgl_flush_cb);
 
-    /* Critical: paint the default LVGL screen BLACK right now. The lvgl_task
-     * is about to start calling lv_timer_handler() at 10 ms intervals, which
-     * triggers a flush of whatever the active screen is — and at this moment
-     * nobody has loaded a real screen yet, so it'd be LVGL's default white
-     * background. The OLED is still off (ssd1322_display_on hasn't run), so
-     * the white never reaches the panel — BUT ssd1322_flush_cb writes the
-     * same colour into GDDRAM. When ssd1322_display_on() flips the panel
-     * on a frame later, the user sees the stale GDDRAM contents flash white
-     * for one frame before the real screen's first flush lands.
-     *
-     * Forcing the default screen to black here means those early flushes
-     * write black into GDDRAM, which is invisible against the still-off panel.
-     * Once the real screen (QR or clock) is loaded and force-flushed, it
-     * overwrites the black and the user sees the intended first frame. */
+    /* Anti-white-flash: paint default screen black before any render. */
     lv_obj_t *boot_scr = lv_display_get_screen_active(g_disp);
     lv_obj_set_style_bg_color(boot_scr, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, LV_PART_MAIN);
 
-    xTaskCreate(lvgl_task, "lvgl_task", 8192, NULL, 1, NULL);
+    xTaskCreate(lvgl_task, "lvgl_task", 8192, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "LVGL adapter initialized");
     return ESP_OK;
@@ -120,18 +116,23 @@ static void lvgl_task(void *arg)
     ESP_LOGI(TAG, "Starting LVGL task");
     uint32_t count = 0;
     while (1) {
-        uint32_t t0 = lv_tick_get();
         lv_timer_handler();
-        uint32_t dt = lv_tick_elaps(t0);
-        if (dt > 200) {
-            ESP_LOGW(TAG, "lv_timer_handler slow: %u ms", (unsigned)dt);
-        }
         count++;
         if (count % 100 == 0) {
             ui_tick();
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
+}
+
+/* Force a synchronous full-screen render from the main task.
+ * Called from the main loop every second. We can't use lv_timer_handler
+ * incremental rendering — SSD1322 column addressing corrupts partial
+ * flushes. lv_refr_now sends the complete framebuffer which is always
+ * 4-pixel-aligned and matches the boot-time render path. */
+void lvgl_adapter_refr_now(void)
+{
+    if (g_disp) lv_refr_now(g_disp);
 }
 
 lv_display_t* lvgl_adapter_get_display(void)

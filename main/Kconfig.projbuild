@@ -100,4 +100,36 @@ menu "SlumberCube Configuration"
               provisioning mode.
     endmenu
 
+    menu "I2C Bus Configuration"
+        config I2C_BUS_SDA_GPIO
+            int "I2C SDA pin"
+            default 21
+        config I2C_BUS_SCL_GPIO
+            int "I2C SCL pin"
+            default 9
+        config I2C_BUS_FREQ_HZ
+            int "I2C bus frequency (Hz)"
+            default 400000
+    endmenu
+
+    menu "PCF85063 RTC Configuration"
+        config PCF85063_ENABLE
+            bool "Enable PCF85063 RTC"
+            default y
+            help
+                When enabled, the firmware initialises the PCF85063ATT/AJ
+                RTC on the shared I2C bus at startup, reads the current
+                time, and writes NTP-corrected time back after SNTP sync.
+                Alarm wakeup is also available.
+        config PCF85063_I2C_ADDR
+            hex "PCF85063 I2C address"
+            default 0x51
+            range 0x50 0x51
+            depends on PCF85063_ENABLE
+        config PCF85063_INT_GPIO
+            int "PCF85063 INT pin"
+            default 0
+            depends on PCF85063_ENABLE
+    endmenu
+
 endmenu

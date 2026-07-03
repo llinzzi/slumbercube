@@ -16,4 +16,7 @@ esp_err_t lvgl_adapter_init(void);
  */
 lv_display_t* lvgl_adapter_get_display(void);
 
+/* Force a full-screen render from the main task. */
+void lvgl_adapter_refr_now(void);
+
 #endif // LVGL_ADAPTER_H

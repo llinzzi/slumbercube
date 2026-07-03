@@ -71,7 +71,7 @@ void ssd1322_clear_display(void)
 
     ssd1322_send_cmd(0x15);
     ssd1322_send_data(0x1C);
-    ssd1322_send_data(0x1C + 127);
+    ssd1322_send_data(0x5B);  /* 256 px / 4 = 64 segments, 0x1C..0x5B */
     ssd1322_send_cmd(0x75);
     ssd1322_send_data(0);
     ssd1322_send_data(63);

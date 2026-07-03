@@ -20,6 +20,11 @@
 #include "button_gpio.h"
 #include "shtc3.h"
 
+#if CONFIG_PCF85063_ENABLE
+#include "pcf85063.h"
+#include <sys/time.h>
+#endif
+
 #if CONFIG_AUDIO_ENABLE
 #include "audio_player_wrapper.h"
 #endif
@@ -57,6 +62,66 @@ static bool read_indoor_env(float *temp_c, float *humidity)
     ESP_LOGI(TAG, "SHTC3: indoor %.1f°C, %.0f%%RH", t, h);
     return true;
 }
+
+#if CONFIG_PCF85063_ENABLE
+static void apply_pcf85063_time(void)
+{
+    pcf85063_datetime_t dt;
+    if (pcf85063_read_datetime(&dt) != ESP_OK) return;
+    if (dt.year < 2025 || dt.year > 2099) {
+        ESP_LOGW(TAG, "PCF85063: implausible year %u, skipping", dt.year);
+        return;
+    }
+    setenv("TZ", "UTC0", 1); tzset();
+    struct tm tm = { .tm_year = dt.year - 1900, .tm_mon = dt.month - 1,
+                     .tm_mday = dt.day, .tm_hour = dt.hour,
+                     .tm_min = dt.minute, .tm_sec = dt.second, .tm_isdst = -1 };
+    time_t t = mktime(&tm);
+    if (t == (time_t)-1) { setenv("TZ", "CST-8", 1); tzset(); return; }
+    struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
+    settimeofday(&tv, NULL);
+    setenv("TZ", "CST-8", 1); tzset();
+    ESP_LOGI(TAG, "PCF85063: applied system time %04u-%02u-%02u %02u:%02u:%02u UTC",
+             dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
+}
+
+static bool should_skip_alarm_today(void)
+{
+    const audio_alarm_config_t *srv = audio_get_alarm_config();
+    if (!srv || !srv->valid) return false;
+    time_t now = time(NULL);
+    struct tm tm = {0}; localtime_r(&now, &tm);
+    if (tm.tm_wday == 0 && !srv->weekend_sunday)   return true;
+    if (tm.tm_wday == 6 && !srv->weekend_saturday) return true;
+    return false;
+}
+
+static bool arm_pcf85063_alarm_wakeup(void)
+{
+    if (!pcf85063_is_present()) return false;
+    uint8_t wake_h = CONFIG_WAKEUP_HOUR, wake_m = CONFIG_WAKEUP_MINUTE;
+    const audio_alarm_config_t *srv = audio_get_alarm_config();
+    if (srv && srv->valid) {
+        wake_h = srv->hour; wake_m = srv->minute;
+        ESP_LOGI(TAG, "PCF85063: using server alarm %02d:%02d", wake_h, wake_m);
+    }
+    pcf85063_alarm_t alarm = { .enable = true, .minute = wake_m, .hour = wake_h,
+                                .day = PCF85063_ALARM_DISABLE,
+                                .weekday = PCF85063_ALARM_DISABLE };
+    esp_err_t err = pcf85063_set_alarm(&alarm);
+    if (err != ESP_OK) { ESP_LOGW(TAG, "set_alarm failed"); return false; }
+    err = pcf85063_enable_alarm_int(true);
+    if (err != ESP_OK) { ESP_LOGW(TAG, "enable_alarm_int failed"); return false; }
+    gpio_config_t int_cfg = { .pin_bit_mask = (1ULL << CONFIG_PCF85063_INT_GPIO),
+                               .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE,
+                               .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                               .intr_type = GPIO_INTR_DISABLE };
+    gpio_config(&int_cfg);
+    ESP_LOGI(TAG, "PCF85063: alarm armed for %02d:%02d (IO%d wake)",
+             wake_h, wake_m, CONFIG_PCF85063_INT_GPIO);
+    return true;
+}
+#endif
 
 /* When audio_play_url() returns a non-OK code, decide which user-facing
  * message to show. The "Agent disabled" case is the most actionable — it
@@ -164,10 +229,20 @@ void app_main(void)
         audio_set_wake_source("rtc");
         ESP_LOGI(TAG, "Woke from RTC timer");
         break;
-    case ESP_SLEEP_WAKEUP_GPIO:
+    case ESP_SLEEP_WAKEUP_GPIO: {
+        uint64_t wake_pins = esp_sleep_get_gpio_wakeup_status();
+#if CONFIG_PCF85063_ENABLE
+        if (wake_pins & (1ULL << CONFIG_PCF85063_INT_GPIO)) {
+            audio_set_wake_source("rtc");
+            ESP_LOGI(TAG, "Woke from PCF85063 alarm (IO%d)", CONFIG_PCF85063_INT_GPIO);
+            pcf85063_clear_alarm_flag();
+            break;
+        }
+#endif
         audio_set_wake_source("btn");
-        ESP_LOGI(TAG, "Woke from GPIO (button)");
+        ESP_LOGI(TAG, "Woke from GPIO (button, mask=0x%llX)", (unsigned long long)wake_pins);
         break;
+    }
     case ESP_SLEEP_WAKEUP_UNDEFINED:
         audio_set_wake_source("sys");
         ESP_LOGI(TAG, "Cold boot");
@@ -184,6 +259,9 @@ void app_main(void)
     gpio_hold_dis(PIN_NUM_RST);
     gpio_hold_dis(CONFIG_PIN_NS4168_CTRL);
     gpio_hold_dis(CONFIG_WAKEUP_GPIO);
+#if CONFIG_PCF85063_ENABLE
+    gpio_hold_dis(CONFIG_PCF85063_INT_GPIO);
+#endif
 
     /* Hold all control and SPI pins at known levels before SSD1322 init.
      * CS is hardwired to GND, so the SSD1322 SPI is always selected — any
@@ -236,6 +314,11 @@ void app_main(void)
 
     // Always set timezone after wake (TZ env var is lost during deep sleep)
     wifi_set_timezone();
+
+#if CONFIG_PCF85063_ENABLE
+    pcf85063_init();
+    apply_pcf85063_time();
+#endif
 
     // Initialize LVGL before WiFi (clean heap avoids allocation failures)
     ESP_ERROR_CHECK(lvgl_adapter_init());
@@ -312,6 +395,9 @@ void app_main(void)
             if (!wifi_is_time_set()) {
                 wifi_mark_time_set();
             }
+#if CONFIG_PCF85063_ENABLE
+            if (pcf85063_is_present()) pcf85063_sync_from_system();
+#endif
         }
         /* Weather is fetched as part of audio_play_url() via /api/esp;
          * the display shows the default icon until that completes. */
@@ -347,6 +433,13 @@ void app_main(void)
      * Skipping these on the provisioning page also makes the device silent
      * during the captive-portal "scan to connect" flow. */
     if (s_normal_mode && !clock_screen_is_night_time()) {
+#if CONFIG_PCF85063_ENABLE
+        if (should_skip_alarm_today()) {
+            ESP_LOGI(TAG, "Weekend — alarm suppressed, clock-only wake");
+            clock_screen_set_station_name("Weekend");
+        } else
+#endif
+        {
         /* Read indoor sensor before any network call */
         float t = 0, h = 0;
         if (shtc3_read(&t, &h)) {
@@ -393,6 +486,7 @@ void app_main(void)
                 }
             }
         }
+        } /* !should_skip_alarm_today */
     }
 #endif
 
@@ -524,6 +618,12 @@ void app_main(void)
             }
         }
 
+        /* Full-screen refresh every second. lvgl_task updates the
+         * label text; this forces a synchronous render from the main
+         * task context. SPI transfers are now protected by a critical
+         * section (portDISABLE_INTERRUPTS in lvgl_flush_cb). */
+        lvgl_adapter_refr_now();
+
         vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
@@ -552,28 +652,35 @@ void app_main(void)
     gpio_set_pull_mode(CONFIG_WAKEUP_GPIO, GPIO_PULLUP_ONLY);
     gpio_hold_en(CONFIG_WAKEUP_GPIO);
 
-    // Configure GPIO3 low-level as wakeup source
+    uint64_t wake_mask = (1ULL << CONFIG_WAKEUP_GPIO);
+
+#if CONFIG_PCF85063_ENABLE
+    bool rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
+    if (rtc_alarm_armed) {
+        wake_mask |= (1ULL << CONFIG_PCF85063_INT_GPIO);
+        gpio_hold_en(CONFIG_PCF85063_INT_GPIO);
+    }
+#endif
+
 #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
-    esp_deep_sleep_enable_gpio_wakeup((1ULL << CONFIG_WAKEUP_GPIO), ESP_GPIO_WAKEUP_GPIO_LOW);
-    ESP_LOGI(TAG, "Entering deep sleep, GPIO%d will wake on low level", CONFIG_WAKEUP_GPIO);
+    esp_deep_sleep_enable_gpio_wakeup(wake_mask, ESP_GPIO_WAKEUP_GPIO_LOW);
+    ESP_LOGI(TAG, "GPIO wake mask: 0x%llX", (unsigned long long)wake_mask);
 #else
     ESP_LOGW(TAG, "GPIO deep sleep wakeup not supported on this chip, wake by timer only");
 #endif
 
-    // Schedule timer wakeup at configured time (default 7:50)
+#if CONFIG_PCF85063_ENABLE
+    if (!rtc_alarm_armed)
+#endif
     {
         time_t now = time(NULL);
-        struct tm tm_now = {0};
-        localtime_r(&now, &tm_now);
-
+        struct tm tm_now = {0}; localtime_r(&now, &tm_now);
         struct tm tm_wake = tm_now;
         tm_wake.tm_hour = CONFIG_WAKEUP_HOUR;
         tm_wake.tm_min = CONFIG_WAKEUP_MINUTE;
         tm_wake.tm_sec = 0;
         time_t wake_time = mktime(&tm_wake);
-        if (wake_time <= now) {
-            wake_time += 24 * 60 * 60;  // next day
-        }
+        if (wake_time <= now) wake_time += 24 * 60 * 60;
         uint64_t sleep_us = (uint64_t)(wake_time - now) * 1000000ULL;
         esp_sleep_enable_timer_wakeup(sleep_us);
         ESP_LOGI(TAG, "Timer wakeup in %llu min (%02d:%02d)",

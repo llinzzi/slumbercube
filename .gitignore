@@ -8,3 +8,5 @@ managed_components
 .DS_Store
 *.swp
 .DS_Store
+tests/test_agent_config
+tests/test_wifi_creds

@@ -163,6 +163,7 @@ static char s_radio_station[64] = {0};
 static char s_radio_song[128] = {0};
 static int s_radio_volume_pct = -1;  /* -1 = not set, fallback to CONFIG */
 static weather_data_t s_cached_weather = {0};
+static audio_alarm_config_t s_alarm_config = {0};
 
 
 /* ── Software volume scale (16-bit stereo PCM) ──────────────── */
@@ -412,6 +413,51 @@ static void audio_parse_radio(cJSON *root)
     }
 }
 
+/* Parse alarm field from /api/esp JSON.
+ * Expected format: {"alarm":{"enabled":true,"time":"07:50",...}} */
+static void audio_parse_alarm(cJSON *root)
+{
+    s_alarm_config.valid = false;
+
+    cJSON *j_alarm = cJSON_GetObjectItem(root, "alarm");
+    if (!j_alarm || !cJSON_IsObject(j_alarm)) return;
+
+    /* Must be explicitly enabled by the server. */
+    cJSON *j_enabled = cJSON_GetObjectItem(j_alarm, "enabled");
+    if (!j_enabled || !cJSON_IsBool(j_enabled) ||
+        !cJSON_IsTrue(j_enabled)) return;
+
+    /* "time": "HH:MM" */
+    cJSON *j_time = cJSON_GetObjectItem(j_alarm, "time");
+    if (!j_time || !cJSON_IsString(j_time)) return;
+
+    const char *s = j_time->valuestring;
+    int h = 0, m = 0;
+    if (sscanf(s, "%2d:%2d", &h, &m) != 2) return;
+    if (h < 0 || h > 23 || m < 0 || m > 59) return;
+
+    s_alarm_config.hour             = (uint8_t)h;
+    s_alarm_config.minute           = (uint8_t)m;
+    s_alarm_config.valid            = true;
+
+    /* Weekend flags — default to false (skip weekends) if missing. */
+    cJSON *j_sat = cJSON_GetObjectItem(j_alarm, "weekend_saturday");
+    cJSON *j_sun = cJSON_GetObjectItem(j_alarm, "weekend_sunday");
+    s_alarm_config.weekend_saturday = (j_sat && cJSON_IsBool(j_sat) &&
+                                       cJSON_IsTrue(j_sat));
+    s_alarm_config.weekend_sunday   = (j_sun && cJSON_IsBool(j_sun) &&
+                                       cJSON_IsTrue(j_sun));
+
+    ESP_LOGI(TAG, "Alarm: %02d:%02d (sat=%d sun=%d)",
+             h, m, s_alarm_config.weekend_saturday,
+             s_alarm_config.weekend_sunday);
+}
+
+const audio_alarm_config_t *audio_get_alarm_config(void)
+{
+    return &s_alarm_config;
+}
+
 /* Fetch /api/esp and parse weather + radio fields.
  * Used as the boot weather fetch — also caches s_radio_url so
  * audio_play_url() can skip a redundant HTTP round-trip. */
@@ -423,6 +469,7 @@ esp_err_t audio_fetch_api(void)
 
     audio_parse_weather(root);
     audio_parse_radio(root);
+    audio_parse_alarm(root);
     cJSON_Delete(root);
 
     /* Success if we got usable weather data */
