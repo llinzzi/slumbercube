@@ -386,9 +386,22 @@ bool clock_screen_is_night_time(void)
     time_t now = time(NULL);
     struct tm tm_now = {0};
     localtime_r(&now, &tm_now);
-    return (tm_now.tm_hour > CONFIG_NIGHT_START_HOUR ||
-            (tm_now.tm_hour == CONFIG_NIGHT_START_HOUR && tm_now.tm_min >= CONFIG_NIGHT_START_MINUTE) ||
-            tm_now.tm_hour < CONFIG_NIGHT_END_HOUR);
+    int h = tm_now.tm_hour;
+    int m = tm_now.tm_min;
+    int start_h = CONFIG_NIGHT_START_HOUR;
+    int start_m = CONFIG_NIGHT_START_MINUTE;
+    int end_h = CONFIG_NIGHT_END_HOUR;
+
+    bool after_start = (h > start_h) || (h == start_h && m >= start_m);
+    bool before_end = (h < end_h);
+
+    if (start_h > end_h) {
+        /* Night crosses midnight (e.g. 22:00 → 06:00) */
+        return after_start || before_end;
+    } else {
+        /* Night within a single day (e.g. 03:00 → 06:00) */
+        return after_start && before_end;
+    }
 }
 
 void clock_screen_set_night_mode(bool enable)

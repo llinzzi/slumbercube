@@ -596,10 +596,10 @@ static esp_err_t audio_play_url_inner(const char *url)
 
     /* Open HTTP stream */
     audio_http_stream_config_t http_cfg = DEFAULT_AUDIO_HTTP_STREAM_CONFIG(url);
-    http_cfg.buffer_size          = 6 * 1024;
-    http_cfg.high_watermark       = 4 * 1024;
+    http_cfg.buffer_size          = 4 * 1024;
+    http_cfg.high_watermark       = 3 * 1024;
     http_cfg.low_watermark        = 1 * 1024;
-    http_cfg.task_stack_size      = 8 * 1024;
+    http_cfg.task_stack_size      = 6 * 1024;
     http_cfg.task_priority        = 6;   // above mixer/decoder (5) so the socket
                                          // connect/read isn't starved of CPU
     http_cfg.read_timeout_ms      = 30000;  // /audio/local/track can wait for intro buffer
