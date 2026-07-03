@@ -123,7 +123,11 @@ esp_err_t lvgl_adapter_init(void)
     lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, LV_PART_MAIN);
 
-    xTaskCreate(lvgl_task, "lvgl_task", 8192, NULL, 1, NULL);
+    /* Priority 3 — below audio mixer (5) and HTTP download (6) so that
+     * the blocking SPI flush (~10ms) in lv_timer_handler can't starve the
+     * audio decoder and cause I2S underrun stutter. Priority 3 is high enough
+     * to get scheduled regularly (above idle at 0). */
+    xTaskCreate(lvgl_task, "lvgl_task", 4096, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "LVGL adapter initialized");
     return ESP_OK;

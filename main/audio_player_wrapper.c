@@ -258,9 +258,7 @@ static esp_err_t audio_http_get_json(cJSON **out_root)
             vTaskDelay(pdMS_TO_TICKS(2000));
         }
 
-        char *resp_buf = malloc(2048);
-        if (!resp_buf) return ESP_ERR_NO_MEM;
-
+        static char resp_buf[2048];
         int resp_len = 0;
         esp_http_client_config_t cfg = {
             .url = radio_api_url(),
@@ -269,7 +267,6 @@ static esp_err_t audio_http_get_json(cJSON **out_root)
         };
         esp_http_client_handle_t client = esp_http_client_init(&cfg);
         if (!client) {
-            free(resp_buf);
             ESP_LOGW(TAG, "Radio: HTTP init failed");
             continue;
         }
@@ -278,7 +275,6 @@ static esp_err_t audio_http_get_json(cJSON **out_root)
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "Radio: HTTP open failed: %s", esp_err_to_name(err));
             esp_http_client_cleanup(client);
-            free(resp_buf);
             continue;
         }
 
@@ -286,7 +282,6 @@ static esp_err_t audio_http_get_json(cJSON **out_root)
         if (ret < 0 && ret != -1) {
             ESP_LOGW(TAG, "Radio: fetch headers failed");
             esp_http_client_cleanup(client);
-            free(resp_buf);
             continue;
         }
 
@@ -303,12 +298,10 @@ static esp_err_t audio_http_get_json(cJSON **out_root)
 
         if (status != 200 || resp_len == 0) {
             ESP_LOGW(TAG, "Radio: HTTP %d, body=%d bytes", status, resp_len);
-            free(resp_buf);
             continue;
         }
 
         *out_root = cJSON_Parse(resp_buf);
-        free(resp_buf);
         if (!*out_root) {
             ESP_LOGW(TAG, "Radio: JSON parse failed");
             continue;
