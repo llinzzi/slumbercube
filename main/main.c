@@ -703,6 +703,9 @@ void app_main(void)
     audio_deinit();
 #endif
 
+    /* Free canvas buffer (16KB) — safe, canvas is not drawn again */
+    clock_screen_deinit();
+
     /* Kill display and amp after audio tasks are stopped */
     ssd1322_display_off();
     gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0);

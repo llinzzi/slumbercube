@@ -12,6 +12,7 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <stdlib.h>
 #include <string.h>
 #include <math.h>
 
@@ -251,13 +252,15 @@ static esp_err_t audio_http_get_json(cJSON **out_root)
         return ESP_ERR_NOT_SUPPORTED;
     }
 
+    char *resp_buf = malloc(2048);
+    if (!resp_buf) return ESP_ERR_NO_MEM;
+
     for (int attempt = 0; attempt < 2; attempt++) {
         if (attempt > 0) {
             ESP_LOGW(TAG, "Radio: retrying after 2s delay");
             vTaskDelay(pdMS_TO_TICKS(2000));
         }
 
-        static char resp_buf[2048];
         int resp_len = 0;
         esp_http_client_config_t cfg = {
             .url = radio_api_url(),
@@ -305,9 +308,11 @@ static esp_err_t audio_http_get_json(cJSON **out_root)
             ESP_LOGW(TAG, "Radio: JSON parse failed");
             continue;
         }
+        free(resp_buf);
         return ESP_OK;
     }
 
+    free(resp_buf);
     return ESP_FAIL;
 }
 

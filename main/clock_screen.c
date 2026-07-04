@@ -5,6 +5,7 @@
 #include "ssd1322_driver.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
@@ -431,4 +432,12 @@ void clock_screen_set_night_mode(bool enable)
         draw_chart();
     }
     lv_obj_invalidate(container);
+}
+
+void clock_screen_deinit(void)
+{
+    if (canvas_buf) {
+        free(canvas_buf);
+        canvas_buf = NULL;
+    }
 }
