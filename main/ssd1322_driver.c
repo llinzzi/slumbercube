@@ -58,6 +58,16 @@ void ssd1322_set_contrast(uint8_t val)
     ssd1322_send_cmd(0xC1); ssd1322_send_data(val);
 }
 
+void ssd1322_set_window(uint8_t col_start, uint8_t col_end, uint8_t row_start, uint8_t row_end)
+{
+    ssd1322_send_cmd(0x15);
+    ssd1322_send_data(col_start);
+    ssd1322_send_data(col_end);
+    ssd1322_send_cmd(0x75);
+    ssd1322_send_data(row_start);
+    ssd1322_send_data(row_end);
+}
+
 void ssd1322_clear_display(void)
 {
     /* Fill GDDRAM with zeros (all black) via SPI */
@@ -69,12 +79,7 @@ void ssd1322_clear_display(void)
     }
     memset(clear_buf, 0, buf_size);
 
-    ssd1322_send_cmd(0x15);
-    ssd1322_send_data(0x1C);
-    ssd1322_send_data(0x5B);  /* 256 px / 4 = 64 segments, 0x1C..0x5B */
-    ssd1322_send_cmd(0x75);
-    ssd1322_send_data(0);
-    ssd1322_send_data(63);
+    ssd1322_set_window(0x1C, 0x5B, 0, 63);
     ssd1322_send_cmd(0x5C);
 
     gpio_set_level(PIN_NUM_DC, 1);
