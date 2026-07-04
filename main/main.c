@@ -44,15 +44,20 @@ static void log_heap(const char *label)
 
 /* 配置项通过 menuconfig 设置 (参见 Kconfig.projbuild) */
 
-static button_handle_t g_btn = NULL;
-static volatile bool s_sleep_pending = false;
+/* ── Button-to-main-task notifications (replaces volatile flags) ─────── */
+#define EVENT_SLEEP_PENDING        (1 << 0)
+#define EVENT_AUDIO_TOGGLE         (1 << 1)
+#define EVENT_PROVISIONING_REQUEST (1 << 2)
+#define EVENT_BUTTON_MASK          (EVENT_SLEEP_PENDING | EVENT_AUDIO_TOGGLE | EVENT_PROVISIONING_REQUEST)
 
-static volatile bool s_audio_playing = false;
-static volatile bool s_audio_toggle_request = false;
-static volatile bool s_provisioning_request = false;   /* triple-click → reconfig */
-static volatile bool s_in_provisioning    = false;     /* true while captive portal is up */
-static bool s_rtc_alarm_armed          = false;     /* set after arm_pcf85063_alarm_wakeup() */
-static bool s_normal_mode              = false;     /* true only when we reached the
+static TaskHandle_t s_main_task = NULL;  /* set at top of app_main() */
+
+static button_handle_t g_btn = NULL;
+
+static volatile bool s_audio_playing = false;   /* read by button callbacks AND main loop */
+static volatile bool s_in_provisioning = false; /* read by button callbacks during captive portal */
+static bool s_rtc_alarm_armed          = false; /* set after arm_pcf85063_alarm_wakeup() */
+static bool s_normal_mode              = false; /* true only when we reached the
                                                         * post-provisioning "normal operation"
                                                         * page (NVS creds at boot, OR
                                                         * provisioning just submitted OK and
@@ -243,7 +248,7 @@ static void button_short_click_cb(void *button_handle, void *usr_data)
     if (s_in_provisioning) {
         wifi_provisioning_abort();
     }
-    s_sleep_pending = true;
+    if (s_main_task) xTaskNotify(s_main_task, EVENT_SLEEP_PENDING, eSetBits);
 }
 
 /* Long press: request audio toggle. Main loop handles WiFi + playback. */
@@ -251,7 +256,7 @@ static void button_long_press_cb(void *button_handle, void *usr_data)
 {
     ESP_LOGI(TAG, "Long press");
 #if CONFIG_AUDIO_ENABLE
-    s_audio_toggle_request = true;
+    if (s_main_task) xTaskNotify(s_main_task, EVENT_AUDIO_TOGGLE, eSetBits);
     /* Show indicator immediately when starting, hide when stopping */
     clock_screen_set_audio_indicator(!s_audio_playing);
 #else
@@ -272,7 +277,7 @@ static void button_triple_click_cb(void *button_handle, void *usr_data)
     if (s_in_provisioning) {
         wifi_provisioning_abort();
     }
-    s_provisioning_request = true;
+    if (s_main_task) xTaskNotify(s_main_task, EVENT_PROVISIONING_REQUEST, eSetBits);
 }
 
 /* Wipe NVS and reboot. Shared by the main-loop triple-click handler and the
@@ -281,7 +286,9 @@ static void button_triple_click_cb(void *button_handle, void *usr_data)
  * a 5-min timeout). */
 static void do_factory_reset(void)
 {
-    s_provisioning_request = false;
+    /* Clear notification bit (harmless if not set) */
+    uint32_t bits;
+    xTaskNotifyWait(0, EVENT_PROVISIONING_REQUEST, &bits, 0);
     ESP_LOGI(TAG, "Factory reset: erasing NVS and rebooting");
 
 #if CONFIG_AUDIO_ENABLE
@@ -307,6 +314,7 @@ static void do_factory_reset(void)
 void app_main(void)
 {
     ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL, active=%ds", CONFIG_ACTIVE_DURATION_SECS);
+    s_main_task = xTaskGetCurrentTaskHandle();
 
     /* Detect wake source for /api/esp ?wake= query param */
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
@@ -464,10 +472,11 @@ void app_main(void)
                 esp_restart();
             }
             /* Triple-click during the boot-time portal aborts provisioning
-             * and sets s_provisioning_request. Honour it now — before any
-             * wifi/audio init — so the user doesn't sit through 30s of
-             * menuconfig-fallback retries. */
-            if (s_provisioning_request) {
+             * and notifies us. Honour it now — before any wifi/audio init —
+             * so the user doesn't sit through 30s of retries. */
+            uint32_t peek_bits = 0;
+            xTaskNotifyWait(0, EVENT_PROVISIONING_REQUEST, &peek_bits, 0);
+            if (peek_bits & EVENT_PROVISIONING_REQUEST) {
                 do_factory_reset();
             }
             ESP_LOGW(TAG, "Provisioning did not save creds, clock-only mode (no WiFi)");
@@ -503,7 +512,9 @@ void app_main(void)
                 vTaskDelay(pdMS_TO_TICKS(100));
                 esp_restart();
             }
-            if (s_provisioning_request) {
+            uint32_t peek_bits2 = 0;
+            xTaskNotifyWait(0, EVENT_PROVISIONING_REQUEST, &peek_bits2, 0);
+            if (peek_bits2 & EVENT_PROVISIONING_REQUEST) {
                 do_factory_reset();
             }
         } else {
@@ -589,22 +600,25 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Running for %d seconds before sleep, button wakes", CONFIG_ACTIVE_DURATION_SECS);
 
-    // Main loop: button press or timeout → sleep
-    for (int i = 0; i < CONFIG_ACTIVE_DURATION_SECS; i++) {
-        if (s_sleep_pending) {
+    // Main loop: event-driven with 1s tick timeout
+    // Button callbacks send task notifications that wake us instantly.
+    for (uint32_t tick = 0; tick < (uint32_t)CONFIG_ACTIVE_DURATION_SECS; tick++) {
+        uint32_t notified = 0;
+        xTaskNotifyWait(0, EVENT_BUTTON_MASK, &notified, pdMS_TO_TICKS(1000));
+
+        /* Short click → sleep */
+        if (notified & EVENT_SLEEP_PENDING) {
             break;
         }
 
-        /* Handle triple-click factory reset. Wipe NVS and reboot — the next
-         * boot sees no saved creds and falls into the captive portal. */
-        if (s_provisioning_request) {
+        /* Triple-click → factory reset (esp_restart, never returns) */
+        if (notified & EVENT_PROVISIONING_REQUEST) {
             do_factory_reset();
         }
 
 #if CONFIG_AUDIO_ENABLE
-        /* Handle long-press audio toggle request */
-        if (s_audio_toggle_request) {
-            s_audio_toggle_request = false;
+        /* Long press → toggle audio */
+        if (notified & EVENT_AUDIO_TOGGLE) {
             if (s_audio_playing) {
                 audio_stop();
                 clock_screen_set_audio_indicator(false);
@@ -621,7 +635,7 @@ void app_main(void)
          * Two conditions trigger advance:
          * 1. Stream state goes IDLE (clean finish)
          * 2. HTTP download at 100% for 3+ seconds (decoder stuck on trailing garbage) */
-        if (s_audio_playing && !s_audio_toggle_request) {
+        if (s_audio_playing) {
             int progress = audio_get_progress();
             static int stall_ticks = 0;
             bool track_done = false;
@@ -659,7 +673,7 @@ void app_main(void)
 #endif
 
         /* Refresh indoor temp every 10s — updates display + cache for next /api/esp */
-        if (i % 10 == 0) {
+        if (tick % 10 == 0) {
             float t = 0, h = 0;
             if (shtc3_read(&t, &h)) {
                 audio_set_indoor_env(t, h);
@@ -668,30 +682,30 @@ void app_main(void)
         }
 
         /* Periodic heap check every 60s to detect fragmentation trends */
-        if (i % 60 == 0) {
+        if (tick % 60 == 0) {
             log_heap("active_loop");
         }
 
         /* Full-screen refresh every second. Serialised against
          * lvgl_task via g_lvgl_mutex inside lvgl_adapter_refr_now(). */
         lvgl_adapter_refr_now();
-
-        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 
     ESP_LOGI(TAG, "Time to sleep, turning off display");
     log_heap("pre_sleep");
 
-    /* Kill display and amp instantly so user sees/hears immediate shutdown.
-     * Audio cleanup (stopping the HTTP download task) takes a few seconds
-     * and must happen after these to avoid visible delay. */
-    ssd1322_display_off();
-    gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0);
-
+    /* Stop audio FIRST so the mixer (prio 5) and HTTP download (prio 6)
+     * tasks are fully shut down before we delete the I2S channel and
+     * power down the amp. This avoids a race where the mixer task
+     * could write to a deleted I2S channel during audio_deinit(). */
 #if CONFIG_AUDIO_ENABLE
     audio_stop();
     audio_deinit();
 #endif
+
+    /* Kill display and amp after audio tasks are stopped */
+    ssd1322_display_off();
+    gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0);
 
     // Drive RST low and hold through deep sleep to prevent SSD1322 from
     // exiting reset during wake transition (which causes white flash)

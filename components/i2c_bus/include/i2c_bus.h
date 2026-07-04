@@ -22,6 +22,14 @@ esp_err_t i2c_bus_init(void);
 /* Get the bus handle. Returns NULL if i2c_bus_init() has not been called. */
 i2c_master_bus_handle_t i2c_bus_get(void);
 
+/* Acquire shared I2C bus mutex before a transaction. Thread-safe when
+ * multiple tasks share the bus (e.g., SHTC3 timer + PCF85063 in main).
+ * Returns ESP_OK on success, ESP_ERR_TIMEOUT if the mutex can't be taken
+ * within ticks_to_wait (use portMAX_DELAY to block indefinitely).
+ * Each lock() must be paired with a matching unlock(). */
+esp_err_t i2c_bus_lock(uint32_t ticks_to_wait);
+void i2c_bus_unlock(void);
+
 /* Tear down the shared bus. All devices must already be removed
  * (i2c_master_bus_rm_device) by their owners before calling this. */
 esp_err_t i2c_bus_deinit(void);

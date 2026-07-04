@@ -42,4 +42,6 @@ CONFIG_LV_MEM_SIZE_KILOBYTES=16
 CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=512
 CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=512
 # Reduce certificate bundle — no HTTPS connections are made
-CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_MAX_CERTS=0
+# Certificate bundle: keep IDF default — setting to 0 breaks the build
+# (x509_crt_bundle generator requires at least a placeholder cert).
+# HTTPS is disabled so the bundle is never used at runtime.
