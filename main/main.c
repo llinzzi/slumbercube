@@ -40,6 +40,7 @@ static volatile bool s_audio_playing = false;
 static volatile bool s_audio_toggle_request = false;
 static volatile bool s_provisioning_request = false;   /* triple-click → reconfig */
 static volatile bool s_in_provisioning    = false;     /* true while captive portal is up */
+static bool s_rtc_alarm_armed          = false;     /* set after arm_pcf85063_alarm_wakeup() */
 static bool s_normal_mode              = false;     /* true only when we reached the
                                                         * post-provisioning "normal operation"
                                                         * page (NVS creds at boot, OR
@@ -487,6 +488,14 @@ void app_main(void)
             clock_screen_set_station_name("Fetching weather...");
             esp_err_t fetch_rc = audio_fetch_api();
             bool got_weather = (fetch_rc == ESP_OK);
+
+            /* Arm PCF85063 alarm immediately after parsing the server
+             * response — don't wait until deep sleep. The alarm registers
+             * are written now; only the GPIO wake-mask + hold are applied
+             * later in the sleep path. */
+#if CONFIG_PCF85063_ENABLE
+            s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
+#endif
             if (fetch_rc == ESP_ERR_NOT_SUPPORTED) {
                 ESP_LOGI(TAG, "Agent disabled by config, clock-only mode");
                 /* Override the "Fetching weather..." placeholder — without
@@ -685,8 +694,7 @@ void app_main(void)
     uint64_t wake_mask = (1ULL << CONFIG_WAKEUP_GPIO);
 
 #if CONFIG_PCF85063_ENABLE
-    bool rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
-    if (rtc_alarm_armed) {
+    if (s_rtc_alarm_armed) {
         wake_mask |= (1ULL << CONFIG_PCF85063_INT_GPIO);
         gpio_hold_en(CONFIG_PCF85063_INT_GPIO);
     }
@@ -701,10 +709,12 @@ void app_main(void)
 
 #if CONFIG_PCF85063_ENABLE
     /* Fall back to internal RTC timer only when PCF85063 is unavailable;
-     * a server-disabled alarm must NOT auto-wake either. */
+     * a server-disabled alarm must NOT auto-wake either.
+     * s_rtc_alarm_armed was set by arm_pcf85063_alarm_wakeup() right after
+     * the /api/esp fetch, not here in the sleep path. */
     const audio_alarm_config_t *srv_alarm = audio_get_alarm_config();
     bool user_disabled = (srv_alarm && srv_alarm->disabled);
-    if (!rtc_alarm_armed && !user_disabled)
+    if (!s_rtc_alarm_armed && !user_disabled)
 #endif
     {
         time_t now = time(NULL);

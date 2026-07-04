@@ -187,24 +187,31 @@ esp_err_t pcf85063_set_alarm(const pcf85063_alarm_t *alarm)
     if (!s_present) return ESP_ERR_INVALID_STATE;
 
     /* The alarm registers use bit 7 = "disable this field" (don't-care).
-     * If alarm->enable is false, all four fields are forced to wildcard. */
-    uint8_t buf[4];
+     * If alarm->enable is false, all fields are forced to wildcard.
+     *
+     * Register map (datasheet §7):
+     *   0x0B  Second_alarm  (AE_S at bit 7) — always disabled
+     *   0x0C  Minute_alarm  (AE_M at bit 7)
+     *   0x0D  Hour_alarm    (AE_H at bit 7)
+     *   0x0E  Day_alarm     (AE_D at bit 7)
+     *   0x0F  Weekday_alarm (AE_W at bit 7) */
+    uint8_t buf[5];
     if (alarm->enable) {
-        buf[0] = pcf85063_alarm_field_disabled(alarm->minute) ?
+        buf[0] = 0x80;  /* seconds: always don't-care */
+        buf[1] = pcf85063_alarm_field_disabled(alarm->minute) ?
                  (uint8_t)0x80u : (uint8_t)(pcf85063_to_bcd(alarm->minute) & 0x7Fu);
-        buf[1] = pcf85063_alarm_field_disabled(alarm->hour) ?
+        buf[2] = pcf85063_alarm_field_disabled(alarm->hour) ?
                  (uint8_t)0x80u : (uint8_t)(pcf85063_to_bcd(alarm->hour) & 0x3Fu);
-        buf[2] = pcf85063_alarm_field_disabled(alarm->day) ?
+        buf[3] = pcf85063_alarm_field_disabled(alarm->day) ?
                  (uint8_t)0x80u : (uint8_t)(pcf85063_to_bcd(alarm->day) & 0x3Fu);
-        buf[3] = pcf85063_alarm_field_disabled(alarm->weekday) ?
+        buf[4] = pcf85063_alarm_field_disabled(alarm->weekday) ?
                  (uint8_t)0x80u : (uint8_t)(alarm->weekday & 0x07u);
     } else {
-        buf[0] = 0x80; buf[1] = 0x80; buf[2] = 0x80; buf[3] = 0x80;
+        buf[0] = 0x80; buf[1] = 0x80; buf[2] = 0x80; buf[3] = 0x80; buf[4] = 0x80;
     }
 
     ESP_LOGI(TAG, "set_alarm: sec=0x%02X min=0x%02X hr=0x%02X day=0x%02X wday=0x%02X",
-             buf[0], buf[1], buf[2], buf[3],
-             alarm->weekday == PCF85063_ALARM_DISABLE ? 0x80 : alarm->weekday);
+             buf[0], buf[1], buf[2], buf[3], buf[4]);
 
     esp_err_t err = write_regs(REG_SECOND_ALARM, buf, sizeof(buf));
     if (err != ESP_OK) return err;
