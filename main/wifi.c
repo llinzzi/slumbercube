@@ -3,6 +3,7 @@
 #include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "esp_mac.h"
 #include "esp_wifi.h"
@@ -172,13 +173,15 @@ static esp_err_t wifi_wait_connected(int timeout_ms)
     return ESP_FAIL;
 }
 
-esp_err_t wifi_init_sta(void)
+/* Non-blocking: init + configure + start the STA radio.
+ * Returns ESP_OK when the radio is started and the driver will attempt
+ * to connect automatically (WIFI_EVENT_STA_START → esp_wifi_connect()).
+ * The caller polls wifi_is_connected() or waits on wifi_get_event_group().
+ *
+ * Safe to call when already connected (idempotent fast path). */
+esp_err_t wifi_sta_ensure(void)
 {
-    /* First-time path: init the driver + STA netif + event handlers, then
-     * set mode + protocol + config (BEFORE esp_wifi_start) + start. Doing
-     * esp_wifi_set_config() after start fails with ESP_ERR_WIFI_STATE because
-     * the WIFI_EVENT_STA_START handler has already kicked off a connect
-     * attempt — there's no window to apply new config mid-connect. */
+    /* First-time path: init the driver + STA netif + event handlers. */
     if (!s_wifi_inited) {
         wifi_ensure_netif();
 
@@ -208,17 +211,7 @@ esp_err_t wifi_init_sta(void)
         ESP_LOGI(TAG, "wifi driver initialized");
     }
 
-    /* Idempotent fast path: if the radio is already up and the STA is
-     * connected, the caller (e.g. the triple-click → captive-portal entry)
-     * doesn't need to bounce WiFi. The full restart path below would:
-     *   1. Call esp_wifi_stop() (5–10s reconnect)
-     *   2. Race with the auto-connect suppress flag set right after by
-     *      wifi_provisioning_run() — the handler skips esp_wifi_connect()
-     *      when suppressed, so reconnection would be blocked for 30 s.
-     * The post-provisioning caller path (apply-new-creds after a successful
-     * submission) tears down WiFi first via esp_wifi_stop() in its caller,
-     * so s_wifi_connected is false there and we fall through to the full
-     * path correctly. */
+    /* Idempotent fast path: radio already up and connected. */
     if (s_wifi_started && s_wifi_connected) {
         return ESP_OK;
     }
@@ -241,19 +234,12 @@ esp_err_t wifi_init_sta(void)
         ESP_LOGI(TAG, "Using NVS creds for SSID:'%s'", creds.ssid);
     } else {
         s_using_nvs_creds = false;
-        /* No saved credentials. Do NOT fall back to a baked-in
-         * menuconfig SSID — silently connecting to a factory-default
-         * network is surprising and a security smell (the password
-         * lives in the shipped binary). Return ESP_FAIL so the caller
-         * (main.c boot path) routes to QR provisioning instead. */
         ESP_LOGW(TAG, "NVS creds missing, refusing to connect without provisioning");
         return ESP_FAIL;
     }
 
     if (s_wifi_started) {
-        /* Re-init (post-provisioning): wifi is already running with stale
-         * config. Stop it before applying the new config — esp_wifi_stop()
-         * blocks until the radio is fully down, so set_config is safe. */
+        /* Re-init: radio is running with stale config. Stop + restart. */
         ESP_LOGI(TAG, "Restarting WiFi to apply new config");
         ESP_ERROR_CHECK(esp_wifi_stop());
         s_wifi_started = false;
@@ -265,16 +251,23 @@ esp_err_t wifi_init_sta(void)
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
         ESP_ERROR_CHECK(esp_wifi_start());
 
-        /* Use near-max TX power (80 = 20 dBm). The device is far from the AP
-         * with a weak link (~-62 dBm); a low TX power starved the uplink so
-         * SYNs failed to reach the AP, causing intermittent ESP_ERR_HTTP_CONNECT. */
+        /* Use near-max TX power (80 = 20 dBm). */
         esp_wifi_set_max_tx_power(80);
 
         s_wifi_started = true;
     }
 
+    return ESP_OK;
+}
+
+/* Blocking wrapper: ensure + wait for connection + SNTP. */
+esp_err_t wifi_init_sta(void)
+{
+    esp_err_t err = wifi_sta_ensure();
+    if (err != ESP_OK) return err;
+
     if (wifi_wait_connected(30000) == ESP_OK) {
-        ESP_LOGI(TAG, "connected to ap SSID:%s", (const char *)wifi_config.sta.ssid);
+        ESP_LOGI(TAG, "connected to ap");
         sntp_init_time();
         return ESP_OK;
     }
@@ -285,6 +278,11 @@ esp_err_t wifi_init_sta(void)
 bool wifi_is_connected(void)
 {
     return s_wifi_connected;
+}
+
+void *wifi_get_event_group(void)
+{
+    return (void *)s_wifi_event_group;
 }
 
 static const char *NVS_NAMESPACE = "clock";

@@ -56,6 +56,8 @@ static button_handle_t g_btn = NULL;
 
 static volatile bool s_audio_playing = false;   /* read by button callbacks AND main loop */
 static volatile bool s_in_provisioning = false; /* read by button callbacks during captive portal */
+static bool s_audio_pending           = false; /* wifi connecting, start audio when done */
+static int  s_audio_pending_ticks     = 0;     /* timeout counter for pending start */
 static bool s_rtc_alarm_armed          = false; /* set after arm_pcf85063_alarm_wakeup() */
 static bool s_normal_mode              = false; /* true only when we reached the
                                                         * post-provisioning "normal operation"
@@ -634,8 +636,21 @@ void app_main(void)
                 clock_screen_set_audio_indicator(false);
                 clock_screen_set_station_name("Paused");
                 s_audio_playing = false;
+            } else if (wifi_is_connected()) {
+                /* WiFi already up — start playback immediately */
+                audio_start_playback(false);
             } else {
-                audio_start_playback(true);
+                /* Start WiFi in background, the main loop will call
+                 * audio_start_playback() as soon as it connects. */
+                wifi_ensure_netif();
+                if (wifi_sta_ensure() == ESP_OK) {
+                    clock_screen_set_station_name("Connecting WiFi...");
+                    clock_screen_set_audio_indicator(true);
+                    s_audio_pending = true;
+                    s_audio_pending_ticks = 0;
+                } else {
+                    clock_screen_set_station_name("WiFi failed");
+                }
             }
         }
 
@@ -694,6 +709,20 @@ void app_main(void)
         /* Periodic heap check every 60s to detect fragmentation trends */
         if (tick % 60 == 0) {
             log_heap("active_loop");
+        }
+
+        /* Pending audio start — WiFi was started in background, now poll
+         * for connection. When the STA gets an IP, proceed immediately. */
+        if (s_audio_pending) {
+            if (wifi_is_connected()) {
+                s_audio_pending = false;
+                audio_start_playback(false);
+            } else if (++s_audio_pending_ticks >= 30) {
+                /* 30-second timeout — give up */
+                s_audio_pending = false;
+                clock_screen_set_audio_indicator(false);
+                clock_screen_set_station_name("WiFi failed");
+            }
         }
 
         /* Full-screen refresh every second. Serialised against
