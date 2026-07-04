@@ -581,6 +581,7 @@ static httpd_handle_t start_http_server(void)
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
     cfg.server_port    = WIFI_PROV_HTTP_PORT;
     cfg.ctrl_port      = WIFI_PROV_HTTP_PORT + 1;
+    cfg.max_open_sockets = 2;   /* provisioning only needs 1-2 clients */
     cfg.max_uri_handlers = 12;
     /* Smaller stack to keep provisioning lean — handlers are short. */
     cfg.stack_size     = 4096;
