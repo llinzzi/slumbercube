@@ -330,7 +330,7 @@ GET http://{server}:3000/api/esp/{device_id}?wake={src}&t={temp}&h={humidity}
 | `weather.tempMin` | string | 今日最低温 |
 | `weather.textDay` | string | 白天天气 |
 | `weather.textNight` | string | 夜间天气 |
-| `alarm.enabled` | bool | 是否启用 PCF85063 外部 RTC 闹钟唤醒；`false` → 走 ESP32-C3 内部 RTC 定时器 fallback |
+| `alarm.enabled` | bool | 显式启用标识：必须为 `true`，否则整个 `alarm` 被忽略，回退到默认 `CONFIG_WAKEUP_HOUR/MINUTE` 写入 PCF85063 闹钟 |
 | `alarm.time` | string | 闹钟时间，`"HH:MM"` 24h 制，写入 PCF85063 闹钟寄存器；缺省回退到 `CONFIG_WAKEUP_HOUR/MINUTE` |
 | `alarm.weekend_saturday` | bool | 周六是否触发闹钟（`false` = 跳过当天，避免周末被吵醒） |
 | `alarm.weekend_sunday` | bool | 周日是否触发闹钟（`false` = 跳过当天） |
