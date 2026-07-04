@@ -5,12 +5,14 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "ui/ui.h"
 #include <string.h>
 
 static const char *TAG = "LVGL_ADAPTER";
 static lv_display_t *g_disp = NULL;
 static uint8_t *g_i4_buffer = NULL;
+static SemaphoreHandle_t g_lvgl_mutex = NULL;
 
 #define PARTIAL_SEND_BUF_SIZE 1024
 static uint8_t *g_partial_send_buf = NULL;
@@ -112,6 +114,12 @@ esp_err_t lvgl_adapter_init(void)
 {
     lv_init();
 
+    g_lvgl_mutex = xSemaphoreCreateMutex();
+    if (!g_lvgl_mutex) {
+        ESP_LOGE(TAG, "Failed to create LVGL mutex");
+        return ESP_ERR_NO_MEM;
+    }
+
     g_disp = lv_display_create(LCD_H_RES, LCD_V_RES);
     if (!g_disp) {
         ESP_LOGE(TAG, "Failed to create LVGL display");
@@ -184,15 +192,21 @@ static void lvgl_task(void *arg)
     ESP_LOGI(TAG, "Starting LVGL task");
     uint32_t count = 0;
     while (1) {
-        uint32_t t0 = lv_tick_get();
-        lv_timer_handler();
-        uint32_t dt = lv_tick_elaps(t0);
-        if (dt > 200) {
-            ESP_LOGW(TAG, "lv_timer_handler slow: %u ms", (unsigned)dt);
+        if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+            uint32_t t0 = lv_tick_get();
+            lv_timer_handler();
+            uint32_t dt = lv_tick_elaps(t0);
+            xSemaphoreGive(g_lvgl_mutex);
+            if (dt > 200) {
+                ESP_LOGW(TAG, "lv_timer_handler slow: %u ms", (unsigned)dt);
+            }
         }
         count++;
         if (count % 100 == 0) {
-            ui_tick();
+            if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                ui_tick();
+                xSemaphoreGive(g_lvgl_mutex);
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -205,6 +219,9 @@ lv_display_t* lvgl_adapter_get_display(void)
 
 void lvgl_adapter_refr_now(void)
 {
-    lv_timer_handler();
-    lv_refr_now(g_disp);
+    if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
+        lv_timer_handler();
+        lv_refr_now(g_disp);
+        xSemaphoreGive(g_lvgl_mutex);
+    }
 }
