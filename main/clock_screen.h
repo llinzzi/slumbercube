@@ -11,6 +11,10 @@ void clock_screen_hide(void);
 bool clock_screen_is_visible(void);
 bool clock_screen_is_night_time(void);
 void clock_screen_set_night_mode(bool enable);
+/* Night mode override: -1 = auto (time-based), 0 = force day, 1 = force night.
+ * Resets to auto (-1) on every wake. Valid only for the current session. */
+void clock_screen_set_night_override(int8_t override);
+int8_t clock_screen_get_night_override(void);
 void clock_screen_set_station_name(const char *name);
 void clock_screen_set_audio_indicator(bool on);
 /* Free the canvas pixel buffer (16KB). Safe to call before deep sleep;

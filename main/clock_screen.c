@@ -36,6 +36,7 @@ static bool s_indicator_on = false;
 static const weather_data_t *weather = NULL;
 static bool visible = false;
 static bool night_mode = false;
+static int8_t s_night_override = -1;  /* -1=auto, 0=force day, 1=force night */
 
 /* ── Canvas drawing helpers ── */
 
@@ -384,6 +385,10 @@ bool clock_screen_is_visible(void)
 
 bool clock_screen_is_night_time(void)
 {
+    /* Override takes priority (session-only, resets to auto on wake) */
+    if (s_night_override == 1) return true;   /* force night */
+    if (s_night_override == 0) return false;  /* force day */
+
     time_t now = time(NULL);
     struct tm tm_now = {0};
     localtime_r(&now, &tm_now);
@@ -403,6 +408,16 @@ bool clock_screen_is_night_time(void)
         /* Night within a single day (e.g. 03:00 → 06:00) */
         return after_start && before_end;
     }
+}
+
+void clock_screen_set_night_override(int8_t override)
+{
+    s_night_override = override;
+}
+
+int8_t clock_screen_get_night_override(void)
+{
+    return s_night_override;
 }
 
 void clock_screen_set_night_mode(bool enable)

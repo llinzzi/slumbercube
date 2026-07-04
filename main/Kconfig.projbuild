@@ -60,9 +60,12 @@ menu "SlumberCube Configuration"
         config PIN_I2S_LROUT
             int "I2S LROUT pin (NS4168 word select)"
             default 6
-        config BUTTON_GPIO
-            int "Button GPIO number"
+        config POWER_BUTTON_GPIO
+            int "Power button GPIO (wake/sleep/night-toggle)"
             default 3
+        config MEDIA_BUTTON_GPIO
+            int "Media button GPIO (play/pause/skip)"
+            default 1
     endmenu
 
     menu "Audio Configuration"
