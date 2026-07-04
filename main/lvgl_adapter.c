@@ -7,11 +7,15 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "ui/ui.h"
+#include <string.h>
 
 static const char *TAG = "LVGL_ADAPTER";
 static lv_display_t *g_disp = NULL;
 static uint8_t *g_i4_buffer = NULL;
 static SemaphoreHandle_t g_lvgl_mutex = NULL;
+
+#define PARTIAL_SEND_BUF_SIZE 1024
+static uint8_t *g_partial_send_buf = NULL;
 
 static void lvgl_task(void *arg);
 
@@ -25,46 +29,86 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
     int width = x_end - x_start + 1;
     int height = y_end - y_start + 1;
 
-    if (g_i4_buffer) {
-        /* SSD1322 列地址粒度是 4 像素（1 列 = 2 字节 GDDRAM = 4 个 4-bit 像素），
-         * 无法表达非 4 对齐的 X。因此把 g_i4_buffer 维护为全屏 I4 镜像：
-         * 先把 area 的 L8 像素按 nibble 写入镜像的正确位置，再以整宽
-         * (列 0x1C..0x5B = x0..255) × area 行范围一次性发送。每次 SPI 传输
-         * 都整宽 4 对齐，任意 partial area 均正确，避免列窗口与数据长度
-         * 不匹配导致的花屏。 */
-        const int row_bytes = LCD_H_RES / 2;  /* 128 字节/行 I4 */
+    if (!g_i4_buffer) {
+        lv_display_flush_ready(disp);
+        return;
+    }
 
-        for (int y = 0; y < height; y++) {
-            int dst_row = (y_start + y) * row_bytes;
-            int src_row = y * width;
-            for (int x = 0; x < width; x++) {
-                int abs_x = x_start + x;
-                int byte_idx = dst_row + (abs_x / 2);
-                uint8_t nib = px_map[src_row + x] >> 4;
-                if (abs_x & 1) {
-                    g_i4_buffer[byte_idx] = (g_i4_buffer[byte_idx] & 0xF0) | (nib & 0x0F);
-                } else {
-                    g_i4_buffer[byte_idx] = (g_i4_buffer[byte_idx] & 0x0F) | (nib << 4);
-                }
+    /* Step 1: Update full-screen I4 mirror with new LVGL pixels.
+     * SSD1322 column addressing is at 4-pixel granularity (1 col = 2 GDDRAM
+     * bytes = 4 4-bit pixels), so we need the mirror to provide correct data
+     * for edge pixels when the column window is rounded outward. */
+    const int row_bytes = LCD_H_RES / 2;  /* 128 bytes/row I4 */
+
+    for (int y = 0; y < height; y++) {
+        int dst_row = (y_start + y) * row_bytes;
+        int src_row = y * width;
+        for (int x = 0; x < width; x++) {
+            int abs_x = x_start + x;
+            int byte_idx = dst_row + (abs_x / 2);
+            uint8_t nib = px_map[src_row + x] >> 4;
+            if (abs_x & 1) {
+                g_i4_buffer[byte_idx] = (g_i4_buffer[byte_idx] & 0xF0) | (nib & 0x0F);
+            } else {
+                g_i4_buffer[byte_idx] = (g_i4_buffer[byte_idx] & 0x0F) | (nib << 4);
             }
         }
+    }
 
-        /* 整宽窗口：列 0x1C..0x5B（256 像素），行 y_start..y_end */
-        ssd1322_send_cmd(0x15);
-        ssd1322_send_data(0x1C);
-        ssd1322_send_data(0x5B);
+    /* Step 2: Calculate SSD1322 column window (4-pixel granularity). */
+    int col_start      = x_start / 4;   /* rounds down */
+    int col_end        = x_end / 4;
+    int cols           = col_end - col_start + 1;
+    int bytes_per_row  = cols * 2;      /* 2 I4 bytes per SSD1322 column */
+    int col_addr_start = 0x1C + col_start;
+    int col_addr_end   = 0x1C + col_end;
 
-        ssd1322_send_cmd(0x75);
-        ssd1322_send_data(y_start);
-        ssd1322_send_data(y_end);
+    /* Step 3: Send — partial-column path if narrower than full width. */
+    if (bytes_per_row < row_bytes && g_partial_send_buf) {
+        int rows_per_batch = PARTIAL_SEND_BUF_SIZE / bytes_per_row;
+        if (rows_per_batch < 1) rows_per_batch = 1;
 
+        int col_byte_offset = col_start * 2;
+
+        for (int batch_y = 0; batch_y < height; batch_y += rows_per_batch) {
+            int batch_h = rows_per_batch;
+            if (batch_y + batch_h > height) batch_h = height - batch_y;
+
+            /* Pack partial-row bytes from I4 mirror into send buffer */
+            int batch_bytes = batch_h * bytes_per_row;
+            for (int y = 0; y < batch_h; y++) {
+                memcpy(g_partial_send_buf + (size_t)y * bytes_per_row,
+                       g_i4_buffer + (size_t)(y_start + batch_y + y) * row_bytes + col_byte_offset,
+                       bytes_per_row);
+            }
+
+            ssd1322_set_window(col_addr_start, col_addr_end,
+                               y_start + batch_y,
+                               y_start + batch_y + batch_h - 1);
+            ssd1322_send_cmd(0x5C);
+
+            gpio_set_level(PIN_NUM_DC, 1);
+            spi_transaction_t t = {
+                .length = (size_t)batch_bytes * 8,
+                .tx_buffer = g_partial_send_buf,
+            };
+            spi_device_queue_trans(ssd1322_get_spi_handle(), &t, portMAX_DELAY);
+            spi_transaction_t *ret_trans = NULL;
+            esp_err_t spi_err = spi_device_get_trans_result(
+                ssd1322_get_spi_handle(), &ret_trans, pdMS_TO_TICKS(100));
+            if (spi_err != ESP_OK) {
+                ESP_LOGE(TAG, "SPI transmit timeout, display may be corrupted");
+            }
+        }
+    } else {
+        /* Full-width path: data is contiguous in I4 mirror — single SPI tx. */
+        ssd1322_set_window(0x1C, 0x5B, y_start, y_end);
         ssd1322_send_cmd(0x5C);
 
         gpio_set_level(PIN_NUM_DC, 1);
-
         spi_transaction_t t = {
             .length = (size_t)row_bytes * height * 8,
-            .tx_buffer = g_i4_buffer + (size_t)y_start * row_bytes
+            .tx_buffer = g_i4_buffer + (size_t)y_start * row_bytes,
         };
         /* Queue + timed wait: the old polling_transmit had no timeout and
          * could hang forever if the SPI DMA completion interrupt was lost
@@ -114,6 +158,14 @@ esp_err_t lvgl_adapter_init(void)
         return ESP_ERR_NO_MEM;
     }
 
+    /* Partial-send staging buffer — soft allocation. If OOM, partial refresh
+     * is gracefully disabled and the existing full-width path is used. */
+    g_partial_send_buf = heap_caps_malloc(PARTIAL_SEND_BUF_SIZE, MALLOC_CAP_DMA);
+    if (!g_partial_send_buf) {
+        ESP_LOGW(TAG, "Failed to allocate partial-send buffer (%d), partial refresh disabled",
+                 PARTIAL_SEND_BUF_SIZE);
+    }
+
     void *buf1 = heap_caps_calloc(1, buf_size, MALLOC_CAP_DMA);
     if (!buf1) {
         ESP_LOGE(TAG, "Failed to allocate LVGL buffer");
@@ -157,19 +209,21 @@ static void lvgl_task(void *arg)
     ESP_LOGI(TAG, "Starting LVGL task");
     uint32_t count = 0;
     while (1) {
-        uint32_t t0 = 0;
-        if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
-            t0 = lv_tick_get();
+        if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+            uint32_t t0 = lv_tick_get();
             lv_timer_handler();
+            uint32_t dt = lv_tick_elaps(t0);
             xSemaphoreGive(g_lvgl_mutex);
-        }
-        uint32_t dt = lv_tick_elaps(t0);
-        if (dt > 200) {
-            ESP_LOGW(TAG, "lv_timer_handler slow: %u ms", (unsigned)dt);
+            if (dt > 200) {
+                ESP_LOGW(TAG, "lv_timer_handler slow: %u ms", (unsigned)dt);
+            }
         }
         count++;
         if (count % 100 == 0) {
-            ui_tick();
+            if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+                ui_tick();
+                xSemaphoreGive(g_lvgl_mutex);
+            }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
@@ -180,15 +234,11 @@ lv_display_t* lvgl_adapter_get_display(void)
     return g_disp;
 }
 
-/* Force a full-screen render from the main task. Serialises against
- * lvgl_task via g_lvgl_mutex so that two tasks never enter LVGL's
- * lv_timer_handler / rendering engine concurrently, which would
- * trigger an "Invalidate area is not allowed during rendering"
- * assertion inside lv_inv_area(). */
 void lvgl_adapter_refr_now(void)
 {
-    if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+    if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
         lv_timer_handler();
+        lv_refr_now(g_disp);
         xSemaphoreGive(g_lvgl_mutex);
     }
 }
