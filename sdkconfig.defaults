@@ -28,8 +28,9 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 # Enable LVGL QR code widget (used by config_screen)
 CONFIG_LV_USE_QRCODE=y
 
-# Reduce LWIP footprint — only 2-3 simultaneous connections needed
-CONFIG_LWIP_MAX_SOCKETS=5
+# Reduce LWIP footprint. Must be ≥ 3 (HTTP server internal) + 3 (open)
+# = 6 minimum for provisioning HTTP server to start.
+CONFIG_LWIP_MAX_SOCKETS=7
 CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=8
 
 # Memory optimizations
