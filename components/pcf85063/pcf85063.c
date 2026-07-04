@@ -202,6 +202,10 @@ esp_err_t pcf85063_set_alarm(const pcf85063_alarm_t *alarm)
         buf[0] = 0x80; buf[1] = 0x80; buf[2] = 0x80; buf[3] = 0x80;
     }
 
+    ESP_LOGI(TAG, "set_alarm: sec=0x%02X min=0x%02X hr=0x%02X day=0x%02X wday=0x%02X",
+             buf[0], buf[1], buf[2], buf[3],
+             alarm->weekday == PCF85063_ALARM_DISABLE ? 0x80 : alarm->weekday);
+
     esp_err_t err = write_regs(REG_SECOND_ALARM, buf, sizeof(buf));
     if (err != ESP_OK) return err;
 
@@ -230,6 +234,8 @@ esp_err_t pcf85063_enable_alarm_int(bool enable)
 
     uint8_t want = (uint8_t)(enable ? (ctrl2 | CTRL2_AIE)
                                     : (ctrl2 & ~CTRL2_AIE));
+    ESP_LOGI(TAG, "enable_alarm_int: ctrl2 0x%02X -> 0x%02X (AIE=%s)",
+             ctrl2, want, enable ? "on" : "off");
     if (want == ctrl2) return ESP_OK;
     return write_regs(REG_CTRL2, &want, 1);
 }

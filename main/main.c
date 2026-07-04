@@ -137,8 +137,20 @@ static bool arm_pcf85063_alarm_wakeup(void)
                                .pull_down_en = GPIO_PULLDOWN_DISABLE,
                                .intr_type = GPIO_INTR_DISABLE };
     gpio_config(&int_cfg);
-    ESP_LOGI(TAG, "PCF85063: alarm armed for %02d:%02d (IO%d wake)",
-             wake_h, wake_m, CONFIG_PCF85063_INT_GPIO);
+
+    /* Read back current PCF85063 time so the log shows both the alarm
+     * target and the clock it's comparing against. */
+    pcf85063_datetime_t now_dt;
+    if (pcf85063_read_datetime(&now_dt) == ESP_OK) {
+        ESP_LOGI(TAG, "PCF85063: current time %04u-%02u-%02u %02u:%02u:%02u UTC, "
+                 "alarm armed for %02d:%02d UTC (IO%d wake)",
+                 now_dt.year, now_dt.month, now_dt.day,
+                 now_dt.hour, now_dt.minute, now_dt.second,
+                 wake_h, wake_m, CONFIG_PCF85063_INT_GPIO);
+    } else {
+        ESP_LOGI(TAG, "PCF85063: alarm armed for %02d:%02d UTC (IO%d wake)",
+                 wake_h, wake_m, CONFIG_PCF85063_INT_GPIO);
+    }
     return true;
 }
 #endif
@@ -710,6 +722,7 @@ void app_main(void)
                  CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
     }
 
-    // Enter deep sleep
+    // Enter deep sleep (brief delay so UART TX finishes before RTC domain powers down)
+    vTaskDelay(pdMS_TO_TICKS(100));
     esp_deep_sleep_start();
 }
