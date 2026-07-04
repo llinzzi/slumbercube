@@ -383,7 +383,6 @@ bool clock_screen_is_visible(void)
 
 bool clock_screen_is_night_time(void)
 {
-    return false; /* FIXME: temp — skip night mode for memory tuning test */
     time_t now = time(NULL);
     struct tm tm_now = {0};
     localtime_r(&now, &tm_now);

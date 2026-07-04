@@ -2,8 +2,29 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 #include "esp_err.h"
-#include "weather_service.h"
+
+#define WEATHER_MAX_DAYS 1  /* /api/esp returns single-day conditions */
+
+typedef struct {
+    int high;               /* tempMax — today's day high */
+    int low;                /* tempMin — today's night low */
+    int current;            /* temp    — current observed */
+    int humidity;           /* humidity % */
+    char day_text[16];      /* textDay   — e.g. "多云" */
+    char night_text[16];    /* textNight */
+    char current_text[16];  /* text      — current observation */
+    int month;              /* 1-12 */
+    int day;                /* 1-31 */
+} daily_forecast_t;
+
+typedef struct {
+    daily_forecast_t daily[WEATHER_MAX_DAYS];
+    int count;
+    bool valid;
+    time_t fetch_time;
+} weather_data_t;
 
 #ifdef __cplusplus
 extern "C" {

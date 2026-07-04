@@ -34,5 +34,12 @@ CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=8
 
 # Memory optimizations
 CONFIG_LV_MEM_SIZE_KILOBYTES=16
-CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=2048
-CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=2048
+
+# mbedTLS: HTTPS is disabled (see above), so shrink TLS buffers to minimum.
+# SSL_IN/OUT buffers are allocated dynamically only when needed; with
+# HTTPS fully disabled they stay at 0 heap cost. Pinning a small value
+# prevents the Kconfig default (2048) from drifting back on rebuilds.
+CONFIG_MBEDTLS_SSL_IN_CONTENT_LEN=512
+CONFIG_MBEDTLS_SSL_OUT_CONTENT_LEN=512
+# Reduce certificate bundle — no HTTPS connections are made
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_MAX_CERTS=0

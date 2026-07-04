@@ -1,7 +1,7 @@
 #pragma once
 
 #include "lvgl.h"
-#include "weather_service.h"
+#include "audio_player_wrapper.h"
 
 lv_obj_t *clock_screen_create(lv_obj_t *parent);
 void clock_screen_set_data(const weather_data_t *data);

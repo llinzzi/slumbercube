@@ -1,5 +1,4 @@
 #include "audio_player_wrapper.h"
-#include "weather_service.h"
 #include "wifi.h"
 #include "agent_config.h"
 #include "shtc3.h"

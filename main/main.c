@@ -14,6 +14,7 @@
 #include "esp_sleep.h"
 #include "esp_system.h"
 #include "esp_mac.h"
+#include "esp_heap_caps.h"
 #include "nvs_flash.h"
 #include <time.h>
 #include "iot_button.h"
@@ -30,6 +31,16 @@
 #endif
 
 static const char *TAG = "MAIN";
+
+/* Log heap state for memory pressure diagnostics */
+static void log_heap(const char *label)
+{
+    ESP_LOGI(TAG, "Heap[%s]: free=%" PRIu32 " min_free=%" PRIu32 " largest_block=%" PRIu32,
+             label,
+             esp_get_free_heap_size(),
+             esp_get_minimum_free_heap_size(),
+             heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+}
 
 /* 配置项通过 menuconfig 设置 (参见 Kconfig.projbuild) */
 
@@ -167,6 +178,48 @@ static const char *audio_failure_station_name(void)
     }
     return "WiFi failed";
 }
+
+static void apply_weather_and_indoor(const weather_data_t *w);
+
+#if CONFIG_AUDIO_ENABLE
+/* Start audio playback with optional WiFi reconnection and display updates.
+ * On failure, updates the display with an error message and clears the
+ * audio-playing flag. Returns ESP_OK on success. */
+static esp_err_t audio_start_playback(bool reconnect_wifi)
+{
+    if (reconnect_wifi) {
+        clock_screen_set_station_name("Connecting WiFi...");
+        wifi_ensure_netif();
+        if (wifi_init_sta() != ESP_OK && !wifi_is_connected()) {
+            clock_screen_set_audio_indicator(false);
+            clock_screen_set_station_name("WiFi failed");
+            s_audio_playing = false;
+            return ESP_FAIL;
+        }
+    }
+
+    clock_screen_set_station_name("Starting audio...");
+    if (audio_init() != ESP_OK) {
+        clock_screen_set_audio_indicator(false);
+        clock_screen_set_station_name("Audio init failed");
+        s_audio_playing = false;
+        return ESP_FAIL;
+    }
+
+    if (audio_play_url() != ESP_OK) {
+        clock_screen_set_audio_indicator(false);
+        clock_screen_set_station_name(audio_failure_station_name());
+        s_audio_playing = false;
+        return ESP_FAIL;
+    }
+
+    clock_screen_set_station_name(audio_get_station_name());
+    apply_weather_and_indoor(audio_get_weather());
+    clock_screen_set_audio_indicator(true);
+    s_audio_playing = true;
+    return ESP_OK;
+}
+#endif
 
 static void apply_weather_and_indoor(const weather_data_t *w)
 {
@@ -355,6 +408,7 @@ void app_main(void)
 
     // Initialize LVGL before WiFi (clean heap avoids allocation failures)
     ESP_ERROR_CHECK(lvgl_adapter_init());
+    log_heap("lvgl_init");
 
     // Wait for LVGL task to start
     vTaskDelay(pdMS_TO_TICKS(100));
@@ -431,6 +485,7 @@ void app_main(void)
 #if CONFIG_PCF85063_ENABLE
             if (pcf85063_is_present()) pcf85063_sync_from_system();
 #endif
+            log_heap("wifi_connected");
         }
         /* Weather is fetched as part of audio_play_url() via /api/esp;
          * the display shows the default icon until that completes. */
@@ -481,6 +536,7 @@ void app_main(void)
         }
 
         if (audio_init() == ESP_OK) {
+            log_heap("audio_init");
             /* 1. Single HTTP call — parses both weather and radio URL from /api/esp.
              * Weather and URL are independent; one can succeed without the other.
              * audio_fetch_api() returns ESP_ERR_NOT_SUPPORTED when the agent is
@@ -555,39 +611,7 @@ void app_main(void)
                 clock_screen_set_station_name("Paused");
                 s_audio_playing = false;
             } else {
-                clock_screen_set_station_name("Connecting WiFi...");
-                wifi_ensure_netif();
-                if (wifi_init_sta() == ESP_OK) {
-                    clock_screen_set_station_name("Starting audio...");
-                    if (audio_init() == ESP_OK) {
-                        if (audio_play_url() == ESP_OK) {
-                            clock_screen_set_station_name(audio_get_station_name());
-                            apply_weather_and_indoor(audio_get_weather());
-                            clock_screen_set_audio_indicator(true);
-                            s_audio_playing = true;
-                        } else {
-                            clock_screen_set_station_name(audio_failure_station_name());
-                        }
-                    }
-                } else {
-                    /* wifi_init_sta timed out — check if it connected just after timeout */
-                    if (wifi_is_connected()) {
-                        clock_screen_set_station_name("Starting audio...");
-                        if (audio_init() == ESP_OK) {
-                            if (audio_play_url() == ESP_OK) {
-                                clock_screen_set_station_name(audio_get_station_name());
-                                apply_weather_and_indoor(audio_get_weather());
-                                clock_screen_set_audio_indicator(true);
-                                s_audio_playing = true;
-                            } else {
-                                clock_screen_set_station_name(audio_failure_station_name());
-                            }
-                        }
-                    } else {
-                        clock_screen_set_audio_indicator(false);
-                        clock_screen_set_station_name("WiFi failed");
-                    }
-                }
+                audio_start_playback(true);
             }
         }
 
@@ -628,23 +652,7 @@ void app_main(void)
                 if (!wifi_is_connected()) {
                     wifi_init_sta();
                 }
-                if (audio_init() == ESP_OK) {
-                    if (audio_play_url() == ESP_OK) {
-                        clock_screen_set_station_name(audio_get_station_name());
-                        apply_weather_and_indoor(audio_get_weather());
-                        clock_screen_set_audio_indicator(true);
-                    } else {
-                        ESP_LOGW(TAG, "Failed to fetch next track, stopping");
-                        clock_screen_set_audio_indicator(false);
-                        clock_screen_set_station_name("Paused");
-                        s_audio_playing = false;
-                    }
-                } else {
-                    ESP_LOGW(TAG, "Audio re-init failed, stopping");
-                    clock_screen_set_audio_indicator(false);
-                    clock_screen_set_station_name("Paused");
-                    s_audio_playing = false;
-                }
+                audio_start_playback(false);
             }
         }
 
@@ -659,6 +667,11 @@ void app_main(void)
             }
         }
 
+        /* Periodic heap check every 60s to detect fragmentation trends */
+        if (i % 60 == 0) {
+            log_heap("active_loop");
+        }
+
         /* Full-screen refresh every second. Serialised against
          * lvgl_task via g_lvgl_mutex inside lvgl_adapter_refr_now(). */
         lvgl_adapter_refr_now();
@@ -667,6 +680,7 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "Time to sleep, turning off display");
+    log_heap("pre_sleep");
 
     /* Kill display and amp instantly so user sees/hears immediate shutdown.
      * Audio cleanup (stopping the HTTP download task) takes a few seconds
