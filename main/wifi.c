@@ -149,7 +149,15 @@ esp_err_t wifi_ensure_netif(void)
 {
     if (s_netif_inited) return ESP_OK;
 
-    /* NVS is initialised centrally in app_main() — no need to re-init here. */
+    /* NVS must be ready before esp_netif_init() — the lwIP DHCP server
+     * (used by provisioning SoftAP) requires NVS for its state. */
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_netif_inited = true;
