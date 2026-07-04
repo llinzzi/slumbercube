@@ -19,6 +19,8 @@
 
 后端服务：[llinzzi/slumbercube-server](https://github.com/llinzzi/slumbercube-server)
 
+🎬 **演示视频**：[Bilibili BV13ETt6JEUU](https://www.bilibili.com/video/BV13ETt6JEUU)
+
 
 ![夜间使用场景](assets/0.jpg)
 
@@ -251,7 +253,7 @@ y=36  │              [ 歌曲名居中滚动 ]                          │
 
 ## 夜间模式
 
-触发条件: 22:00–6:00
+触发条件: 21:00–6:00（跨天）
 
 - 显示切换到 Canvas 7 段数码管 (12px 灰度像素, 8×8 网格抖动)
 - 对比度降到 `0x01` (极暗)
@@ -261,13 +263,16 @@ y=36  │              [ 歌曲名居中滚动 ]                          │
 
 ## 唤醒机制
 
-| 唤醒源 | `?wake=` | 说明 |
-|--------|----------|------|
-| RTC 定时器 (默认 7:50) | `rtc` | 每天定时唤醒 |
-| GPIO3 按键 | `btn` | 手动按按键唤醒 |
+| 唤醒来源 | `?wake=` | 触发条件 |
+|--------|----------|----------|
+| **PCF85063 外部 RTC 闹钟** | `rtc` | IO0 (`RTC_INT`) 收到 PCF85063 闹钟中断，**主要唤醒来路**（默认 7:50；Server 可用 `alarm.time` 在 `/api/esp` 响应里覆盖，存入 PCF85063 闹钟寄存器） |
+| ESP32-C3 内部 RTC 定时器 | `rtc` | PCF85063 不可用 / 未配置时的 fallback，由 `esp_sleep_enable_timer_wakeup()` 触发 |
+| GPIO3 按键 (SW12) | `btn` | 短按 = 睡眠，长按 = 切歌，三击 = 重置配网 |
 | 冷启动 (上电/烧录) | `sys` | 第一次启动 |
 
 唤醒源在启动最早期通过 `esp_sleep_get_wakeup_cause()` 检测，随后拼接到 `/api/esp` URL 中。
+
+> **注意**：`ESP_SLEEP_WAKEUP_GPIO` 这一路会被两个引脚共用——`CONFIG_PCF85063_INT_GPIO` (IO0) 走 rtc 分支、其它命中走 btn 分支（`main.c` L232-245）。
 
 ---
 
@@ -302,6 +307,12 @@ GET http://{server}:3000/api/esp/{device_id}?wake={src}&t={temp}&h={humidity}
     "tempMin": "22",
     "textDay": "小雨",
     "textNight": "阴"
+  },
+  "alarm": {
+    "enabled": true,
+    "time": "07:50",
+    "weekend_saturday": false,
+    "weekend_sunday": true
   }
 }
 ```
@@ -319,6 +330,10 @@ GET http://{server}:3000/api/esp/{device_id}?wake={src}&t={temp}&h={humidity}
 | `weather.tempMin` | string | 今日最低温 |
 | `weather.textDay` | string | 白天天气 |
 | `weather.textNight` | string | 夜间天气 |
+| `alarm.enabled` | bool | 是否启用 PCF85063 闹钟与自动唤醒。`true` = 启用（按 `alarm.time` 设闹钟，到点自动唤起）；`false` = **整体关闭**——不写 PCF85063 闹钟，且 ESP 内部 timer 也不启用，仅保留按键唤醒 |
+| `alarm.time` | string | 闹钟时间，`"HH:MM"` 24h 制，写入 PCF85063 闹钟寄存器；缺省回退到 `CONFIG_WAKEUP_HOUR/MINUTE` |
+| `alarm.weekend_saturday` | bool | 周六是否触发闹钟（`false` = 跳过当天，避免周末被吵醒） |
+| `alarm.weekend_sunday` | bool | 周日是否触发闹钟（`false` = 跳过当天） |
 
 ### 响应示例 (无音乐)
 

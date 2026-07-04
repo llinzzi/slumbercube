@@ -5,11 +5,13 @@
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
 #include "ui/ui.h"
 
 static const char *TAG = "LVGL_ADAPTER";
 static lv_display_t *g_disp = NULL;
 static uint8_t *g_i4_buffer = NULL;
+static SemaphoreHandle_t g_lvgl_mutex = NULL;
 
 static void lvgl_task(void *arg);
 
@@ -64,7 +66,18 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
             .length = (size_t)row_bytes * height * 8,
             .tx_buffer = g_i4_buffer + (size_t)y_start * row_bytes
         };
-        spi_device_polling_transmit(ssd1322_get_spi_handle(), &t);
+        /* Queue + timed wait: the old polling_transmit had no timeout and
+         * could hang forever if the SPI DMA completion interrupt was lost
+         * (CS is hardwired to GND so the bus is always selected). A hung
+         * SPI transfer inside lv_timer_handler starves IDLE and triggers
+         * the task watchdog after 5 s. */
+        spi_device_queue_trans(ssd1322_get_spi_handle(), &t, portMAX_DELAY);
+        spi_transaction_t *ret_trans = NULL;
+        esp_err_t spi_err = spi_device_get_trans_result(
+            ssd1322_get_spi_handle(), &ret_trans, pdMS_TO_TICKS(100));
+        if (spi_err != ESP_OK) {
+            ESP_LOGE(TAG, "SPI transmit timeout, display may be corrupted");
+        }
     }
 
     lv_display_flush_ready(disp);
@@ -73,6 +86,12 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 esp_err_t lvgl_adapter_init(void)
 {
     lv_init();
+
+    g_lvgl_mutex = xSemaphoreCreateMutex();
+    if (!g_lvgl_mutex) {
+        ESP_LOGE(TAG, "Failed to create LVGL mutex");
+        return ESP_ERR_NO_MEM;
+    }
 
     g_disp = lv_display_create(LCD_H_RES, LCD_V_RES);
     if (!g_disp) {
@@ -138,8 +157,12 @@ static void lvgl_task(void *arg)
     ESP_LOGI(TAG, "Starting LVGL task");
     uint32_t count = 0;
     while (1) {
-        uint32_t t0 = lv_tick_get();
-        lv_timer_handler();
+        uint32_t t0 = 0;
+        if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(50)) == pdTRUE) {
+            t0 = lv_tick_get();
+            lv_timer_handler();
+            xSemaphoreGive(g_lvgl_mutex);
+        }
         uint32_t dt = lv_tick_elaps(t0);
         if (dt > 200) {
             ESP_LOGW(TAG, "lv_timer_handler slow: %u ms", (unsigned)dt);
@@ -157,8 +180,15 @@ lv_display_t* lvgl_adapter_get_display(void)
     return g_disp;
 }
 
+/* Force a full-screen render from the main task. Serialises against
+ * lvgl_task via g_lvgl_mutex so that two tasks never enter LVGL's
+ * lv_timer_handler / rendering engine concurrently, which would
+ * trigger an "Invalidate area is not allowed during rendering"
+ * assertion inside lv_inv_area(). */
 void lvgl_adapter_refr_now(void)
 {
-    lv_timer_handler();
-    lv_refr_now(g_disp);
+    if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+        lv_timer_handler();
+        xSemaphoreGive(g_lvgl_mutex);
+    }
 }

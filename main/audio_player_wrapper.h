@@ -11,7 +11,8 @@ extern "C" {
 
 /* Alarm config parsed from /api/esp "alarm" field (HH:MM string). */
 typedef struct {
-    bool valid;            /* true after a successful parse */
+    bool valid;            /* true after a successful parse of time/weekend flags */
+    bool disabled;         /* server explicitly sent enabled=false → fully off */
     uint8_t hour;
     uint8_t minute;
     bool weekend_saturday; /* false → skip alarm on Saturday */

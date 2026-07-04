@@ -407,18 +407,32 @@ static void audio_parse_radio(cJSON *root)
 }
 
 /* Parse alarm field from /api/esp JSON.
- * Expected format: {"alarm":{"enabled":true,"time":"07:50",...}} */
+ * Expected format: {"alarm":{"enabled":true,"time":"07:50",...}}
+ *
+ * Three terminal states:
+ *   - alarm object missing / malformed  → valid=false, disabled=false
+ *   - enabled=false                     → valid=false, disabled=true
+ *                                         (caller skips PCF85063 arm + internal timer)
+ *   - enabled=true + valid time/weekend → valid=true,  disabled=false
+ */
 static void audio_parse_alarm(cJSON *root)
 {
-    s_alarm_config.valid = false;
+    s_alarm_config.valid    = false;
+    s_alarm_config.disabled = false;
 
     cJSON *j_alarm = cJSON_GetObjectItem(root, "alarm");
     if (!j_alarm || !cJSON_IsObject(j_alarm)) return;
 
-    /* Must be explicitly enabled by the server. */
     cJSON *j_enabled = cJSON_GetObjectItem(j_alarm, "enabled");
-    if (!j_enabled || !cJSON_IsBool(j_enabled) ||
-        !cJSON_IsTrue(j_enabled)) return;
+    if (!j_enabled || !cJSON_IsBool(j_enabled)) return;
+
+    /* Server explicitly disabled the alarm — record and bail. */
+    if (cJSON_IsFalse(j_enabled)) {
+        s_alarm_config.disabled = true;
+        ESP_LOGI(TAG, "Alarm: server disabled");
+        return;
+    }
+    if (!cJSON_IsTrue(j_enabled)) return;
 
     /* "time": "HH:MM" */
     cJSON *j_time = cJSON_GetObjectItem(j_alarm, "time");

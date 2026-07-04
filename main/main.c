@@ -85,6 +85,10 @@ static void apply_pcf85063_time(void)
              dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
 }
 
+/* When the server explicitly disables the alarm (alarm.enabled=false),
+ * srv->valid will also be false, so this returns false here. The arm path
+ * short-circuits earlier, leaving no PCF85063 alarm to skip — the device
+ * can only be woken by the button in that mode. */
 static bool should_skip_alarm_today(void)
 {
     const audio_alarm_config_t *srv = audio_get_alarm_config();
@@ -99,8 +103,18 @@ static bool should_skip_alarm_today(void)
 static bool arm_pcf85063_alarm_wakeup(void)
 {
     if (!pcf85063_is_present()) return false;
-    uint8_t wake_h = CONFIG_WAKEUP_HOUR, wake_m = CONFIG_WAKEUP_MINUTE;
+
+    /* Server explicitly disabled the alarm — honour it. Leave PCF85063
+     * registers untouched (whatever they were set to last cycle) and do not
+     * raise the IO0 wake pin. The caller will then also skip the internal
+     * timer fallback, leaving only the button to wake the device. */
     const audio_alarm_config_t *srv = audio_get_alarm_config();
+    if (srv && srv->disabled) {
+        ESP_LOGW(TAG, "PCF85063: server disabled alarm, skipping arm");
+        return false;
+    }
+
+    uint8_t wake_h = CONFIG_WAKEUP_HOUR, wake_m = CONFIG_WAKEUP_MINUTE;
     if (srv && srv->valid) {
         wake_h = srv->hour; wake_m = srv->minute;
         ESP_LOGI(TAG, "PCF85063: using server alarm %02d:%02d", wake_h, wake_m);
@@ -618,10 +632,8 @@ void app_main(void)
             }
         }
 
-        /* Full-screen refresh every second. lvgl_task updates the
-         * label text; this forces a synchronous render from the main
-         * task context. SPI transfers are now protected by a critical
-         * section (portDISABLE_INTERRUPTS in lvgl_flush_cb). */
+        /* Full-screen refresh every second. Serialised against
+         * lvgl_task via g_lvgl_mutex inside lvgl_adapter_refr_now(). */
         lvgl_adapter_refr_now();
 
         vTaskDelay(pdMS_TO_TICKS(1000));
@@ -670,7 +682,11 @@ void app_main(void)
 #endif
 
 #if CONFIG_PCF85063_ENABLE
-    if (!rtc_alarm_armed)
+    /* Fall back to internal RTC timer only when PCF85063 is unavailable;
+     * a server-disabled alarm must NOT auto-wake either. */
+    const audio_alarm_config_t *srv_alarm = audio_get_alarm_config();
+    bool user_disabled = (srv_alarm && srv_alarm->disabled);
+    if (!rtc_alarm_armed && !user_disabled)
 #endif
     {
         time_t now = time(NULL);

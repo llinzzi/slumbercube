@@ -13,9 +13,14 @@ CONFIG_AUDIO_PLAYER_ENABLE_HTTP_STREAM=y
 CONFIG_LV_FONT_FMT_TXT_LARGE=y
 # CONFIG_LV_FONT_MONTSERRAT_14 is not set
 
-# Night mode starts at 23:00 (was 22:00)
-CONFIG_NIGHT_START_HOUR=23
-CONFIG_NIGHT_START_MINUTE=59
+# Night mode: 21:00 → 06:00 (crosses midnight). Pinned here so the
+# default in Kconfig.projbuild doesn't drift on rebuilds.
+CONFIG_NIGHT_START_HOUR=21
+CONFIG_NIGHT_START_MINUTE=0
+
+# ESP32-C3-MINI-1-N4 has 4MB flash; partitions.csv needs the full
+# 4032K factory partition, so override the IDF default of 2MB.
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 
 # Disable HTTPS in esp_http_client — not used, saves heap for audio streaming
 # CONFIG_ESP_HTTP_CLIENT_ENABLE_HTTPS is not set
