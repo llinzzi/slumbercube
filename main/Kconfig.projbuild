@@ -4,7 +4,7 @@ menu "SlumberCube Configuration"
         config NIGHT_START_HOUR
             int "Night mode start hour (0-23)"
             range 0 23
-            default 21
+            default 23
         config NIGHT_START_MINUTE
             int "Night mode start minute (0-59)"
             range 0 59
