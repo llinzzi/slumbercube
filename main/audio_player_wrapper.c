@@ -154,6 +154,7 @@ static audio_http_stream_handle_t s_http_stream = NULL;
 static bool s_i2s_ready = false;
 static bool s_mixer_ready = false;
 static bool s_playback_active = false;  /* true only when playback actually started */
+static volatile bool s_shutting_down = false; /* set by audio_deinit, checked by i2s_write */
 static const char *s_status = NULL;
 static int s_content_length = 0;
 
@@ -183,6 +184,12 @@ static void apply_volume(void *buf, size_t len)
 static esp_err_t i2s_write(void *audio_buffer, size_t len,
                            size_t *bytes_written, uint32_t timeout_ms)
 {
+    /* Return an error during shutdown so the mixer drains its queue
+     * and exits cleanly before we delete the I2S channel. */
+    if (s_shutting_down) {
+        *bytes_written = 0;
+        return ESP_FAIL;
+    }
     apply_volume(audio_buffer, len);
     /* Cap timeout to prevent watchdog reset if I2S stalls */
     if (timeout_ms > 100) timeout_ms = 100;
@@ -531,6 +538,8 @@ esp_err_t audio_init(void)
     }
     if (s_i2s_ready) return ESP_OK;
 
+    s_shutting_down = false;
+
     ESP_LOGI(TAG, "Init I2S (SDIN=%d SCLK=%d WS=%d)",
              CONFIG_PIN_I2S_SDIN, CONFIG_PIN_I2S_SCLK, CONFIG_PIN_I2S_LROUT);
 
@@ -780,6 +789,12 @@ const weather_data_t *audio_get_weather(void)
 
 void audio_deinit(void)
 {
+    /* Signal the mixer (via i2s_write callback) to drain and exit before
+     * we delete the I2S channel. audio_stop() below closes the HTTP stream
+     * and deletes the decoder; the mixer sees the shutdown flag on its next
+     * I2S write and exits cleanly. */
+    s_shutting_down = true;
+
     audio_stop();
 
     /* Prevent stale weather/radio from persisting across fetches. */

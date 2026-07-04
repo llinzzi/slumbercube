@@ -129,33 +129,17 @@ void wifi_mark_radio_started(void)
 
 static void sntp_init_time(void)
 {
-    ESP_LOGI(TAG, "Initializing SNTP");
+    /* PCF85063 already set the system clock at boot, so we don't need to
+     * block on SNTP. Fire-and-forget: start the NTP client in the background;
+     * lwIP runs SNTP polls on its own timer and corrects the clock gradually.
+     * The next wake cycle will sync PCF85063 from the corrected time. */
+    ESP_LOGI(TAG, "Starting SNTP (background)");
 
     wifi_set_timezone();
-
     sntp_setservername(0, "pool.ntp.org");
     sntp_setservername(1, "time.nist.gov");
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
     sntp_init();
-
-    // Wait for time to be set, polling up to 10 seconds
-    int retry = 0;
-    const int max_retry = 20;
-    time_t now = 0;
-    struct tm timeinfo = {0};
-    for (retry = 0; retry < max_retry; retry++) {
-        vTaskDelay(pdMS_TO_TICKS(500));
-        time(&now);
-        localtime_r(&now, &timeinfo);
-        if (timeinfo.tm_year > (2020 - 1900)) {
-            ESP_LOGI(TAG, "SNTP sync success (%dms): %04d-%02d-%02d %02d:%02d:%02d",
-                     (retry + 1) * 500,
-                     timeinfo.tm_year + 1900, timeinfo.tm_mon + 1, timeinfo.tm_mday,
-                     timeinfo.tm_hour, timeinfo.tm_min, timeinfo.tm_sec);
-            return;
-        }
-    }
-    ESP_LOGW(TAG, "SNTP sync failed after %dms, time: %ld", max_retry * 500, (long)now);
 }
 
 static bool s_netif_inited = false;
@@ -164,13 +148,7 @@ esp_err_t wifi_ensure_netif(void)
 {
     if (s_netif_inited) return ESP_OK;
 
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_ERROR_CHECK(nvs_flash_erase());
-        ret = nvs_flash_init();
-    }
-    ESP_ERROR_CHECK(ret);
-
+    /* NVS is initialised centrally in app_main() — no need to re-init here. */
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_netif_inited = true;
@@ -314,16 +292,7 @@ static const char *NVS_KEY_TIME_SET = "time_set";
 
 bool wifi_is_time_set(void)
 {
-    // Initialize NVS first (required after deep sleep reboot)
-    esp_err_t ret = nvs_flash_init();
-    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS needs erase, erasing...");
-        nvs_flash_erase();
-        ret = nvs_flash_init();
-    }
-    if (ret != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_flash_init failed: %s", esp_err_to_name(ret));
-    }
+    /* NVS is initialised centrally in app_main(). */
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
@@ -377,21 +346,7 @@ esp_err_t wifi_creds_load(wifi_creds_t *out)
     if (out == NULL) return ESP_ERR_INVALID_ARG;
     memset(out, 0, sizeof(*out));
 
-    /* Make sure NVS is initialised. wifi_creds_load() can be called before
-     * wifi_ensure_netif() (e.g. main.c's first-boot check), so we init
-     * defensively here. nvs_flash_init() is idempotent on a healthy
-     * partition; if it fails with NEW_VERSION_FOUND, fall through to
-     * ESP_ERR_NOT_FOUND since the user's saved creds are effectively
-     * gone. */
-    esp_err_t init = nvs_flash_init();
-    if (init == ESP_ERR_NVS_NO_FREE_PAGES || init == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS partition needs erase, clearing creds");
-        nvs_flash_erase();
-        nvs_flash_init();
-    } else if (init != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_flash_init failed: %s", esp_err_to_name(init));
-        return init;
-    }
+    /* NVS is initialised centrally in app_main(). */
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(WIFI_CREDS_NAMESPACE, NVS_READONLY, &handle);

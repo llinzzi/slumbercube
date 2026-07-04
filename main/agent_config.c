@@ -24,18 +24,7 @@ esp_err_t agent_config_load(agent_config_t *out)
     out->host[sizeof(out->host) - 1] = '\0';
     out->enabled = false;
 
-    /* Defensive NVS init — mirrors wifi_creds_load() in main/wifi.c. This
-     * function may be called from audio_init() before wifi_ensure_netif()
-     * on first boot, so we can't rely on the caller having initialised NVS. */
-    esp_err_t init = nvs_flash_init();
-    if (init == ESP_ERR_NVS_NO_FREE_PAGES || init == ESP_ERR_NVS_NEW_VERSION_FOUND) {
-        ESP_LOGW(TAG, "NVS partition needs erase, clearing agent_cfg");
-        nvs_flash_erase();
-        nvs_flash_init();
-    } else if (init != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_flash_init failed: %s, using defaults", esp_err_to_name(init));
-        return init;
-    }
+    /* NVS is initialised centrally in app_main(). */
 
     nvs_handle_t handle;
     esp_err_t err = nvs_open(AGENT_NAMESPACE, NVS_READONLY, &handle);
