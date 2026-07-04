@@ -632,10 +632,8 @@ void app_main(void)
             }
         }
 
-        /* Full-screen refresh every second. lvgl_task updates the
-         * label text; this forces a synchronous render from the main
-         * task context. SPI transfers are now protected by a critical
-         * section (portDISABLE_INTERRUPTS in lvgl_flush_cb). */
+        /* Full-screen refresh every second. Serialised against
+         * lvgl_task via g_lvgl_mutex inside lvgl_adapter_refr_now(). */
         lvgl_adapter_refr_now();
 
         vTaskDelay(pdMS_TO_TICKS(1000));
