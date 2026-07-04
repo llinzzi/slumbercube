@@ -40,6 +40,7 @@ static volatile bool s_audio_playing = false;
 static volatile bool s_audio_toggle_request = false;
 static volatile bool s_provisioning_request = false;   /* triple-click → reconfig */
 static volatile bool s_in_provisioning    = false;     /* true while captive portal is up */
+static bool s_rtc_alarm_armed          = false;     /* set after arm_pcf85063_alarm_wakeup() */
 static bool s_normal_mode              = false;     /* true only when we reached the
                                                         * post-provisioning "normal operation"
                                                         * page (NVS creds at boot, OR
@@ -114,10 +115,16 @@ static bool arm_pcf85063_alarm_wakeup(void)
         return false;
     }
 
-    uint8_t wake_h = CONFIG_WAKEUP_HOUR, wake_m = CONFIG_WAKEUP_MINUTE;
+    /* Values from Kconfig (CONFIG_WAKEUP_HOUR/MINUTE) and from the server
+     * are both local time (CST, UTC+8). PCF85063 stores UTC internally and
+     * compares alarm registers against its UTC clock — convert to UTC. */
+    uint8_t wake_h = (uint8_t)(((int)CONFIG_WAKEUP_HOUR + 24 - 8) % 24);
+    uint8_t wake_m = CONFIG_WAKEUP_MINUTE;
     if (srv && srv->valid) {
-        wake_h = srv->hour; wake_m = srv->minute;
-        ESP_LOGI(TAG, "PCF85063: using server alarm %02d:%02d", wake_h, wake_m);
+        wake_h = (uint8_t)(((int)srv->hour + 24 - 8) % 24);
+        wake_m = srv->minute;
+        ESP_LOGI(TAG, "PCF85063: server alarm %02d:%02d CST -> %02d:%02d UTC",
+                 srv->hour, srv->minute, wake_h, wake_m);
     }
     pcf85063_alarm_t alarm = { .enable = true, .minute = wake_m, .hour = wake_h,
                                 .day = PCF85063_ALARM_DISABLE,
@@ -131,8 +138,20 @@ static bool arm_pcf85063_alarm_wakeup(void)
                                .pull_down_en = GPIO_PULLDOWN_DISABLE,
                                .intr_type = GPIO_INTR_DISABLE };
     gpio_config(&int_cfg);
-    ESP_LOGI(TAG, "PCF85063: alarm armed for %02d:%02d (IO%d wake)",
-             wake_h, wake_m, CONFIG_PCF85063_INT_GPIO);
+
+    /* Read back current PCF85063 time so the log shows both the alarm
+     * target and the clock it's comparing against. */
+    pcf85063_datetime_t now_dt;
+    if (pcf85063_read_datetime(&now_dt) == ESP_OK) {
+        ESP_LOGI(TAG, "PCF85063: current time %04u-%02u-%02u %02u:%02u:%02u UTC, "
+                 "alarm armed for %02d:%02d UTC (IO%d wake)",
+                 now_dt.year, now_dt.month, now_dt.day,
+                 now_dt.hour, now_dt.minute, now_dt.second,
+                 wake_h, wake_m, CONFIG_PCF85063_INT_GPIO);
+    } else {
+        ESP_LOGI(TAG, "PCF85063: alarm armed for %02d:%02d UTC (IO%d wake)",
+                 wake_h, wake_m, CONFIG_PCF85063_INT_GPIO);
+    }
     return true;
 }
 #endif
@@ -469,6 +488,14 @@ void app_main(void)
             clock_screen_set_station_name("Fetching weather...");
             esp_err_t fetch_rc = audio_fetch_api();
             bool got_weather = (fetch_rc == ESP_OK);
+
+            /* Arm PCF85063 alarm immediately after parsing the server
+             * response — don't wait until deep sleep. The alarm registers
+             * are written now; only the GPIO wake-mask + hold are applied
+             * later in the sleep path. */
+#if CONFIG_PCF85063_ENABLE
+            s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
+#endif
             if (fetch_rc == ESP_ERR_NOT_SUPPORTED) {
                 ESP_LOGI(TAG, "Agent disabled by config, clock-only mode");
                 /* Override the "Fetching weather..." placeholder — without
@@ -667,8 +694,7 @@ void app_main(void)
     uint64_t wake_mask = (1ULL << CONFIG_WAKEUP_GPIO);
 
 #if CONFIG_PCF85063_ENABLE
-    bool rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
-    if (rtc_alarm_armed) {
+    if (s_rtc_alarm_armed) {
         wake_mask |= (1ULL << CONFIG_PCF85063_INT_GPIO);
         gpio_hold_en(CONFIG_PCF85063_INT_GPIO);
     }
@@ -683,10 +709,12 @@ void app_main(void)
 
 #if CONFIG_PCF85063_ENABLE
     /* Fall back to internal RTC timer only when PCF85063 is unavailable;
-     * a server-disabled alarm must NOT auto-wake either. */
+     * a server-disabled alarm must NOT auto-wake either.
+     * s_rtc_alarm_armed was set by arm_pcf85063_alarm_wakeup() right after
+     * the /api/esp fetch, not here in the sleep path. */
     const audio_alarm_config_t *srv_alarm = audio_get_alarm_config();
     bool user_disabled = (srv_alarm && srv_alarm->disabled);
-    if (!rtc_alarm_armed && !user_disabled)
+    if (!s_rtc_alarm_armed && !user_disabled)
 #endif
     {
         time_t now = time(NULL);
@@ -704,6 +732,7 @@ void app_main(void)
                  CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
     }
 
-    // Enter deep sleep
+    // Enter deep sleep (brief delay so UART TX finishes before RTC domain powers down)
+    vTaskDelay(pdMS_TO_TICKS(100));
     esp_deep_sleep_start();
 }

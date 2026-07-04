@@ -329,10 +329,10 @@ static void audio_parse_weather(cJSON *root)
         cJSON *j_tday   = cJSON_GetObjectItem(j_weather, "textDay");
         cJSON *j_tnight = cJSON_GetObjectItem(j_weather, "textNight");
 
-        d->current  = (j_temp  && cJSON_IsString(j_temp))  ? atoi(j_temp->valuestring)  : 0;
-        d->high     = (j_tmax  && cJSON_IsString(j_tmax))  ? atoi(j_tmax->valuestring)  : 0;
-        d->low      = (j_tmin  && cJSON_IsString(j_tmin))  ? atoi(j_tmin->valuestring)  : 0;
-        d->humidity = (j_humid && cJSON_IsString(j_humid)) ? atoi(j_humid->valuestring) : 0;
+        d->current  = (j_temp  && (cJSON_IsString(j_temp)  || cJSON_IsNumber(j_temp)))  ? atoi(j_temp->valuestring)  : 0;
+        d->high     = (j_tmax  && (cJSON_IsString(j_tmax)  || cJSON_IsNumber(j_tmax)))  ? atoi(j_tmax->valuestring)  : 0;
+        d->low      = (j_tmin  && (cJSON_IsString(j_tmin)  || cJSON_IsNumber(j_tmin)))  ? atoi(j_tmin->valuestring)  : 0;
+        d->humidity = (j_humid && (cJSON_IsString(j_humid) || cJSON_IsNumber(j_humid))) ? atoi(j_humid->valuestring) : 0;
 
         if (j_text && cJSON_IsString(j_text)) {
             strncpy(d->current_text, j_text->valuestring, sizeof(d->current_text) - 1);
@@ -349,6 +349,15 @@ static void audio_parse_weather(cJSON *root)
         localtime_r(&now, &tm_now);
         d->month = tm_now.tm_mon + 1;
         d->day   = tm_now.tm_mday;
+
+        /* Guard: if the server sent an empty / partial weather object
+         * (e.g. upstream API timeout), reject it instead of showing
+         * 0°/0° and "n/a" on the display. */
+        if (d->current == 0 && d->high == 0 && d->low == 0 &&
+            d->current_text[0] == '\0') {
+            ESP_LOGW(TAG, "Weather: object present but no usable fields");
+            return;
+        }
 
         w.count = 1;
         w.valid = true;
@@ -768,6 +777,10 @@ const weather_data_t *audio_get_weather(void)
 void audio_deinit(void)
 {
     audio_stop();
+
+    /* Prevent stale weather/radio from persisting across fetches. */
+    s_cached_weather.valid = false;
+    s_radio_url[0] = '\0';
 
     /* Force the next audio_init() to re-read agent_cfg from NVS — the user
      * may have just re-provisioned with a new host. */
