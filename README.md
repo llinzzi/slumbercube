@@ -19,6 +19,8 @@
 
 后端服务：[llinzzi/slumbercube-server](https://github.com/llinzzi/slumbercube-server)
 
+🎬 **演示视频**：[Bilibili BV13ETt6JEUU](https://www.bilibili.com/video/BV13ETt6JEUU)
+
 
 ![夜间使用场景](assets/0.jpg)
 
