@@ -114,10 +114,16 @@ static bool arm_pcf85063_alarm_wakeup(void)
         return false;
     }
 
-    uint8_t wake_h = CONFIG_WAKEUP_HOUR, wake_m = CONFIG_WAKEUP_MINUTE;
+    /* Values from Kconfig (CONFIG_WAKEUP_HOUR/MINUTE) and from the server
+     * are both local time (CST, UTC+8). PCF85063 stores UTC internally and
+     * compares alarm registers against its UTC clock — convert to UTC. */
+    uint8_t wake_h = (uint8_t)(((int)CONFIG_WAKEUP_HOUR + 24 - 8) % 24);
+    uint8_t wake_m = CONFIG_WAKEUP_MINUTE;
     if (srv && srv->valid) {
-        wake_h = srv->hour; wake_m = srv->minute;
-        ESP_LOGI(TAG, "PCF85063: using server alarm %02d:%02d", wake_h, wake_m);
+        wake_h = (uint8_t)(((int)srv->hour + 24 - 8) % 24);
+        wake_m = srv->minute;
+        ESP_LOGI(TAG, "PCF85063: server alarm %02d:%02d CST -> %02d:%02d UTC",
+                 srv->hour, srv->minute, wake_h, wake_m);
     }
     pcf85063_alarm_t alarm = { .enable = true, .minute = wake_m, .hour = wake_h,
                                 .day = PCF85063_ALARM_DISABLE,
