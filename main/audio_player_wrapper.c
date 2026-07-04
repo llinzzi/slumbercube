@@ -258,7 +258,7 @@ static esp_err_t audio_http_get_json(cJSON **out_root)
             vTaskDelay(pdMS_TO_TICKS(2000));
         }
 
-        static char resp_buf[4096]; /* 2KB was marginal for weather+radio+alarm JSON */
+        static char resp_buf[2048];
         int resp_len = 0;
         esp_http_client_config_t cfg = {
             .url = radio_api_url(),
