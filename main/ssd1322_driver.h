@@ -57,6 +57,15 @@ void ssd1322_display_on(void);
 void ssd1322_clear_display(void);
 
 /**
+ * @brief 设置列/行地址窗口
+ * @param col_start 起始列地址 (0x1C..0x5B, 每列=4像素)
+ * @param col_end   结束列地址
+ * @param row_start 起始行 (0..63)
+ * @param row_end   结束行
+ */
+void ssd1322_set_window(uint8_t col_start, uint8_t col_end, uint8_t row_start, uint8_t row_end);
+
+/**
  * @brief 设置对比度电流 (0xC1)，范围 0x00-0xFF
  */
 void ssd1322_set_contrast(uint8_t val);
