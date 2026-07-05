@@ -374,6 +374,15 @@ void clock_screen_show_button_hint(void)
     lv_obj_clear_flag(station_label, LV_OBJ_FLAG_HIDDEN);
 }
 
+void clock_screen_show_button_hint_agent_off(void)
+{
+    if (!station_label) return;
+    if (night_mode) return;
+
+    lv_label_set_text(station_label, "左键同步时间 · 右键睡眠");
+    lv_obj_clear_flag(station_label, LV_OBJ_FLAG_HIDDEN);
+}
+
 void clock_screen_set_data(const weather_data_t *data)
 {
     weather = data;

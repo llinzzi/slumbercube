@@ -51,9 +51,10 @@ static void log_heap(const char *label)
 #define EVENT_PROVISIONING_REQUEST (1 << 2)
 #define EVENT_NEXT_TRACK           (1 << 3)
 #define EVENT_NIGHT_TOGGLE         (1 << 4)
+#define EVENT_NTP_SYNC             (1 << 5)
 #define EVENT_BUTTON_MASK          (EVENT_SLEEP_PENDING | EVENT_AUDIO_TOGGLE | \
                                     EVENT_PROVISIONING_REQUEST | EVENT_NEXT_TRACK | \
-                                    EVENT_NIGHT_TOGGLE)
+                                    EVENT_NIGHT_TOGGLE | EVENT_NTP_SYNC)
 
 static TaskHandle_t s_main_task = NULL;  /* set at top of app_main() */
 
@@ -130,6 +131,18 @@ static bool should_skip_alarm_today(void)
 static bool arm_pcf85063_alarm_wakeup(void)
 {
     if (!pcf85063_is_present()) return false;
+
+    /* Agent is disabled entirely — no /api/esp fetch, no alarm. Disable the
+     * PCF85063 interrupt and clear any pending flag so a stale alarm from a
+     * previous cycle doesn't leave the INT pin asserted. Same behaviour as
+     * server-disabled: no alarm, button-only wake. */
+    agent_config_t agent_cfg;
+    if (agent_config_load(&agent_cfg) == ESP_OK && !agent_cfg.enabled) {
+        ESP_LOGW(TAG, "PCF85063: agent disabled, disabling alarm");
+        pcf85063_clear_alarm_flag();
+        pcf85063_enable_alarm_int(false);
+        return false;
+    }
 
     /* Server explicitly disabled the alarm — honour it. Leave PCF85063
      * registers untouched (whatever they were set to last cycle) and do not
@@ -284,13 +297,21 @@ static void right_triple_click_cb(void *button_handle, void *usr_data)
 
 /* ── 左键 (媒体) callbacks ─────────────────────────────────────── */
 
-/* 左键 short click: toggle audio play/pause. Triggers WiFi connect + fetch
- * if not already connected. No-op in night mode or provisioning. */
+/* 左键 short click: agent enabled → toggle audio; agent disabled → NTP sync. */
 static void left_short_click_cb(void *button_handle, void *usr_data)
 {
 #if CONFIG_AUDIO_ENABLE
     if (!s_normal_mode) {
         ESP_LOGI(TAG, "左键 short click — ignored (normal=%d)", s_normal_mode);
+        return;
+    }
+    /* Agent disabled → NTP time sync. Agent enabled → audio toggle. */
+    agent_config_t acfg;
+    bool agent_on = (agent_config_load(&acfg) == ESP_OK && acfg.enabled);
+    if (!agent_on) {
+        ESP_LOGI(TAG, "左键 short click → NTP sync (agent off)");
+        clock_screen_set_station_name("同步时间...");
+        if (s_main_task) xTaskNotify(s_main_task, EVENT_NTP_SYNC, eSetBits);
         return;
     }
     ESP_LOGI(TAG, "左键 short click → audio toggle");
@@ -578,27 +599,37 @@ void app_main(void)
         /* ── Networking: only RTC alarm goes online. ────────────── */
 
         if (s_wake_kind != WAKE_RTC) {
-            /* ── No network: show indoor env + alarm time ── */
+            /* ── No network: show indoor env; alarm only when agent enabled ── */
             ESP_LOGI(TAG, "No-network display (wake=%d)", s_wake_kind);
             clock_screen_set_indoor_full(s_indoor_t, s_indoor_h);
-#if CONFIG_PCF85063_ENABLE
-            if (pcf85063_is_present()) {
-                pcf85063_alarm_t al;
-                if (pcf85063_read_alarm(&al) == ESP_OK && al.enable
-                    && al.hour != PCF85063_ALARM_DISABLE
-                    && al.minute != PCF85063_ALARM_DISABLE) {
-                    /* PCF85063 stores alarm in UTC; convert to CST for display */
-                    int display_h = ((int)al.hour + 8) % 24;
-                    clock_screen_set_alarm_time(display_h, al.minute);
-                } else {
-                    clock_screen_set_alarm_time(CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
-                }
-            } else
-#endif
             {
-                clock_screen_set_alarm_time(CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
+                agent_config_t acfg_alarm;
+                bool agent_on = (agent_config_load(&acfg_alarm) == ESP_OK && acfg_alarm.enabled);
+                if (agent_on) {
+#if CONFIG_PCF85063_ENABLE
+                    if (pcf85063_is_present()) {
+                        pcf85063_alarm_t al;
+                        if (pcf85063_read_alarm(&al) == ESP_OK && al.enable
+                            && al.hour != PCF85063_ALARM_DISABLE
+                            && al.minute != PCF85063_ALARM_DISABLE) {
+                            /* PCF85063 stores alarm in UTC; convert to CST for display */
+                            int display_h = ((int)al.hour + 8) % 24;
+                            clock_screen_set_alarm_time(display_h, al.minute);
+                        } else {
+                            clock_screen_set_alarm_time(CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
+                        }
+                    } else
+#endif
+                    {
+                        clock_screen_set_alarm_time(CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
+                    }
+                }
+                if (agent_on) {
+                    clock_screen_show_button_hint();
+                } else {
+                    clock_screen_show_button_hint_agent_off();
+                }
             }
-            clock_screen_show_button_hint();
         } else {
             /* ── RTC alarm wake: full network + weather + auto-play ── */
             clock_screen_set_station_name("Connecting WiFi...");
@@ -719,6 +750,24 @@ void app_main(void)
             clock_screen_set_night_mode(is_night);
             ESP_LOGI(TAG, "Night mode applied: %d (override=%d)",
                      is_night, (int)clock_screen_get_night_override());
+        }
+
+        /* 左键 short click → NTP time sync (agent-disabled mode).
+         * wifi_init_sta() connects + starts SNTP in the background.
+         * Wait a few seconds for the first NTP response, then sync PCF85063. */
+        if (notified & EVENT_NTP_SYNC) {
+            wifi_ensure_netif();
+            if (wifi_init_sta() == ESP_OK) {
+#if CONFIG_PCF85063_ENABLE
+                if (pcf85063_is_present()) {
+                    vTaskDelay(pdMS_TO_TICKS(3000));
+                    pcf85063_sync_from_system();
+                }
+#endif
+                clock_screen_set_station_name("时间已更新");
+            } else {
+                clock_screen_set_station_name("WiFi 失败");
+            }
         }
 
 #if CONFIG_AUDIO_ENABLE
@@ -927,10 +976,17 @@ void app_main(void)
     /* Fall back to internal RTC timer only when PCF85063 is unavailable;
      * a server-disabled alarm must NOT auto-wake either.
      * s_rtc_alarm_armed was set by arm_pcf85063_alarm_wakeup() right after
-     * the /api/esp fetch, not here in the sleep path. */
+     * the /api/esp fetch, not here in the sleep path.
+     * When the agent is disabled entirely, skip ALL automatic wakeup —
+     * the device only wakes on button press. */
     const audio_alarm_config_t *srv_alarm = audio_get_alarm_config();
     bool user_disabled = (srv_alarm && srv_alarm->disabled);
-    if (!s_rtc_alarm_armed && !user_disabled)
+    bool agent_off = false;
+    {
+        agent_config_t acfg;
+        agent_off = (agent_config_load(&acfg) == ESP_OK && !acfg.enabled);
+    }
+    if (!s_rtc_alarm_armed && !user_disabled && !agent_off)
 #endif
     {
         time_t now = time(NULL);

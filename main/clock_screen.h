@@ -34,3 +34,6 @@ void clock_screen_set_alarm_time(int hour, int minute);
 
 /* Show button hint at the bottom (no-network display). */
 void clock_screen_show_button_hint(void);
+
+/* Show button hint for agent-disabled mode (left=NTP sync, right=sleep). */
+void clock_screen_show_button_hint_agent_off(void);
