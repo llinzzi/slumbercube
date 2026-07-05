@@ -135,4 +135,14 @@ menu "SlumberCube Configuration"
             depends on PCF85063_ENABLE
     endmenu
 
+    menu "OTA Firmware Updates"
+        config OTA_ENABLE
+            bool "Enable OTA firmware updates"
+            default y
+            help
+                When enabled, the device checks the /api/esp response
+                for an "ota" field. If present and containing an HTTP URL,
+                the firmware is downloaded and installed automatically.
+    endmenu
+
 endmenu

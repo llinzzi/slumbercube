@@ -165,6 +165,7 @@ static char s_radio_song[128] = {0};
 static int s_radio_volume_pct = -1;  /* -1 = not set, fallback to CONFIG */
 static weather_data_t s_cached_weather = {0};
 static audio_alarm_config_t s_alarm_config = {0};
+static char s_ota_url[256] = {0};
 
 
 /* ── Software volume scale (16-bit stereo PCM) ──────────────── */
@@ -485,7 +486,25 @@ const audio_alarm_config_t *audio_get_alarm_config(void)
     return &s_alarm_config;
 }
 
-/* Fetch /api/esp and parse weather + radio fields.
+/* Parse ota field from /api/esp JSON. Expected format:
+ *   {"ota": "http://.../firmware.bin"} */
+static void audio_parse_ota(cJSON *root)
+{
+    s_ota_url[0] = '\0';
+    cJSON *j_ota = cJSON_GetObjectItem(root, "ota");
+    if (j_ota && cJSON_IsString(j_ota) && j_ota->valuestring[0]) {
+        strncpy(s_ota_url, j_ota->valuestring, sizeof(s_ota_url) - 1);
+        s_ota_url[sizeof(s_ota_url) - 1] = '\0';
+        ESP_LOGI(TAG, "OTA URL in /api/esp: %s", s_ota_url);
+    }
+}
+
+const char *audio_get_ota_url(void)
+{
+    return s_ota_url[0] ? s_ota_url : NULL;
+}
+
+/* Fetch /api/esp and parse weather + radio + alarm + ota fields.
  * Used as the boot weather fetch — also caches s_radio_url so
  * audio_play_url() can skip a redundant HTTP round-trip. */
 esp_err_t audio_fetch_api(void)
@@ -497,6 +516,7 @@ esp_err_t audio_fetch_api(void)
     audio_parse_weather(root);
     audio_parse_radio(root);
     audio_parse_alarm(root);
+    audio_parse_ota(root);
     cJSON_Delete(root);
 
     /* Success if we got usable weather data */

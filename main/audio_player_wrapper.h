@@ -85,6 +85,11 @@ esp_err_t audio_agent_reload(void);
  * struct. valid=false until the first successful fetch. */
 const audio_alarm_config_t *audio_get_alarm_config(void);
 
+/* OTA URL from the latest /api/esp response ("ota" JSON field).
+ * Returns NULL if not present. The caller should download and apply
+ * the firmware BEFORE starting audio playback (to maximise available heap). */
+const char *audio_get_ota_url(void);
+
 #ifdef __cplusplus
 }
 #endif

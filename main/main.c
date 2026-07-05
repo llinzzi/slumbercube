@@ -21,6 +21,11 @@
 #include "iot_button.h"
 #include "button_gpio.h"
 #include "shtc3.h"
+#include "fonts_loader.h"
+
+#if CONFIG_OTA_ENABLE
+#include "ota.h"
+#endif
 
 #if CONFIG_PCF85063_ENABLE
 #include "pcf85063.h"
@@ -505,6 +510,13 @@ void app_main(void)
     ESP_ERROR_CHECK(lvgl_adapter_init());
     log_heap("lvgl_init");
 
+    // Load fonts from dedicated flash partition (fonts_loader replaces
+    // font_digital.c / font_station.c in OTA builds)
+    esp_err_t font_err = fonts_loader_init();
+    if (font_err != ESP_OK) {
+        ESP_LOGW(TAG, "Fonts loader failed: %s — display may show \"?\"", esp_err_to_name(font_err));
+    }
+
     // Wait for LVGL task to start
     vTaskDelay(pdMS_TO_TICKS(100));
 
@@ -665,6 +677,24 @@ void app_main(void)
             esp_err_t fetch_rc = audio_fetch_api();
             bool got_weather = (fetch_rc == ESP_OK);
 
+#if CONFIG_OTA_ENABLE
+            /* Check for OTA firmware update BEFORE audio playback.
+             * /api/esp may include an "ota" field with a firmware URL.
+             * ota_perform() reboots on success — it never returns ESP_OK. */
+            {
+                const char *ota_url = audio_get_ota_url();
+                if (ota_url) {
+                    ESP_LOGI(TAG, "OTA update available: %s", ota_url);
+                    ota_perform(ota_url);
+                    /* On failure, continue to audio playback */
+                }
+            }
+#endif
+
+            /* Arm PCF85063 alarm immediately after parsing the server
+             * response — don't wait until deep sleep. The alarm registers
+             * are written now; only the GPIO wake-mask + hold are applied
+             * later in the sleep path. */
 #if CONFIG_PCF85063_ENABLE
             s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
 #endif

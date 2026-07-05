@@ -1,0 +1,9 @@
+# Name,   Type, SubType, Offset,  Size, Flags
+# OTA partition table for SlumberCube ESP32-C3 (4MB flash)
+# Fonts live in a separate partition (0x40) — flashed once over USB, never OTA'd
+nvs,      data, nvs,     ,        0x6000,
+otadata,  data, ota,     ,        0x2000,
+phy_init, data, phy,     ,        0x1000,
+ota_0,    app,  ota_0,   ,        1536K,
+ota_1,    app,  ota_1,   ,        1536K,
+fonts,    0x40, 0x00,    ,        704K,

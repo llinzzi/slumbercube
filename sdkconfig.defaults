@@ -3,7 +3,8 @@ CONFIG_RTC_CLK_SRC_EXT_CRYS=y
 
 # Use custom 1800K factory partition (binary too large for standard 1500K large partition)
 CONFIG_PARTITION_TABLE_CUSTOM=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_ota.csv"
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
 
 # Audio player
 CONFIG_AUDIO_ENABLE=y
