@@ -48,7 +48,7 @@ void ssd1322_display_on(void)
      * VCC charge-pump transient that could cause a white flash. */
     ssd1322_send_cmd(0xC7); ssd1322_send_data(0x00);  // Master contrast = min
     ssd1322_send_cmd(0xAF);  // Display on
-    vTaskDelay(pdMS_TO_TICKS(30));  // Wait for VCC to stabilize
+    vTaskDelay(pdMS_TO_TICKS(15));  // Wait for VCC to stabilize (tYP ≈ 10ms)
     ssd1322_send_cmd(0xC7); ssd1322_send_data(0x01);  // Restore master contrast
     ESP_LOGI(TAG, "Display on");
 }
@@ -175,14 +175,15 @@ esp_err_t ssd1322_init(void)
     ssd1322_send_cmd(0xA6);
     ssd1322_send_cmd(0xA9);                              /* exit partial display */
 
-    /* Clear GDDRAM before turning on display to avoid white flash on wake */
-    ssd1322_clear_display();
+    /* NOTE: GDDRAM clear skipped — the anti-white-flash sequence
+     * (display off → render first frame → display on) already guarantees
+     * that GDDRAM is fully overwritten before the panel lights up.
+     * The ~8ms DMA clear at 10/20MHz SPI is pure overhead on every wake. */
 
     /* NOTE: 0xAF (display on) is now called AFTER first LVGL frame is rendered */
     /* ssd1322_send_cmd(0xAF); */
 
-    vTaskDelay(pdMS_TO_TICKS(100));
     ESP_LOGI(TAG, "SSD1322 initialized");
-    
+
     return ESP_OK;
 }

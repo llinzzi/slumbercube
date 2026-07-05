@@ -526,8 +526,8 @@ void app_main(void)
     ESP_ERROR_CHECK(lvgl_adapter_init());
     log_heap("lvgl_init");
 
-    // Wait for LVGL task to start
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // Wait for LVGL task to start (one tick at 100Hz = 10ms, 20ms is ample)
+    vTaskDelay(pdMS_TO_TICKS(20));
 
     /* Route to one of two pages based on NVS state. No more init-both-then-swap:
      * clock and QR are independent LVGL screens, each loaded only on its own path. */
@@ -557,8 +557,8 @@ void app_main(void)
     // Turn on display AFTER first frame is in GDDRAM — eliminates white flash on wake
     ssd1322_display_on();
 
-    // Wait for UI to load
-    vTaskDelay(pdMS_TO_TICKS(100));
+    // Brief settle before sensor I2C (display already rendered)
+    vTaskDelay(pdMS_TO_TICKS(10));
 
     /* Read indoor sensor on every wake (for no-network display fallback). */
     float s_indoor_t = NAN, s_indoor_h = NAN;
