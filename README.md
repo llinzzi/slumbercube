@@ -134,12 +134,26 @@ flowchart LR
 
 | 位号 | 型号 | 接至 | 触发 | 功能 |
 |------|------|------|------|------|
-| SW1 | TC-6615-5-260G (侧按 5mm) | IO1 | 低电平 | 预留按键 (固件未启用) |
-| SW12 | TC-6615-5-260G (侧按 5mm) | IO3 | 低电平 | 主按键：短按睡眠 / 长按切歌 / 深度睡眠唤醒 |
+| SW1 | TC-6615-5-260G (侧按 5mm) | IO1 | 低电平 | **左键 (媒体)**：短按播放/暂停 / 长按下一首 |
+| SW12 | TC-6615-5-260G (侧按 5mm) | IO3 | 低电平 | **右键 (电源)**：短按睡眠 / 长按切换日夜模式 / 三击重置配网 / 深度睡眠唤醒 |
 | SW13 | TS342A2P 160gf | **IO9** ⚠️ | 低电平 | 预留按键（**三重共用**, 见下） |
 | SW14 | TS342A2P 160gf | CHIP_PU/EN | 低电平 | 硬件复位 |
 
-> ⚠️ **IO9 三重共用**：SW13、SHTC3 SCL、PCF85063 SCL 都接到 IO9。I²C 总线空闲时 SW13 按下会把 SCL 拉低，可能导致 I²C 通信失败。固件目前仅使用 SW12（IO3）和 SW1（IO1 未启用），SW13 暂留空。
+> ⚠️ **IO9 三重共用**：SW13、SHTC3 SCL、PCF85063 SCL 都接到 IO9。I²C 总线空闲时 SW13 按下会把 SCL 拉低，可能导致 I²C 通信失败。固件目前使用 SW1（IO1, 左键）和 SW12（IO3, 右键），SW13 暂留空。
+
+#### 按键使用指南
+
+| 操作 | 右键 (电源键, IO3) | 左键 (媒体键, IO1) |
+|------|-------------------|-------------------|
+| **短按** (< 2s) | 立即进入深度睡眠 | 播放/暂停音频（首次自动连接 WiFi） |
+| **长按** (≥ 2s) | 强制切换日间/夜间显示模式 | 跳过当前曲目，请求下一首 |
+| **三击** | 恢复出厂设置 → 进入配网模式 | — |
+
+**右键** 是唯一能唤醒深度睡眠的按键，也是电源控制键。在任何状态下短按右键都会立即睡眠。
+
+**左键** 仅在非夜间模式且已配置 WiFi 时有效。未连接 WiFi 时短按左键会自动触发 WiFi 连接后再播放。夜间模式下左键操作被忽略。
+
+无网络唤醒（按键唤醒）时，屏幕底部显示 `按左键播放` 提示，室内温湿度和闹钟时间直接展示，不发起 WiFi 连接——WiFi 仅在 RTC 闹钟唤醒或用户按左键时才启动。
 
 ### USB 与接口
 
@@ -157,9 +171,9 @@ USB 数据线 D+_OUT/D-_OUT 经 USBLC6-2SC6 ESD 后直连 ESP32-C3 原生 USB (I
 | GPIO | 功能 | 连接 | 备注 |
 |------|------|------|------|
 | **IO0** | **RTC_INT** | **PCF85063 INT#** | RTC 闹钟/秒中断输出, 可唤醒 ESP32-C3 |
-| IO1 | KEY (预留) | SW1 | 固件未启用 |
+| IO1 | LEFT_KEY | SW1 | 左键 (媒体): 播放暂停/下一首 |
 | IO2 | NS_CTRL | NS4168 CTRL | 功放关断, 低 = 静音 |
-| **IO3** | **KEY / WAKEUP** | **SW12** | **深度睡眠唤醒, 短按/长按识别** |
+| **IO3** | **RIGHT_KEY / WAKEUP** | **SW12** | **右键 (电源): 睡眠/日夜切换/三击重置/深度睡眠唤醒** |
 | IO4 | I2S_SDIN | NS4168 SDATA | |
 | IO5 | I2S_SCLK | NS4168 BCLK | |
 | IO6 | I2S_LRCLK | NS4168 LRCLK | |
@@ -174,7 +188,7 @@ USB 数据线 D+_OUT/D-_OUT 经 USBLC6-2SC6 ESD 后直连 ESP32-C3 原生 USB (I
 | CHIP_PU | EN | SW14 + R5 10K 上拉 | 复位按键, 高 = 运行 |
 
 > SPI CS 硬件接地（SSD1322 始终选中）。
-> 唤醒 GPIO 与主按键共用 IO3。
+> 唤醒 GPIO 与右键 (电源键) 共用 IO3。
 > ESP32-C3 **不再**外接 32.768kHz 晶振（晶振移到 PCF85063）。
 
 ---
@@ -183,10 +197,10 @@ USB 数据线 D+_OUT/D-_OUT 经 USBLC6-2SC6 ESD 后直连 ESP32-C3 原生 USB (I
 
 ```mermaid
 flowchart TD
-    A[深度睡眠] -->|RTC/按键唤醒| B[esp_sleep_get_wakeup_cause]
+    A[深度睡眠] -->|RTC/右键唤醒| B[esp_sleep_get_wakeup_cause]
     B --> C{唤醒源}
     C -->|RTC| D[wake=rtc]
-    C -->|按键| E[wake=btn]
+    C -->|右键| E[wake=btn]
     C -->|冷启动| F[wake=sys]
 
     D --> G[GPIO 早期初始化]
@@ -194,39 +208,53 @@ flowchart TD
     F --> G
 
     G --> H[ssd1322_init<br/>显示保持关闭]
-    H --> I[按键初始化<br/>短按=睡眠, 长按=切歌]
+    H --> I[双键初始化<br/>右键: 短=睡眠 长=日夜 三击=重置<br/>左键: 短=播放 长=下一首]
     I --> J[wifi_set_timezone<br/>CST-8]
-    J --> K[lvgl_adapter_init<br/>L8→I4 DMA]
-    K --> L[clock_screen_create<br/>首帧渲染]
-    L --> M[ssd1322_display_on<br/>防白闪]
+    J --> K[PCF85063 RTC 初始化<br/>读取时间恢复到系统]
+    K --> L[lvgl_adapter_init<br/>L8→I4 DMA]
+    L --> M{首次启动无 WiFi 凭据?}
+    M -->|是| MA[config_screen<br/>QR 码配网页面]
+    M -->|否| MB[clock_screen_create<br/>首帧渲染]
+    MA --> MC[ssd1322_display_on]
+    MB --> MC
 
-    M --> N{夜间模式?}
+    MC --> N{夜间模式?}
 
-    N -->|是| O[跳过 WiFi/天气/音频<br/>7段数码管显示]
-    N -->|否| P[WiFi STA 连接]
-    P --> Q[SNTP 时间同步]
-    Q --> R[读取 SHTC3 传感器]
-    R --> S{Agent 已启用?}
+    N -->|是| O[跳过 WiFi/天气/音频<br/>极暗数码管显示]
+    N -->|否| P{唤醒源 = RTC?}
+
+    P -->|否 (按键唤醒)| NA[无网络模式<br/>显示室内温湿度 + 闹钟时间<br/>底部提示: 按左键播放]
+    P -->|是 (RTC 闹钟)| Q[WiFi STA 连接]
+    Q --> R[SNTP 时间同步]
+    R --> RC[PCF85063 时间回写]
+    RC --> S{Agent 已启用?}
     S -->|否| SA[clock-only 模式<br/>跳过 /api/esp]
     S -->|是| T[audio_fetch_api<br/>单次 HTTP GET /api/esp]
     T --> U[解析天气 + 电台URL]
     U --> V{有电台URL?}
     V -->|是| W[audio_play_url<br/>HTTP 流 MP3 解码]
     V -->|否| WA[跳过音频]
+    T --> TB[arm_pcf85063_alarm<br/>写入下次闹钟]
 
-    O --> X[主循环 3600s]
+    O --> X[主循环 1800s]
+    NA --> X
     SA --> X
     W --> X
     WA --> X
 
-    X --> Y{每秒检查}
-    Y -->|短按/超时| Z[深度睡眠]
-    Y -->|长按| AA[切换播放/停止]
-    Y -->|歌曲结束| AB[auto_advance<br/>请求下一首]
-    Y -->|每10秒| AC[刷新 SHTC3 传感器]
-    AB --> T
-    AA --> T
-    AC --> X
+    X --> Y{事件驱动 1s tick}
+    Y -->|右键短按| Z[深度睡眠]
+    Y -->|右键三击| ZA[恢复出厂 → 重启]
+    Y -->|右键长按| ZB[强制切换日夜模式]
+    Y -->|左键短按| ZC[播放/停止<br/>首次自动连 WiFi]
+    Y -->|左键长按| ZD[下一首]
+    Y -->|歌曲结束/卡住| ZE[auto_advance<br/>请求下一首]
+    Y -->|超时 1800s| Z
+    Y -->|每10秒| ZF[刷新 SHTC3 传感器]
+    ZE --> T
+    ZC --> T
+    ZD --> T
+    ZF --> X
 ```
 
 ---
@@ -237,7 +265,7 @@ flowchart TD
 y=0   ┌──────────────────────────────────────────────┐
       │ 左: 16:30 (digital-7 48px)   右: 小雨 22°(内25.3°58%)  │
 y=18  │                                    22° - 30°         │
-y=36  │              [ 歌曲名居中滚动 ]                          │
+y=36  │              [ 歌曲名居中滚动 / 按左键播放 ]               │
       └──────────────────────────────────────────────┘
                         256×64 SSD1322
 ```
@@ -247,17 +275,18 @@ y=36  │              [ 歌曲名居中滚动 ]                          │
 | 时间 | `lv_font_digital` (digital-7, 48px, 4bpp) | HH:MM |
 | 天气行 | `lv_font_station` (fusion-pixel, 10px, 1bpp) | 天气文字 + 当前温度 + 室内温湿度 |
 | 温度行 | `lv_font_station` | 今日最低温度 – 最高温度 |
-| 歌名行 | `lv_font_station` | 歌曲名, 居中滚动 |
+| 歌名行 | `lv_font_station` | 歌曲名居中滚动；无网络时显示 `按左键播放` |
 
 ---
 
 ## 夜间模式
 
-触发条件: 21:00–6:00（跨天）
+触发条件: 23:00–6:00（跨天，可通过 `menuconfig` 配置）
 
 - 显示切换到 Canvas 7 段数码管 (12px 灰度像素, 8×8 网格抖动)
 - 对比度降到 `0x01` (极暗)
 - 跳过 WiFi、天气、SHTC3、音频 — 纯时钟
+- **手动切换**：长按右键可强制切换日间/夜间显示模式（本次唤醒有效，下次唤醒恢复自动判断）
 
 ---
 
@@ -266,13 +295,32 @@ y=36  │              [ 歌曲名居中滚动 ]                          │
 | 唤醒来源 | `?wake=` | 触发条件 |
 |--------|----------|----------|
 | **PCF85063 外部 RTC 闹钟** | `rtc` | IO0 (`RTC_INT`) 收到 PCF85063 闹钟中断，**主要唤醒来路**（默认 7:50；Server 可用 `alarm.time` 在 `/api/esp` 响应里覆盖，存入 PCF85063 闹钟寄存器） |
-| ESP32-C3 内部 RTC 定时器 | `rtc` | PCF85063 不可用 / 未配置时的 fallback，由 `esp_sleep_enable_timer_wakeup()` 触发 |
-| GPIO3 按键 (SW12) | `btn` | 短按 = 睡眠，长按 = 切歌，三击 = 重置配网 |
+| ESP32-C3 内部 RTC 定时器 | `rtc` | PCF85063 不可用 / 未配置 / 闹钟被禁用时的 fallback，由 `esp_sleep_enable_timer_wakeup()` 触发 |
+| GPIO3 右键 (SW12) | `btn` | 短按唤醒 → 无网络模式（仅显示时间+温湿度+闹钟时间） |
 | 冷启动 (上电/烧录) | `sys` | 第一次启动 |
 
 唤醒源在启动最早期通过 `esp_sleep_get_wakeup_cause()` 检测，随后拼接到 `/api/esp` URL 中。
 
-> **注意**：`ESP_SLEEP_WAKEUP_GPIO` 这一路会被两个引脚共用——`CONFIG_PCF85063_INT_GPIO` (IO0) 走 rtc 分支、其它命中走 btn 分支（`main.c` L232-245）。
+### 按需联网
+
+**只有 RTC 闹钟唤醒才会自动连接 WiFi 并请求 `/api/esp`。** 按键唤醒时设备进入无网络模式：
+
+- 显示当前时间 + 室内温湿度 + 闹钟时间
+- 屏幕底部提示 `按左键播放`
+- 用户按左键后设备才连接 WiFi 并开始播放
+- 夜间模式下左键操作被忽略
+
+### 闹钟禁用与周末跳过
+
+Server 可通过 `/api/esp` 响应中的 `alarm` 字段控制闹钟行为：
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| `alarm.enabled` | bool | `false` = **整体关闭**——不写 PCF85063 闹钟，ESP 内部 timer 也不启用，仅保留右键唤醒 |
+| `alarm.weekend_saturday` | bool | `false` = 周六不触发闹钟 |
+| `alarm.weekend_sunday` | bool | `false` = 周日不触发闹钟 |
+
+> **注意**：`ESP_SLEEP_WAKEUP_GPIO` 这一路会被两个引脚共用——`CONFIG_PCF85063_INT_GPIO` (IO0) 走 rtc 分支、右键 (IO3) 走 btn 分支（`main.c` L366-396）。
 
 ---
 
@@ -330,8 +378,8 @@ GET http://{server}:3000/api/esp/{device_id}?wake={src}&t={temp}&h={humidity}
 | `weather.tempMin` | string | 今日最低温 |
 | `weather.textDay` | string | 白天天气 |
 | `weather.textNight` | string | 夜间天气 |
-| `alarm.enabled` | bool | 是否启用 PCF85063 闹钟与自动唤醒。`true` = 启用（按 `alarm.time` 设闹钟，到点自动唤起）；`false` = **整体关闭**——不写 PCF85063 闹钟，且 ESP 内部 timer 也不启用，仅保留按键唤醒 |
-| `alarm.time` | string | 闹钟时间，`"HH:MM"` 24h 制，写入 PCF85063 闹钟寄存器；缺省回退到 `CONFIG_WAKEUP_HOUR/MINUTE` |
+| `alarm.enabled` | bool | 是否启用 PCF85063 闹钟与自动唤醒。`true` = 启用（按 `alarm.time` 设闹钟，到点自动唤起）；`false` = **整体关闭**——不写 PCF85063 闹钟，且 ESP 内部 timer 也不启用，仅保留右键唤醒 |
+| `alarm.time` | string | 闹钟时间，`"HH:MM"` 24h 制（CST 本地时间），写入 PCF85063 闹钟寄存器；缺省回退到 `CONFIG_WAKEUP_HOUR/MINUTE` |
 | `alarm.weekend_saturday` | bool | 周六是否触发闹钟（`false` = 跳过当天，避免周末被吵醒） |
 | `alarm.weekend_sunday` | bool | 周日是否触发闹钟（`false` = 跳过当天） |
 
@@ -370,7 +418,7 @@ sequenceDiagram
     API-->>ESP: { url, ... }
     ESP->>Stream: HTTP GET next track
 
-    Note over ESP: 长按按键
+    Note over ESP: 左键长按 (下一首)
     ESP->>API: GET /api/esp/{id}?wake=rtc&t=25.6&h=55
     API-->>ESP: { url, ... }
     ESP->>Stream: HTTP GET new track
@@ -386,7 +434,7 @@ sequenceDiagram
 
 ### 配置入口
 
-三击按键进入 WiFi 配网页面后，表单最下方多出两项：
+三击右键进入 WiFi 配网页面后，表单最下方多出两项：
 
 | 字段 | 说明 |
 |------|------|
@@ -424,7 +472,7 @@ sequenceDiagram
 
 ### 重新配置
 
-三击按键 → SoftAP 重新启动 → 提交新表单 → 设备保存到 NVS → 自动重启 3 秒。重启后 `audio_init()` 从 NVS 重新读取 host + enabled。
+三击右键 → 恢复出厂设置 + 重启 → SoftAP 配网页面 → 提交新表单 → 设备保存到 NVS → 自动重启。重启后从 NVS 重新读取 WiFi 凭据 + Agent 配置。
 
 ---
 
@@ -459,12 +507,14 @@ graph TB
         SSD1322[ssd1322_driver.c<br/>SPI 驱动]
         LVGL_ADAPT[lvgl_adapter.c<br/>L8→I4 DMA]
         CLOCK[clock_screen.c<br/>主界面]
+        CONFIG_SCREEN[config_screen.c<br/>首次配网页面]
         FONT_D[font_digital.c<br/>时钟数字 48px]
         FONT_S[font_station.c<br/>通用中文 10px<br/>11031 CJK 全字集]
     end
 
     subgraph Network
         WIFI[wifi.c<br/>STA + SNTP]
+        WIFI_PROV[wifi_provisioning.c<br/>SoftAP + captive portal]
         HTTP[esp_http_client<br/>HTTPS/HTTP]
         JSON[cJSON 解析]
     end
@@ -479,6 +529,11 @@ graph TB
 
     subgraph Sensor
         SHTC3[shtc3.c<br/>I2C 温湿度]
+        PCF85063[pcf85063.c<br/>I2C RTC + 闹钟]
+    end
+
+    subgraph Config
+        AGENT_CFG[agent_config.c<br/>NVS agent_cfg]
     end
 
     subgraph UI_FW
@@ -488,9 +543,12 @@ graph TB
     MAIN --> SSD1322
     MAIN --> LVGL_ADAPT
     MAIN --> CLOCK
+    MAIN --> CONFIG_SCREEN
     MAIN --> WIFI
+    MAIN --> WIFI_PROV
     MAIN --> AUDIO_WRAP
     MAIN --> SHTC3
+    MAIN --> PCF85063
 
     LVGL_ADAPT --> SSD1322
     CLOCK --> FONT_D
@@ -501,6 +559,7 @@ graph TB
     AUDIO_WRAP --> JSON
     AUDIO_WRAP --> MIXER
     AUDIO_WRAP --> MP3
+    AUDIO_WRAP --> AGENT_CFG
     MIXER --> I2S
     MP3 --> MIXER
     I2S --> NS4168
@@ -510,15 +569,17 @@ graph TB
 
 | 模块 | 文件 | 说明 |
 |------|------|------|
-| 入口 | `main.c` | 初始化 + 主循环 + 深度睡眠 + 唤醒检测 + SHTC3 定时刷新 |
+| 入口 | `main.c` | 初始化 + 双键事件循环 + 深度睡眠 + 唤醒检测 + 按需联网 |
 | 显示驱动 | `ssd1322_driver.c/h` | SSD1322 SPI 命令, 复位序列, 对比度控制 |
 | LVGL 适配 | `lvgl_adapter.c/h` | LVGL flush callback, L8→I4 格式转换 |
 | WiFi/对时 | `wifi.c/h` | STA 连接, SNTP 同步, 设备 ID (MAC) |
 | WiFi 配网 | `wifi_provisioning.c/h` | SoftAP + DNS 重定向 + captive portal + QR |
+| 首次配网页面 | `config_screen.c/h` | 首次启动 QR 码页面（无 NVS 凭据时替代时钟页面） |
 | Agent 配置 | `agent_config.c/h` | NVS `agent_cfg` 命名空间, host + enabled |
-| 天气/电台 API | `audio_player_wrapper.c/h` | `/api/esp` HTTP + JSON 解析 + I2S 音频播放 |
-| 屏幕 UI | `clock_screen.c/h` | 时间/天气/温度/歌名布局 + Canvas 绘制 |
-| SHTC3 驱动 | `components/shtc3/shtc3.c/h` | I2C 传感器读取, CRC8 校验 |
+| 天气/电台 API | `audio_player_wrapper.c/h` | `/api/esp` HTTP + JSON 解析 + I2S 音频播放 + 闹钟配置 |
+| 屏幕 UI | `clock_screen.c/h` | 时间/天气/温度/歌名布局 + Canvas 绘制 + 按键提示 |
+| PCF85063 RTC | `components/pcf85063/pcf85063.c/h` | I²C RTC 读写, 闹钟配置, 中断清除 |
+| SHTC3 驱动 | `components/shtc3/shtc3.c/h` | I²C 传感器读取, CRC8 校验 |
 | UI 框架 | `ui/screens.c, ui/styles.c, ui/ui.c` | EEZ Studio 生成 |
 | 数字字体 | `font_digital.c/h` | digital-7 48px 4bpp (时钟) |
 | 通用字体 | `font_station.c/h` | fusion-pixel 10px 1bpp (11031 CJK + ASCII + 标点) |
@@ -528,17 +589,18 @@ graph TB
 ## 构建
 
 ```bash
-# 环境
-. ~/esp/esp-idf/export.sh      # 适配你的 ESP-IDF 路径
+# 环境 (ESP-IDF v5.5.2)
+. ~/esp/v5.5.2/esp-idf/export.sh
 
 # 构建
 idf.py build
 
-# 烧录 (macOS 通常用 /dev/cu.usbmodem*)
-idf.py -p /dev/cu.usbmodem1301 flash
+# 配置 (WiFi, API keys, GPIO, 夜间模式, 睡眠参数)
+idf.py menuconfig
 
-# 串口监视
-idf.py -p /dev/cu.usbmodem1301 monitor
+# 烧录 & 监视
+idf.py -p /dev/ttyUSB0 flash
+idf.py -p /dev/ttyUSB0 monitor
 ```
 
 ### 分区表
@@ -573,12 +635,27 @@ lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
 | 分类 | 选项 | 说明 |
 |------|------|------|
 | WiFi | SSID, 密码 | |
-| Sleep | 活跃时长, 唤醒 GPIO, 闹钟时间 | 默认 3600s, GPIO3, 7:50 |
-| Night | 开始/结束小时 | 默认 22→6 |
-| Audio | 默认音量 | 0–100 |
-| GPIO | SPI/I2S/NS4168/按键 | 默认值见上文 GPIO 连接表 |
+| Sleep | 活跃时长, 唤醒 GPIO, 闹钟时间 | 默认 1800s, GPIO3, 7:50 |
+| Night | 开始/结束小时 | 默认 23→6 |
+| Audio | 默认音量 | 0–100 (默认 10) |
+| GPIO | SPI/I2S/NS4168/左键/右键 | 右键 GPIO3, 左键 GPIO1 |
+| I²C | SDA/SCL/频率 | GPIO21/GPIO9/400kHz |
+| PCF85063 RTC | 启用/I²C 地址/INT 引脚 | 默认启用, 0x51, IO0 |
+| WiFi 配网 | SoftAP 密码/超时/首次自动配网 | 默认 5min, 首次自动 |
 
 ---
+
+## 首次启动与配网
+
+设备首次上电（或恢复出厂设置后），若 NVS 中没有 WiFi 凭据：
+
+1. 显示 **QR 码配网页面**（替代时钟页面），展示 SSID `SlumberCube-XXXX` 和二维码
+2. 启动 SoftAP + captive portal，手机连接 WiFi 后自动弹出配置页面
+3. 配置页面可填写：WiFi SSID/密码、Agent Server 地址、是否启用 Agent
+4. 提交后凭据写入 NVS → 自动重启 → 进入正常时钟模式
+5. 若超时（默认 5 分钟）未提交，设备进入 clock-only 模式（仅显示时间）
+
+配网页面可通过三击右键重新进入（会先恢复出厂设置清除所有 NVS 数据）。
 
 ## 防白闪机制
 
@@ -588,7 +665,7 @@ lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
 
 1. 睡眠前 GPIO hold 拉低 RST → SSD1322 在睡眠期间保持复位
 2. `ssd1322_init()` 复位后立即发 `0xAE` → 显示关断
-3. `lv_screen_load()` 在 `lv_refr_now()` 之前 → 渲染用户黑底界面, 而非 LVGL 默认白底
+3. 加载正确页面后调用 `lv_refr_now()` 同步刷新 → GDDRAM 写入用户黑底界面
 4. 首帧渲染完成后才调用 `ssd1322_display_on()` → GDDRAM 中已是正确内容
 
 ---
@@ -616,4 +693,4 @@ lv_font_conv --size 10 --bpp 1 --format lvgl --no-compress --lv-include lvgl.h \
 
 ---
 
-*SlumberCube 安睡小方 · 固件 v2.2 · 2026-06-27 · 原理图 Schematic1_9*
+*SlumberCube 安睡小方 · 固件 v2.3 · 2026-07-05 · 原理图 Schematic1_9*
