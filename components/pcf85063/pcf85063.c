@@ -285,3 +285,36 @@ esp_err_t pcf85063_sync_from_system(void)
              dt.year, dt.month, dt.day, dt.hour, dt.minute, dt.second);
     return ESP_OK;
 }
+
+esp_err_t pcf85063_read_alarm(pcf85063_alarm_t *alarm)
+{
+    if (!alarm) return ESP_ERR_INVALID_ARG;
+    if (!s_present) return ESP_ERR_INVALID_STATE;
+
+    uint8_t buf[5];
+    esp_err_t err = read_regs(REG_SECOND_ALARM, buf, sizeof(buf));
+    if (err != ESP_OK) return err;
+
+    /* All fields disabled → alarm is off */
+    bool all_disabled = (buf[0] & 0x80u) && (buf[1] & 0x80u) &&
+                        (buf[2] & 0x80u) && (buf[3] & 0x80u) &&
+                        (buf[4] & 0x80u);
+    alarm->enable = !all_disabled;
+
+    if (buf[1] & 0x80u) alarm->minute = PCF85063_ALARM_DISABLE;
+    else                alarm->minute = pcf85063_from_bcd((uint8_t)(buf[1] & 0x7Fu));
+
+    if (buf[2] & 0x80u) alarm->hour = PCF85063_ALARM_DISABLE;
+    else                alarm->hour = pcf85063_from_bcd((uint8_t)(buf[2] & 0x3Fu));
+
+    if (buf[3] & 0x80u) alarm->day = PCF85063_ALARM_DISABLE;
+    else                alarm->day = pcf85063_from_bcd((uint8_t)(buf[3] & 0x3Fu));
+
+    if (buf[4] & 0x80u) alarm->weekday = PCF85063_ALARM_DISABLE;
+    else                alarm->weekday = (uint8_t)(buf[4] & 0x07u);
+
+    ESP_LOGI(TAG, "read_alarm: en=%d min=%02u hr=%02u day=%02u wday=%02u",
+             alarm->enable, alarm->minute, alarm->hour,
+             alarm->day, alarm->weekday);
+    return ESP_OK;
+}

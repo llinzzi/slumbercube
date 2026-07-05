@@ -24,3 +24,10 @@ void clock_screen_deinit(void);
 /* Show indoor temperature + humidity from SHTC3 sensor.
  * Pass NAN temp for sensor-less variant — label stays blank. */
 void clock_screen_set_indoor_env(float temp_c, float humidity);
+
+/* No-network display: show indoor temp + humidity on the right side
+ * (replaces weather text). */
+void clock_screen_set_indoor_full(float temp_c, float humidity);
+
+/* No-network display: show alarm time at the bottom. */
+void clock_screen_set_alarm_time(int hour, int minute);

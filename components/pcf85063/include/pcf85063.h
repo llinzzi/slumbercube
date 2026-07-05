@@ -58,6 +58,11 @@ esp_err_t pcf85063_set_datetime(const pcf85063_datetime_t *dt);
  * treated as wildcards. The INT# pin (IO0) pulses low on match. */
 esp_err_t pcf85063_set_alarm(const pcf85063_alarm_t *alarm);
 
+/* Read back the currently armed alarm from the chip's alarm registers
+ * (0x0B-0x0F). Returns the alarm state including enable/disable status
+ * and which fields are wildcards. */
+esp_err_t pcf85063_read_alarm(pcf85063_alarm_t *alarm);
+
 /* Clear the alarm-flag bit in Control_2 so the next match can fire again. */
 esp_err_t pcf85063_clear_alarm_flag(void);
 

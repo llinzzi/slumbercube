@@ -50,20 +50,23 @@ static void log_heap(const char *label)
 #define EVENT_AUDIO_TOGGLE         (1 << 1)
 #define EVENT_PROVISIONING_REQUEST (1 << 2)
 #define EVENT_NEXT_TRACK           (1 << 3)
+#define EVENT_NIGHT_TOGGLE         (1 << 4)
 #define EVENT_BUTTON_MASK          (EVENT_SLEEP_PENDING | EVENT_AUDIO_TOGGLE | \
-                                    EVENT_PROVISIONING_REQUEST | EVENT_NEXT_TRACK)
+                                    EVENT_PROVISIONING_REQUEST | EVENT_NEXT_TRACK | \
+                                    EVENT_NIGHT_TOGGLE)
 
 static TaskHandle_t s_main_task = NULL;  /* set at top of app_main() */
 
-static button_handle_t g_btn_power = NULL;
-static button_handle_t g_btn_media = NULL;
+static button_handle_t g_btn_right = NULL;
+static button_handle_t g_btn_left = NULL;
 
 static volatile bool s_audio_playing = false;   /* read by button callbacks AND main loop */
 static volatile bool s_in_provisioning = false; /* read by button callbacks during captive portal */
 static bool s_audio_pending           = false; /* wifi connecting, start audio when done */
 static int  s_audio_pending_ticks     = 0;     /* timeout counter for pending start */
 static bool s_rtc_alarm_armed          = false; /* set after arm_pcf85063_alarm_wakeup() */
-static bool s_wake_from_btn           = false; /* true: IO3 wake (no network); false: RTC/sys */
+typedef enum { WAKE_BTN, WAKE_RTC, WAKE_SYS } wake_kind_t;
+static wake_kind_t s_wake_kind = WAKE_SYS;  /* default: cold boot */
 static bool s_normal_mode              = false; /* true only when we reached the
                                                         * post-provisioning "normal operation"
                                                         * page (NVS creds at boot, OR
@@ -75,29 +78,6 @@ static bool s_normal_mode              = false; /* true only when we reached the
                                                         * until the user actually gets WiFi
                                                         * working. */
 
-/* ── RTC slow-memory weather cache (survives deep sleep, lost on power-off) ─── */
-#define RTC_CACHE_MAGIC  0x57354348  /* "W5CH" */
-
-RTC_DATA_ATTR static struct {
-    uint32_t magic;
-    int      high, low, current, humidity;
-    char     day_text[16];
-    char     night_text[16];
-    char     current_text[16];
-    int      month, day;
-    time_t   fetch_time;
-    /* Indoor sensor snapshot (may be NaN if no sensor) */
-    float    indoor_temp;
-    float    indoor_humidity;
-    bool     indoor_valid;
-    /* Station name for display */
-    char     station_name[32];
-} s_rtc_cache;
-
-/* Reconstructed weather_data_t from RTC cache, passed to display API.
- * Allocated in DRAM (not RTC) so the pointer is valid for LVGL labels. */
-static weather_data_t s_cached_weather;
-
 /* Try the on-board SHTC3 sensor. Returns true and fills *temp_c on success.
  * Hardware variant without the sensor just returns false; display omits the value. */
 static bool read_indoor_env(float *temp_c, float *humidity)
@@ -107,67 +87,6 @@ static bool read_indoor_env(float *temp_c, float *humidity)
     *temp_c = t;
     *humidity = h;
     ESP_LOGI(TAG, "SHTC3: indoor %.1f°C, %.0f%%RH", t, h);
-    return true;
-}
-
-/* ── RTC weather cache helpers ────────────────────────────────────────── */
-
-/* Save live weather + indoor + station data to RTC slow memory.
- * Called after every successful /api/esp fetch. */
-static void rtc_cache_save(const weather_data_t *w,
-                           float indoor_temp, float indoor_humidity, bool indoor_valid,
-                           const char *station_name)
-{
-    if (!w || !w->valid) return;
-    s_rtc_cache.magic    = RTC_CACHE_MAGIC;
-    s_rtc_cache.high     = w->daily[0].high;
-    s_rtc_cache.low      = w->daily[0].low;
-    s_rtc_cache.current  = w->daily[0].current;
-    s_rtc_cache.humidity = w->daily[0].humidity;
-    s_rtc_cache.month    = w->daily[0].month;
-    s_rtc_cache.day      = w->daily[0].day;
-    strncpy(s_rtc_cache.day_text,     w->daily[0].day_text,     sizeof(s_rtc_cache.day_text) - 1);
-    strncpy(s_rtc_cache.night_text,   w->daily[0].night_text,   sizeof(s_rtc_cache.night_text) - 1);
-    strncpy(s_rtc_cache.current_text, w->daily[0].current_text, sizeof(s_rtc_cache.current_text) - 1);
-    s_rtc_cache.fetch_time    = w->fetch_time;
-    s_rtc_cache.indoor_temp   = indoor_temp;
-    s_rtc_cache.indoor_humidity = indoor_humidity;
-    s_rtc_cache.indoor_valid  = indoor_valid;
-    if (station_name && station_name[0]) {
-        strncpy(s_rtc_cache.station_name, station_name, sizeof(s_rtc_cache.station_name) - 1);
-    } else {
-        s_rtc_cache.station_name[0] = '\0';
-    }
-    ESP_LOGI(TAG, "RTC cache saved: %s %d°/%d° indoor=%.1f°C",
-             s_rtc_cache.day_text, s_rtc_cache.high, s_rtc_cache.low,
-             indoor_valid ? (double)indoor_temp : (double)NAN);
-}
-
-/* Restore weather_data_t from RTC cache into s_cached_weather.
- * Returns true if the cache is valid (magic matches, has data). */
-static bool rtc_cache_load(void)
-{
-    if (s_rtc_cache.magic != RTC_CACHE_MAGIC || s_rtc_cache.fetch_time == 0) {
-        ESP_LOGI(TAG, "RTC cache: empty or invalid (magic=0x%08" PRIX32 ")", s_rtc_cache.magic);
-        return false;
-    }
-    memset(&s_cached_weather, 0, sizeof(s_cached_weather));
-    s_cached_weather.daily[0].high     = s_rtc_cache.high;
-    s_cached_weather.daily[0].low      = s_rtc_cache.low;
-    s_cached_weather.daily[0].current  = s_rtc_cache.current;
-    s_cached_weather.daily[0].humidity = s_rtc_cache.humidity;
-    s_cached_weather.daily[0].month    = s_rtc_cache.month;
-    s_cached_weather.daily[0].day      = s_rtc_cache.day;
-    strncpy(s_cached_weather.daily[0].day_text,     s_rtc_cache.day_text,     15);
-    strncpy(s_cached_weather.daily[0].night_text,   s_rtc_cache.night_text,   15);
-    strncpy(s_cached_weather.daily[0].current_text, s_rtc_cache.current_text, 15);
-    s_cached_weather.count      = 1;
-    s_cached_weather.valid      = true;
-    s_cached_weather.fetch_time = s_rtc_cache.fetch_time;
-    ESP_LOGI(TAG, "RTC cache loaded: %s %d°/%d° (age=%llds)",
-             s_cached_weather.daily[0].day_text,
-             s_cached_weather.daily[0].high, s_cached_weather.daily[0].low,
-             (long long)(time(NULL) - s_rtc_cache.fetch_time));
     return true;
 }
 
@@ -329,78 +248,71 @@ static void apply_weather_and_indoor(const weather_data_t *w)
     }
 }
 
-/* ── IO3 Power button callbacks ─────────────────────────────────────── */
+/* ── 右键 (电源) callbacks ─────────────────────────────────────── */
 
-/* IO3 short click: sleep immediately. Aborts captive portal if active. */
-static void power_short_click_cb(void *button_handle, void *usr_data)
+/* 右键 short click: sleep immediately. Aborts captive portal if active. */
+static void right_short_click_cb(void *button_handle, void *usr_data)
 {
-    ESP_LOGI(TAG, "IO3 short click → sleep");
+    ESP_LOGI(TAG, "右键 short click → sleep");
     if (s_in_provisioning) {
         wifi_provisioning_abort();
     }
     if (s_main_task) xTaskNotify(s_main_task, EVENT_SLEEP_PENDING, eSetBits);
 }
 
-/* IO3 long press: cycle night mode override (auto → night → day → auto).
- * Applies immediately — no sleep required. */
-static void power_long_press_cb(void *button_handle, void *usr_data)
+/* 右键 long press: flip between night and day display.
+ * No "auto" in the cycle — auto is only the default on wake. */
+static void right_long_press_cb(void *button_handle, void *usr_data)
 {
-    int8_t cur = clock_screen_get_night_override();
-    int8_t next;
-    const char *label;
-    if (cur < 0)      { next = 1; label = "force NIGHT"; }
-    else if (cur == 1) { next = 0; label = "force DAY"; }
-    else              { next = -1; label = "AUTO (time-based)"; }
-
+    bool currently_night = clock_screen_is_night_time();
+    /* Force the opposite of what's currently shown */
+    int8_t next = currently_night ? 0 : 1;  /* 0=day, 1=night */
     clock_screen_set_night_override(next);
-    bool is_night = clock_screen_is_night_time();
-    clock_screen_set_night_mode(is_night);
-    ESP_LOGI(TAG, "IO3 long press → night override: %s (night_mode=%d)", label, is_night);
+    ESP_LOGI(TAG, "右键 long press → force %s", currently_night ? "DAY" : "NIGHT");
+    if (s_main_task) xTaskNotify(s_main_task, EVENT_NIGHT_TOGGLE, eSetBits);
 }
 
-/* IO3 triple-click: factory reset + reboot into captive portal. */
-static void power_triple_click_cb(void *button_handle, void *usr_data)
+/* 右键 triple-click: factory reset + reboot into captive portal. */
+static void right_triple_click_cb(void *button_handle, void *usr_data)
 {
-    ESP_LOGI(TAG, "IO3 triple click — factory reset");
+    ESP_LOGI(TAG, "右键 triple click — factory reset");
     if (s_in_provisioning) {
         wifi_provisioning_abort();
     }
     if (s_main_task) xTaskNotify(s_main_task, EVENT_PROVISIONING_REQUEST, eSetBits);
 }
 
-/* ── IO1 Media button callbacks ─────────────────────────────────────── */
+/* ── 左键 (媒体) callbacks ─────────────────────────────────────── */
 
-/* IO1 short click: toggle audio play/pause. Triggers WiFi connect + fetch
+/* 左键 short click: toggle audio play/pause. Triggers WiFi connect + fetch
  * if not already connected. No-op in night mode or provisioning. */
-static void media_short_click_cb(void *button_handle, void *usr_data)
+static void left_short_click_cb(void *button_handle, void *usr_data)
 {
 #if CONFIG_AUDIO_ENABLE
-    if (!s_normal_mode || clock_screen_is_night_time()) {
-        ESP_LOGI(TAG, "IO1 short click — ignored (normal=%d night=%d)",
-                 s_normal_mode, clock_screen_is_night_time());
+    if (!s_normal_mode) {
+        ESP_LOGI(TAG, "左键 short click — ignored (normal=%d)", s_normal_mode);
         return;
     }
-    ESP_LOGI(TAG, "IO1 short click → audio toggle");
+    ESP_LOGI(TAG, "左键 short click → audio toggle");
     if (s_main_task) xTaskNotify(s_main_task, EVENT_AUDIO_TOGGLE, eSetBits);
     clock_screen_set_audio_indicator(!s_audio_playing);
 #else
-    ESP_LOGI(TAG, "Audio disabled, ignoring IO1 short click");
+    ESP_LOGI(TAG, "Audio disabled, ignoring 左键 short click");
 #endif
 }
 
-/* IO1 long press: skip to next track. Deinit → fetch /api/esp → play. */
-static void media_long_press_cb(void *button_handle, void *usr_data)
+/* 左键 long press: skip to next track. Deinit → fetch /api/esp → play. */
+static void left_long_press_cb(void *button_handle, void *usr_data)
 {
 #if CONFIG_AUDIO_ENABLE
-    if (!s_normal_mode || clock_screen_is_night_time()) {
-        ESP_LOGI(TAG, "IO1 long press — ignored (normal=%d night=%d)",
-                 s_normal_mode, clock_screen_is_night_time());
+    if (!s_normal_mode) {
+        ESP_LOGI(TAG, "左键 long press — ignored (normal=%d)", s_normal_mode);
         return;
     }
-    ESP_LOGI(TAG, "IO1 long press → next track");
+    ESP_LOGI(TAG, "左键 long press → next track");
     if (s_main_task) xTaskNotify(s_main_task, EVENT_NEXT_TRACK, eSetBits);
 #else
-    ESP_LOGI(TAG, "Audio disabled, ignoring IO1 long press");
+    ESP_LOGI(TAG, "Audio disabled, ignoring 左键 long press");
 #endif
 }
 
@@ -450,35 +362,47 @@ void app_main(void)
     }
     ESP_ERROR_CHECK(nvs_err);
 
-    /* Detect wake source for /api/esp ?wake= query param */
+    /* Detect wake source: WAKE_BTN=右键, WAKE_RTC=alarm, WAKE_SYS=cold-boot */
     esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-    s_wake_from_btn = false;
+    s_wake_kind = WAKE_SYS;
     switch (cause) {
     case ESP_SLEEP_WAKEUP_TIMER:
         audio_set_wake_source("rtc");
+        s_wake_kind = WAKE_RTC;
         ESP_LOGI(TAG, "Woke from RTC timer");
         break;
     case ESP_SLEEP_WAKEUP_GPIO: {
         uint64_t wake_pins = esp_sleep_get_gpio_wakeup_status();
+        /* Check button FIRST: if 右键 is in the wake mask, user pressed it. */
+        if (wake_pins & (1ULL << CONFIG_WAKEUP_GPIO)) {
+            audio_set_wake_source("btn");
+            s_wake_kind = WAKE_BTN;
+            ESP_LOGI(TAG, "Woke from 右键 (mask=0x%llX)", (unsigned long long)wake_pins);
+            break;
+        }
 #if CONFIG_PCF85063_ENABLE
         if (wake_pins & (1ULL << CONFIG_PCF85063_INT_GPIO)) {
             audio_set_wake_source("rtc");
+            s_wake_kind = WAKE_RTC;
             ESP_LOGI(TAG, "Woke from PCF85063 alarm (IO%d)", CONFIG_PCF85063_INT_GPIO);
             pcf85063_clear_alarm_flag();
             break;
         }
 #endif
+        /* Unknown GPIO — treat as button */
         audio_set_wake_source("btn");
-        s_wake_from_btn = true;
-        ESP_LOGI(TAG, "Woke from GPIO (IO3 button, mask=0x%llX)", (unsigned long long)wake_pins);
+        s_wake_kind = WAKE_BTN;
+        ESP_LOGI(TAG, "Woke from unknown GPIO (mask=0x%llX)", (unsigned long long)wake_pins);
         break;
     }
     case ESP_SLEEP_WAKEUP_UNDEFINED:
         audio_set_wake_source("sys");
+        s_wake_kind = WAKE_SYS;
         ESP_LOGI(TAG, "Cold boot");
         break;
     default:
         audio_set_wake_source("sys");
+        s_wake_kind = WAKE_SYS;
         ESP_LOGI(TAG, "Wake cause: %d (unhandled, using sys)", (int)cause);
         break;
     }
@@ -516,56 +440,56 @@ void app_main(void)
     // Initialize SSD1322 driver first (display stays OFF until first frame rendered)
     ESP_ERROR_CHECK(ssd1322_init());
 
-    // ── IO3 Power button (wake / sleep / night toggle / factory reset) ──
+    // ── 右键 (电源) (wake / sleep / night toggle / factory reset) ──
     {
         button_config_t btn_cfg = {
             .short_press_time = 300,
-            .long_press_time = 1500,  /* longer to avoid accidental night toggle */
+            .long_press_time = 2000,  /* 2s hold, fires on threshold before release */
         };
         button_gpio_config_t gpio_cfg = {
-            .gpio_num = CONFIG_POWER_BUTTON_GPIO,
+            .gpio_num = CONFIG_RIGHT_BUTTON_GPIO,
             .active_level = 0,
             .enable_power_save = false,
         };
-        esp_err_t err = iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &g_btn_power);
+        esp_err_t err = iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &g_btn_right);
         if (err == ESP_OK) {
-            iot_button_register_cb(g_btn_power, BUTTON_SINGLE_CLICK, NULL,
-                                   power_short_click_cb, NULL);
-            iot_button_register_cb(g_btn_power, BUTTON_LONG_PRESS_START, NULL,
-                                   power_long_press_cb, NULL);
+            iot_button_register_cb(g_btn_right, BUTTON_SINGLE_CLICK, NULL,
+                                   right_short_click_cb, NULL);
+            iot_button_register_cb(g_btn_right, BUTTON_LONG_PRESS_START, NULL,
+                                   right_long_press_cb, NULL);
             button_event_args_t triple_args = { .multiple_clicks.clicks = 3 };
-            iot_button_register_cb(g_btn_power, BUTTON_MULTIPLE_CLICK, &triple_args,
-                                   power_triple_click_cb, NULL);
-            ESP_LOGI(TAG, "Power button on IO%d (short=sleep, long=night, triple=reset)",
-                     CONFIG_POWER_BUTTON_GPIO);
+            iot_button_register_cb(g_btn_right, BUTTON_MULTIPLE_CLICK, &triple_args,
+                                   right_triple_click_cb, NULL);
+            ESP_LOGI(TAG, "右键 on IO%d (short=sleep, long=night, triple=reset)",
+                     CONFIG_RIGHT_BUTTON_GPIO);
         } else {
-            ESP_LOGE(TAG, "Power button init failed on IO%d: %s",
-                     CONFIG_POWER_BUTTON_GPIO, esp_err_to_name(err));
+            ESP_LOGE(TAG, "右键 init failed on IO%d: %s",
+                     CONFIG_RIGHT_BUTTON_GPIO, esp_err_to_name(err));
         }
     }
 
-    // ── IO1 Media button (play/pause / next track) ──
+    // ── 左键 (媒体) (play/pause / next track) ──
     {
         button_config_t btn_cfg = {
             .short_press_time = 300,
             .long_press_time = 800,
         };
         button_gpio_config_t gpio_cfg = {
-            .gpio_num = CONFIG_MEDIA_BUTTON_GPIO,
+            .gpio_num = CONFIG_LEFT_BUTTON_GPIO,
             .active_level = 0,
             .enable_power_save = false,
         };
-        esp_err_t err = iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &g_btn_media);
+        esp_err_t err = iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &g_btn_left);
         if (err == ESP_OK) {
-            iot_button_register_cb(g_btn_media, BUTTON_SINGLE_CLICK, NULL,
-                                   media_short_click_cb, NULL);
-            iot_button_register_cb(g_btn_media, BUTTON_LONG_PRESS_START, NULL,
-                                   media_long_press_cb, NULL);
-            ESP_LOGI(TAG, "Media button on IO%d (short=play/pause, long=next)",
-                     CONFIG_MEDIA_BUTTON_GPIO);
+            iot_button_register_cb(g_btn_left, BUTTON_SINGLE_CLICK, NULL,
+                                   left_short_click_cb, NULL);
+            iot_button_register_cb(g_btn_left, BUTTON_LONG_PRESS_START, NULL,
+                                   left_long_press_cb, NULL);
+            ESP_LOGI(TAG, "左键 on IO%d (short=play/pause, long=next)",
+                     CONFIG_LEFT_BUTTON_GPIO);
         } else {
-            ESP_LOGE(TAG, "Media button init failed on IO%d: %s",
-                     CONFIG_MEDIA_BUTTON_GPIO, esp_err_to_name(err));
+            ESP_LOGE(TAG, "左键 init failed on IO%d: %s",
+                     CONFIG_LEFT_BUTTON_GPIO, esp_err_to_name(err));
         }
     }
 
@@ -615,6 +539,10 @@ void app_main(void)
     // Wait for UI to load
     vTaskDelay(pdMS_TO_TICKS(100));
 
+    /* Read indoor sensor on every wake (for no-network display fallback). */
+    float s_indoor_t = NAN, s_indoor_h = NAN;
+    read_indoor_env(&s_indoor_t, &s_indoor_h);
+
     if (!clock_screen_is_night_time()) {
         /* First-boot provisioning: if NVS has no creds (and the user hasn't
          * disabled auto-provisioning in menuconfig), run the SoftAP captive
@@ -647,35 +575,31 @@ void app_main(void)
         }
 #endif
 
-        /* ── Networking strategy ──────────────────────────────────────────
-         * IO3 wake  → no WiFi, no fetch, display cached weather from RTC
-         * RTC wake  → WiFi + /api/esp fetch + save cache + auto-play audio
-         * IO1 press → on-demand WiFi + fetch + play (handled in main loop) */
+        /* ── Networking: only RTC alarm goes online. ────────────── */
 
-        if (s_wake_from_btn) {
-            /* ── IO3 button wake: zero-network path ── */
-            ESP_LOGI(TAG, "IO3 wake — cached weather, no network");
-            if (rtc_cache_load()) {
-                screens_set_weather_data_ptr(&s_cached_weather);
-                if (s_rtc_cache.station_name[0]) {
-                    clock_screen_set_station_name(s_rtc_cache.station_name);
+        if (s_wake_kind != WAKE_RTC) {
+            /* ── No network: show indoor env + alarm time ── */
+            ESP_LOGI(TAG, "No-network display (wake=%d)", s_wake_kind);
+            clock_screen_set_indoor_full(s_indoor_t, s_indoor_h);
+#if CONFIG_PCF85063_ENABLE
+            if (pcf85063_is_present()) {
+                pcf85063_alarm_t al;
+                if (pcf85063_read_alarm(&al) == ESP_OK && al.enable
+                    && al.hour != PCF85063_ALARM_DISABLE
+                    && al.minute != PCF85063_ALARM_DISABLE) {
+                    /* PCF85063 stores alarm in UTC; convert to CST for display */
+                    int display_h = ((int)al.hour + 8) % 24;
+                    clock_screen_set_alarm_time(display_h, al.minute);
+                } else {
+                    clock_screen_set_alarm_time(CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
                 }
-                if (s_rtc_cache.indoor_valid) {
-                    clock_screen_set_indoor_env(s_rtc_cache.indoor_temp,
-                                                s_rtc_cache.indoor_humidity);
-                }
-            } else {
-                clock_screen_set_station_name("Press IO1 for radio");
-            }
-            /* Read live indoor sensor for this session */
+            } else
+#endif
             {
-                float t = 0, h = 0;
-                if (read_indoor_env(&t, &h)) {
-                    clock_screen_set_indoor_env(t, h);
-                }
+                clock_screen_set_alarm_time(CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
             }
         } else {
-            /* ── RTC / cold-boot wake: full network + weather + audio ── */
+            /* ── RTC alarm wake: full network + weather + auto-play ── */
             clock_screen_set_station_name("Connecting WiFi...");
             wifi_ensure_netif();
             if (wifi_init_sta() == ESP_OK) {
@@ -708,16 +632,19 @@ void app_main(void)
                 do_factory_reset();
             }
         } else {
-            ESP_LOGI(TAG, "Night mode, skipping network and weather");
+            ESP_LOGI(TAG, "Night mode, display only");
         }
 #else
-        ESP_LOGI(TAG, "Night mode, skipping network and weather");
+        ESP_LOGI(TAG, "Night mode, display only");
 #endif
     }
 
 #if CONFIG_AUDIO_ENABLE
-    /* ── Auto-audio only on RTC/sys wake (not IO3 button wake) ── */
-    if (!s_wake_from_btn && s_normal_mode && !clock_screen_is_night_time()) {
+    ESP_LOGI(TAG, "Audio block guard: wake_from_btn=%d normal=%d night=%d",
+             s_wake_kind == WAKE_BTN, s_normal_mode, clock_screen_is_night_time());
+    /* ── Auto-audio only on RTC/sys wake (not 右键 wake) ── */
+    /* Only RTC alarm: WiFi + weather + auto-play. 右键 and cold boot: cached. */
+    if (s_wake_kind == WAKE_RTC && s_normal_mode && !clock_screen_is_night_time()) {
 #if CONFIG_PCF85063_ENABLE
         if (should_skip_alarm_today()) {
             ESP_LOGI(TAG, "Weekend — alarm suppressed, clock-only wake");
@@ -739,13 +666,6 @@ void app_main(void)
             esp_err_t fetch_rc = audio_fetch_api();
             bool got_weather = (fetch_rc == ESP_OK);
 
-            /* Save fresh weather to RTC cache immediately */
-            if (got_weather) {
-                const weather_data_t *w = audio_get_weather();
-                rtc_cache_save(w, t, h, got_indoor,
-                               audio_get_station_name());
-            }
-
 #if CONFIG_PCF85063_ENABLE
             s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
 #endif
@@ -761,11 +681,11 @@ void app_main(void)
             clock_screen_set_indoor_env(t, h);
 
             if (got_weather) {
-                clock_screen_set_station_name("Starting audio...");
+                clock_screen_set_station_name(audio_get_station_name());
             }
-            vTaskDelay(pdMS_TO_TICKS(50));
 
-            if (audio_radio_url_is_set()) {
+            /* RTC alarm → auto-play. Cold boot → just fetch, no play. */
+            if (s_wake_kind == WAKE_RTC && audio_radio_url_is_set()) {
                 if (audio_play_url() == ESP_OK) {
                     clock_screen_set_station_name(audio_get_station_name());
                     clock_screen_set_audio_indicator(true);
@@ -784,29 +704,35 @@ void app_main(void)
         uint32_t notified = 0;
         xTaskNotifyWait(0, EVENT_BUTTON_MASK, &notified, pdMS_TO_TICKS(1000));
 
-        /* IO3 short click → sleep */
+        /* 右键 short click → sleep */
         if (notified & EVENT_SLEEP_PENDING) {
             break;
         }
 
-        /* IO3 triple-click → factory reset */
+        /* 右键 triple-click → factory reset */
         if (notified & EVENT_PROVISIONING_REQUEST) {
             do_factory_reset();
         }
 
+        /* IO3 long press → apply night mode switch (deferred from callback) */
+        if (notified & EVENT_NIGHT_TOGGLE) {
+            bool is_night = clock_screen_is_night_time();
+            clock_screen_set_night_mode(is_night);
+            ESP_LOGI(TAG, "Night mode applied: %d (override=%d)",
+                     is_night, (int)clock_screen_get_night_override());
+        }
+
 #if CONFIG_AUDIO_ENABLE
-        /* IO1 short click → toggle audio (on-demand WiFi if needed) */
+        /* 左键 short click → toggle audio (stop = full stop, no resume) */
         if (notified & EVENT_AUDIO_TOGGLE) {
             if (s_audio_playing) {
                 audio_stop();
                 clock_screen_set_audio_indicator(false);
-                clock_screen_set_station_name("Paused");
+                clock_screen_set_station_name("Stopped");
                 s_audio_playing = false;
-                /* Clear cached URL so next play does a fresh /api/esp fetch */
             } else if (wifi_is_connected()) {
                 audio_start_playback(false);
             } else {
-                /* WiFi down → connect + fetch + play */
                 wifi_ensure_netif();
                 if (wifi_sta_ensure() == ESP_OK) {
                     clock_screen_set_station_name("Connecting WiFi...");
@@ -820,7 +746,7 @@ void app_main(void)
             }
         }
 
-        /* IO1 long press → next track (skip current, fetch new from /api/esp) */
+        /* 左键 long press → next track (skip current, fetch new from /api/esp) */
         if (notified & EVENT_NEXT_TRACK) {
             ESP_LOGI(TAG, "Next track requested");
             if (s_audio_playing) {
@@ -841,8 +767,6 @@ void app_main(void)
                     const weather_data_t *w = audio_get_weather();
                     float t = 0, h = 0;
                     bool got_indoor = read_indoor_env(&t, &h);
-                    rtc_cache_save(w, t, h, got_indoor,
-                                   audio_get_station_name());
                     if (w && w->valid) {
                         screens_set_weather_data_ptr(w);
                     }
@@ -902,8 +826,6 @@ void app_main(void)
                         const weather_data_t *w = audio_get_weather();
                         float t2 = 0, h2 = 0;
                         bool gi = read_indoor_env(&t2, &h2);
-                        rtc_cache_save(w, t2, h2, gi,
-                                       audio_get_station_name());
                         if (w && w->valid) {
                             screens_set_weather_data_ptr(w);
                         }
@@ -943,6 +865,7 @@ void app_main(void)
         if (s_audio_pending) {
             if (wifi_is_connected()) {
                 s_audio_pending = false;
+                /* Restore URL from RTC so we resume same stream */
                 audio_start_playback(false);
             } else if (++s_audio_pending_ticks >= 30) {
                 s_audio_pending = false;
