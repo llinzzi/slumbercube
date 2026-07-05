@@ -640,15 +640,10 @@ static esp_err_t audio_play_url_inner(const char *url)
         return ESP_FAIL;
     }
 
-    audio_stream_io_handle_t io;
-    err = audio_http_stream_get_io(s_http_stream, &io);
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "http_stream_get_io: %s", esp_err_to_name(err));
-        return err;
-    }
-
     /* Wait for initial buffer, then try to start playback.
-     * Retry with fallback sample rates if mixer rejects the stream's rate. */
+     * Retry with fallback sample rates if mixer rejects the stream's rate.
+     * Each retry gets a FRESH io handle because audio_stream_play_io()
+     * frees it on failure via audio_stream_io_close(). */
     static const uint32_t RATES[] = {44100, 16000, 22050, 48000};
     for (int wait = 0; wait < 300; wait++) {
         size_t buffered = audio_http_stream_get_buffered_bytes(s_http_stream);
@@ -665,6 +660,12 @@ static esp_err_t audio_play_url_inner(const char *url)
                     s_stream = audio_stream_new(&stream_cfg);
                     if (!s_stream) break;
                 }
+                audio_stream_io_handle_t io;
+                err = audio_http_stream_get_io(s_http_stream, &io);
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "get_io failed at %lu Hz: %s", RATES[ri], esp_err_to_name(err));
+                    continue;
+                }
                 err = audio_stream_play_io(s_stream, io);
                 if (err == ESP_OK) {
                     s_playback_active = true;
@@ -674,7 +675,22 @@ static esp_err_t audio_play_url_inner(const char *url)
                 }
                 ESP_LOGW(TAG, "play_io failed at %lu Hz: %s", RATES[ri], esp_err_to_name(err));
             }
-            return err;  /* all rates failed */
+            /* All sample rates failed — clean up before returning.
+             * Without this, the mixer task stays alive and can starve the
+             * IDLE task, triggering the task watchdog. */
+            if (s_http_stream) {
+                audio_http_stream_close(s_http_stream);
+                s_http_stream = NULL;
+            }
+            if (s_stream) {
+                audio_stream_stop(s_stream);
+                audio_stream_delete(s_stream);
+                s_stream = NULL;
+            }
+            audio_mixer_deinit();
+            s_mixer_ready = false;
+            s_playback_active = false;
+            return err;
         }
         vTaskDelay(pdMS_TO_TICKS(100));
     }
