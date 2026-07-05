@@ -598,6 +598,7 @@ void app_main(void)
             {
                 clock_screen_set_alarm_time(CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
             }
+            clock_screen_show_button_hint();
         } else {
             /* ── RTC alarm wake: full network + weather + auto-play ── */
             clock_screen_set_station_name("Connecting WiFi...");
@@ -640,10 +641,8 @@ void app_main(void)
     }
 
 #if CONFIG_AUDIO_ENABLE
-    ESP_LOGI(TAG, "Audio block guard: wake_from_btn=%d normal=%d night=%d",
-             s_wake_kind == WAKE_BTN, s_normal_mode, clock_screen_is_night_time());
-    /* ── Auto-audio only on RTC/sys wake (not 右键 wake) ── */
-    /* Only RTC alarm: WiFi + weather + auto-play. 右键 and cold boot: cached. */
+    ESP_LOGI(TAG, "Audio block guard: wake=%d normal=%d night=%d",
+             s_wake_kind, s_normal_mode, clock_screen_is_night_time());
     if (s_wake_kind == WAKE_RTC && s_normal_mode && !clock_screen_is_night_time()) {
 #if CONFIG_PCF85063_ENABLE
         if (should_skip_alarm_today()) {
@@ -865,7 +864,6 @@ void app_main(void)
         if (s_audio_pending) {
             if (wifi_is_connected()) {
                 s_audio_pending = false;
-                /* Restore URL from RTC so we resume same stream */
                 audio_start_playback(false);
             } else if (++s_audio_pending_ticks >= 30) {
                 s_audio_pending = false;

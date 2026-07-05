@@ -29,5 +29,8 @@ void clock_screen_set_indoor_env(float temp_c, float humidity);
  * (replaces weather text). */
 void clock_screen_set_indoor_full(float temp_c, float humidity);
 
-/* No-network display: show alarm time at the bottom. */
+/* No-network display: show alarm time below indoor temp. */
 void clock_screen_set_alarm_time(int hour, int minute);
+
+/* Show button hint at the bottom (no-network display). */
+void clock_screen_show_button_hint(void);

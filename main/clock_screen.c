@@ -352,18 +352,25 @@ void clock_screen_set_indoor_full(float temp_c, float humidity)
         lv_label_set_text(weather_label, buf);
     }
     lv_obj_remove_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
-    /* Hide temp_label — not needed when showing indoor-only */
-    if (temp_label) lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
 }
 
 void clock_screen_set_alarm_time(int hour, int minute)
 {
-    if (!station_label) return;
+    if (!temp_label) return;
     if (night_mode) return;
 
     char buf[32];
     snprintf(buf, sizeof(buf), "闹钟 %02d:%02d", hour, minute);
-    lv_label_set_text(station_label, buf);
+    lv_label_set_text(temp_label, buf);
+    lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
+}
+
+void clock_screen_show_button_hint(void)
+{
+    if (!station_label) return;
+    if (night_mode) return;
+
+    lv_label_set_text(station_label, "按左键播放");
     lv_obj_clear_flag(station_label, LV_OBJ_FLAG_HIDDEN);
 }
 
