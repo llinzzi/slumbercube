@@ -67,6 +67,10 @@ static void draw_line(int x0, int y0, int x1, int y1, uint8_t gray)
 static void draw_chart(void)
 {
     if (!canvas || !canvas_buf || !weather || !weather->valid || weather->count < 1) return;
+    /* Night mode: canvas shows the dim clock, not the weather chart.
+     * Don't overwrite — avoids the 10s flicker (set_indoor_env triggers
+     * draw_chart every ~10s but night clock draws every 1s). */
+    if (night_mode) return;
 
     memset(canvas_buf, 0, CANVAS_W * CANVAS_H);
 
