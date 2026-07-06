@@ -13,6 +13,7 @@
 #include "clock_screen.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
+#include "esp_timer.h"
 #include "esp_mac.h"
 #include "esp_heap_caps.h"
 #include "nvs_flash.h"
@@ -370,6 +371,7 @@ static void do_factory_reset(void)
 
 void app_main(void)
 {
+    int64_t t_boot = esp_timer_get_time();
     ESP_LOGI(TAG, "Starting SSD1322 OLED with LVGL, active=%ds", CONFIG_ACTIVE_DURATION_SECS);
     s_main_task = xTaskGetCurrentTaskHandle();
 
@@ -457,9 +459,11 @@ void app_main(void)
     gpio_set_level(PIN_NUM_CLK, 0);        /* SCLK low */
     gpio_set_level(PIN_NUM_DC, 0);         /* DC low */
     gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0); /* NS4168 shutdown */
+    int64_t t1 = esp_timer_get_time();
 
     // Initialize SSD1322 driver first (display stays OFF until first frame rendered)
     ESP_ERROR_CHECK(ssd1322_init());
+    int64_t t2 = esp_timer_get_time();
 
     // ── 右键 (电源) (wake / sleep / night toggle / factory reset) ──
     {
@@ -521,9 +525,11 @@ void app_main(void)
     pcf85063_init();
     apply_pcf85063_time();
 #endif
+    int64_t t3 = esp_timer_get_time();
 
     // Initialize LVGL before WiFi (clean heap avoids allocation failures)
     ESP_ERROR_CHECK(lvgl_adapter_init());
+    int64_t t4 = esp_timer_get_time();
     log_heap("lvgl_init");
 
     // Wait for LVGL task to start (one tick at 100Hz = 10ms, 20ms is ample)
@@ -545,6 +551,7 @@ void app_main(void)
         config_screen_init(ap_ssid, CONFIG_WIFI_PROV_AP_PASSWORD);
         config_screen_show();
     }
+    int64_t t5 = esp_timer_get_time();
 
     /* Force a synchronous flush so the active screen is in GDDRAM *before*
      * we turn the panel on. The lvgl_task is running at 10 ms intervals and
@@ -553,12 +560,32 @@ void app_main(void)
      * This is the second half of the anti-white-flash fix (the first half
      * is painting the default screen black in lvgl_adapter_init). */
     lv_refr_now(lv_disp_get_default());
+    int64_t t6 = esp_timer_get_time();
 
     // Turn on display AFTER first frame is in GDDRAM — eliminates white flash on wake
     ssd1322_display_on();
+    int64_t t7 = esp_timer_get_time();
 
     // Brief settle before sensor I2C (display already rendered)
     vTaskDelay(pdMS_TO_TICKS(10));
+    int64_t t8 = esp_timer_get_time();
+
+    /* ── Boot timing summary (microseconds from app_main entry) ── */
+    ESP_LOGI(TAG, "╔══════════════════════════════════════════╗");
+    ESP_LOGI(TAG, "║  BOOT TIMING (us from app_main)          ║");
+    ESP_LOGI(TAG, "╠══════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║ GPIO early init:   %6lld us            ║", (long long)(t1 - t_boot));
+    ESP_LOGI(TAG, "║ ssd1322_init:      %6lld us            ║", (long long)(t2 - t1));
+    ESP_LOGI(TAG, "║ Button+WiFi+RTC:   %6lld us            ║", (long long)(t3 - t2));
+    ESP_LOGI(TAG, "║ lvgl_adapter_init: %6lld us            ║", (long long)(t4 - t3));
+    ESP_LOGI(TAG, "║ LVGL wait+UI init: %6lld us            ║", (long long)(t5 - t4));
+    ESP_LOGI(TAG, "║ lv_refr_now:       %6lld us            ║", (long long)(t6 - t5));
+    ESP_LOGI(TAG, "║ display_on:        %6lld us            ║", (long long)(t7 - t6));
+    ESP_LOGI(TAG, "║ post-display wait: %6lld us            ║", (long long)(t8 - t7));
+    ESP_LOGI(TAG, "╠══════════════════════════════════════════╣");
+    ESP_LOGI(TAG, "║ TOTAL to display:  %6lld us  (%lld ms) ║",
+             (long long)(t7 - t_boot), (long long)((t7 - t_boot) / 1000));
+    ESP_LOGI(TAG, "╚══════════════════════════════════════════╝");
 
     /* Read indoor sensor on every wake (for no-network display fallback). */
     float s_indoor_t = NAN, s_indoor_h = NAN;
