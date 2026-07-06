@@ -412,14 +412,8 @@ static void audio_parse_radio(cJSON *root)
     }
     if (j_volume && cJSON_IsNumber(j_volume)) {
         double v = cJSON_GetNumberValue(j_volume);
-        /* Support both 0.0-1.0 (float) and 0-100 (integer/percentage) */
-        if (v >= 0.0 && v <= 1.0) {
-            s_radio_volume_pct = (int)(v * 100.0 + 0.5);
-        } else if (v > 1.0 && v <= 100.0) {
-            s_radio_volume_pct = (int)(v + 0.5);
-        } else {
-            s_radio_volume_pct = (int)v;
-        }
+        /* Treat value as direct percentage (0-100), clamp to valid range */
+        s_radio_volume_pct = (int)(v + 0.5);
         if (s_radio_volume_pct < 0)  s_radio_volume_pct = 0;
         if (s_radio_volume_pct > 100) s_radio_volume_pct = 100;
         ESP_LOGI(TAG, "Radio: volume=%.2f -> %d%%", v, s_radio_volume_pct);
