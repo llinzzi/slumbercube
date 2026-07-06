@@ -818,6 +818,13 @@ void audio_deinit(void)
     if (s_mixer_ready) {
         audio_mixer_deinit();
         s_mixer_ready = false;
+        /* The mixer task may be blocked inside i2s_channel_write (timeout
+         * capped at 100ms in i2s_write). Wait for it to exit before
+         * destroying the I2S channel — otherwise i2s_del_channel tears
+         * down hardware the mixer is still using, leaving the new I2S
+         * channel (created in the next audio_init) in a broken state
+         * where every write returns 0 bytes forever. */
+        vTaskDelay(pdMS_TO_TICKS(200));
     }
 
     if (s_i2s_tx_chan) {
