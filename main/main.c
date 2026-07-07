@@ -726,6 +726,14 @@ void app_main(void)
 #if CONFIG_PCF85063_ENABLE
             s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
 #endif
+            /* Show alarm from server response (if valid). The no-network path
+             * reads PCF85063 directly, but the WiFi path must also display it. */
+            {
+                const audio_alarm_config_t *acfg = audio_get_alarm_config();
+                if (acfg && acfg->valid) {
+                    clock_screen_set_alarm_time(acfg->hour, acfg->minute);
+                }
+            }
             if (fetch_rc == ESP_ERR_NOT_SUPPORTED) {
                 ESP_LOGI(TAG, "Agent disabled by config, clock-only mode");
                 clock_screen_set_station_name(audio_failure_station_name());
