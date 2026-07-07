@@ -15,7 +15,7 @@
 // 显示参数
 #define LCD_H_RES      256
 #define LCD_V_RES      64
-#define LCD_PIXEL_CLOCK_HZ (20 * 1000 * 1000)
+#define LCD_PIXEL_CLOCK_HZ (10 * 1000 * 1000)
 
 /**
  * @brief 初始化SSD1322驱动
