@@ -308,18 +308,19 @@ static void left_short_click_cb(void *button_handle, void *usr_data)
         ESP_LOGI(TAG, "左键 short click — ignored (normal=%d)", s_normal_mode);
         return;
     }
-    /* Agent disabled → NTP time sync. Agent enabled → audio toggle. */
+    /* Always sync alarm from server, regardless of agent state. */
+    clock_screen_set_station_name("同步时间...");
+    if (s_main_task) xTaskNotify(s_main_task, EVENT_NTP_SYNC, eSetBits);
+
     agent_config_t acfg;
     bool agent_on = (agent_config_load(&acfg) == ESP_OK && acfg.enabled);
-    if (!agent_on) {
+    if (agent_on) {
+        ESP_LOGI(TAG, "左键 short click → audio toggle");
+        if (s_main_task) xTaskNotify(s_main_task, EVENT_AUDIO_TOGGLE, eSetBits);
+        clock_screen_set_audio_indicator(!s_audio_playing);
+    } else {
         ESP_LOGI(TAG, "左键 short click → NTP sync (agent off)");
-        clock_screen_set_station_name("同步时间...");
-        if (s_main_task) xTaskNotify(s_main_task, EVENT_NTP_SYNC, eSetBits);
-        return;
     }
-    ESP_LOGI(TAG, "左键 short click → audio toggle");
-    if (s_main_task) xTaskNotify(s_main_task, EVENT_AUDIO_TOGGLE, eSetBits);
-    clock_screen_set_audio_indicator(!s_audio_playing);
 #else
     ESP_LOGI(TAG, "Audio disabled, ignoring 左键 short click");
 #endif
@@ -787,9 +788,10 @@ void app_main(void)
                      is_night, (int)clock_screen_get_night_override());
         }
 
-        /* 左键 short click → fetch /api/esp + update alarm + NTP sync.
+        /* 左键 short click → NTP time sync (agent-disabled mode).
          * wifi_init_sta() connects + starts SNTP in the background.
-         * Also fetch the latest alarm config from server and write to PCF85063. */
+         * Wait a few seconds for the first NTP response, then sync PCF85063.
+         * Does NOT fetch API or update alarm — agent-disabled means no alarm. */
         if (notified & EVENT_NTP_SYNC) {
             wifi_ensure_netif();
             if (wifi_init_sta() == ESP_OK) {
@@ -799,20 +801,6 @@ void app_main(void)
                     pcf85063_sync_from_system();
                 }
 #endif
-                /* Fetch alarm config from server and update PCF85063 + display. */
-                if (audio_init() == ESP_OK) {
-                    esp_err_t fetch_rc = audio_fetch_api();
-                    if (fetch_rc == ESP_OK) {
-#if CONFIG_PCF85063_ENABLE
-                        arm_pcf85063_alarm_wakeup();
-#endif
-                        const audio_alarm_config_t *acfg = audio_get_alarm_config();
-                        if (acfg && acfg->valid) {
-                            clock_screen_set_alarm_time(acfg->hour, acfg->minute);
-                        }
-                    }
-                    audio_deinit();
-                }
                 clock_screen_set_station_name("时间已更新");
             } else {
                 clock_screen_set_station_name("WiFi 失败");
@@ -820,7 +808,8 @@ void app_main(void)
         }
 
 #if CONFIG_AUDIO_ENABLE
-        /* 左键 short click → toggle audio (stop = full stop, no resume) */
+        /* 左键 short click → toggle audio (stop = full stop, no resume).
+         * When starting playback, first fetch /api/esp to update alarm & radio. */
         if (notified & EVENT_AUDIO_TOGGLE) {
             if (s_audio_playing) {
                 audio_stop();
@@ -828,6 +817,17 @@ void app_main(void)
                 clock_screen_set_station_name("Stopped");
                 s_audio_playing = false;
             } else if (wifi_is_connected()) {
+                /* Fetch fresh API data (alarm + radio) before starting playback. */
+                esp_err_t fetch_rc = audio_fetch_api();
+                if (fetch_rc == ESP_OK) {
+#if CONFIG_PCF85063_ENABLE
+                    arm_pcf85063_alarm_wakeup();
+#endif
+                    const audio_alarm_config_t *acfg = audio_get_alarm_config();
+                    if (acfg && acfg->valid) {
+                        clock_screen_set_alarm_time(acfg->hour, acfg->minute);
+                    }
+                }
                 audio_start_playback(false);
             } else {
                 wifi_ensure_netif();
@@ -977,6 +977,17 @@ void app_main(void)
         if (s_audio_pending) {
             if (wifi_is_connected()) {
                 s_audio_pending = false;
+                /* Fetch fresh API data (alarm + radio) before starting playback. */
+                esp_err_t fetch_rc = audio_fetch_api();
+                if (fetch_rc == ESP_OK) {
+#if CONFIG_PCF85063_ENABLE
+                    arm_pcf85063_alarm_wakeup();
+#endif
+                    const audio_alarm_config_t *acfg = audio_get_alarm_config();
+                    if (acfg && acfg->valid) {
+                        clock_screen_set_alarm_time(acfg->hour, acfg->minute);
+                    }
+                }
                 audio_start_playback(false);
             } else if (++s_audio_pending_ticks >= 30) {
                 s_audio_pending = false;
