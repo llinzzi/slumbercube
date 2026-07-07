@@ -15,7 +15,7 @@ CONFIG_LV_FONT_FMT_TXT_LARGE=y
 
 # Night mode: 23:00 → 06:00 (crosses midnight). Pinned here so the
 # default in Kconfig.projbuild doesn't drift on rebuilds.
-CONFIG_NIGHT_START_HOUR=23
+CONFIG_NIGHT_START_HOUR=22
 CONFIG_NIGHT_START_MINUTE=0
 
 # ESP32-C3-MINI-1-N4 has 4MB flash; partitions.csv needs the full
