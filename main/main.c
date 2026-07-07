@@ -911,17 +911,20 @@ void app_main(void)
             }
 
             if (track_done) {
+                static bool s_first_advance_synced = false;
                 stall_ticks = 0;
                 audio_deinit();
                 ESP_LOGI(TAG, "Audio deinit, fetching next song...");
                 vTaskDelay(pdMS_TO_TICKS(1000));
 
-                /* Sync PCF85063 from SNTP-corrected system time before
-                 * fetching the next track. SNTP runs in the background during
-                 * playback; by now it should have a fresh NTP fix. */
+                /* Sync PCF85063 from SNTP-corrected system time on the
+                 * FIRST auto-advance only. SNTP runs in the background
+                 * during playback; by the first track's end it should have
+                 * a fresh NTP fix. Subsequent tracks reuse the same session. */
 #if CONFIG_PCF85063_ENABLE
-                if (pcf85063_is_present()) {
+                if (!s_first_advance_synced && pcf85063_is_present()) {
                     pcf85063_sync_from_system();
+                    s_first_advance_synced = true;
                 }
 #endif
 
