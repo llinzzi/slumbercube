@@ -422,6 +422,14 @@ void clock_screen_show(void)
 {
     if (!container) return;
     visible = true;
+
+    /* Apply night/day mode based on current time on first show.
+     * night_mode starts as false but the clock may already be in night
+     * hours (e.g. after a cold boot at 22:00). Without this, the
+     * display shows a broken half-night-half-day state until the user
+     * long-presses the button. */
+    clock_screen_set_night_mode(clock_screen_is_night_time());
+
     if (weather && weather->valid) {
         draw_chart();
     }
