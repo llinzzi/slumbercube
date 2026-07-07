@@ -184,6 +184,16 @@ static void draw_night_clock(void)
     int m0 = tm_now.tm_min / 10;
     int m1 = tm_now.tm_min % 10;
 
+    /* Night clock only shows HH:MM — redraw once per minute instead of
+     * every second. The per-second full-canvas memset + seg7 draw + grid
+     * mask + SPI flush was ~16K CPU iterations and a full 8KB DMA transfer
+     * each tick, starving lower-priority I2S DMA and causing audio stutter. */
+    static int last_minute = -1;
+    static bool last_indicator = false;
+    if (tm_now.tm_min == last_minute && s_indicator_on == last_indicator) return;
+    last_minute = tm_now.tm_min;
+    last_indicator = s_indicator_on;
+
     memset(canvas_buf, 0, CANVAS_W * CANVAS_H);
 
     int total_w = SEG_W * 4 + COLON_W + SEG_GAP * 4;
