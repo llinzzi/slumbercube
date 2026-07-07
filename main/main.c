@@ -155,17 +155,19 @@ static bool arm_pcf85063_alarm_wakeup(void)
         return false;
     }
 
-    /* Values from Kconfig (CONFIG_WAKEUP_HOUR/MINUTE) and from the server
-     * are both local time (CST, UTC+8). PCF85063 stores UTC internally and
-     * compares alarm registers against its UTC clock — convert to UTC. */
-    uint8_t wake_h = (uint8_t)(((int)CONFIG_WAKEUP_HOUR + 24 - 8) % 24);
-    uint8_t wake_m = CONFIG_WAKEUP_MINUTE;
-    if (srv && srv->valid) {
-        wake_h = (uint8_t)(((int)srv->hour + 24 - 8) % 24);
-        wake_m = srv->minute;
-        ESP_LOGI(TAG, "PCF85063: server alarm %02d:%02d CST -> %02d:%02d UTC",
-                 srv->hour, srv->minute, wake_h, wake_m);
+    /* Alarm time comes exclusively from the server. If the API fetch
+     * failed or the server didn't return a valid alarm, leave the
+     * PCF85063 alarm unchanged — never fall back to Kconfig defaults. */
+    if (!srv || !srv->valid) {
+        ESP_LOGW(TAG, "PCF85063: no valid server alarm, not arming");
+        return false;
     }
+    /* Server alarm is in local time (CST, UTC+8). PCF85063 stores UTC
+     * internally and compares alarm registers against its UTC clock. */
+    uint8_t wake_h = (uint8_t)(((int)srv->hour + 24 - 8) % 24);
+    uint8_t wake_m = srv->minute;
+    ESP_LOGI(TAG, "PCF85063: server alarm %02d:%02d CST -> %02d:%02d UTC",
+             srv->hour, srv->minute, wake_h, wake_m);
     pcf85063_alarm_t alarm = { .enable = true, .minute = wake_m, .hour = wake_h,
                                 .day = PCF85063_ALARM_DISABLE,
                                 .weekday = PCF85063_ALARM_DISABLE };
@@ -642,14 +644,12 @@ void app_main(void)
                             /* PCF85063 stores alarm in UTC; convert to CST for display */
                             int display_h = ((int)al.hour + 8) % 24;
                             clock_screen_set_alarm_time(display_h, al.minute);
-                        } else {
-                            clock_screen_set_alarm_time(CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
                         }
-                    } else
-#endif
-                    {
-                        clock_screen_set_alarm_time(CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
+                        /* else: no valid PCF85063 alarm — don't show anything.
+                         * Never fall back to CONFIG defaults; the alarm comes
+                         * exclusively from the server. */
                     }
+#endif
                 }
                 if (agent_on) {
                     clock_screen_show_button_hint();
@@ -1016,19 +1016,31 @@ void app_main(void)
     if (!s_rtc_alarm_armed && !user_disabled && !agent_off)
 #endif
     {
-        time_t now = time(NULL);
-        struct tm tm_now = {0}; localtime_r(&now, &tm_now);
-        struct tm tm_wake = tm_now;
-        tm_wake.tm_hour = CONFIG_WAKEUP_HOUR;
-        tm_wake.tm_min = CONFIG_WAKEUP_MINUTE;
-        tm_wake.tm_sec = 0;
-        time_t wake_time = mktime(&tm_wake);
-        if (wake_time <= now) wake_time += 24 * 60 * 60;
-        uint64_t sleep_us = (uint64_t)(wake_time - now) * 1000000ULL;
-        esp_sleep_enable_timer_wakeup(sleep_us);
-        ESP_LOGI(TAG, "Timer wakeup in %llu min (%02d:%02d)",
-                 (unsigned long long)(sleep_us / 60000000),
-                 CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
+        /* Only use the internal RTC timer when PCF85063 is absent.
+         * When PCF85063 IS present but the server alarm was invalid,
+         * s_rtc_alarm_armed stays false — skip ALL auto-wakeup.
+         * The alarm comes exclusively from the server; no fallback
+         * to CONFIG_WAKEUP_HOUR/MINUTE. */
+#if CONFIG_PCF85063_ENABLE
+        if (pcf85063_is_present()) {
+            ESP_LOGI(TAG, "No valid server alarm, skipping timer wakeup");
+        } else
+#endif
+        {
+            time_t now = time(NULL);
+            struct tm tm_now = {0}; localtime_r(&now, &tm_now);
+            struct tm tm_wake = tm_now;
+            tm_wake.tm_hour = CONFIG_WAKEUP_HOUR;
+            tm_wake.tm_min = CONFIG_WAKEUP_MINUTE;
+            tm_wake.tm_sec = 0;
+            time_t wake_time = mktime(&tm_wake);
+            if (wake_time <= now) wake_time += 24 * 60 * 60;
+            uint64_t sleep_us = (uint64_t)(wake_time - now) * 1000000ULL;
+            esp_sleep_enable_timer_wakeup(sleep_us);
+            ESP_LOGI(TAG, "Timer wakeup in %llu min (%02d:%02d)",
+                     (unsigned long long)(sleep_us / 60000000),
+                     CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
+        }
     }
 
     // Enter deep sleep (brief delay so UART TX finishes before RTC domain powers down)
