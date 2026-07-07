@@ -787,9 +787,9 @@ void app_main(void)
                      is_night, (int)clock_screen_get_night_override());
         }
 
-        /* 左键 short click → NTP time sync (agent-disabled mode).
+        /* 左键 short click → fetch /api/esp + update alarm + NTP sync.
          * wifi_init_sta() connects + starts SNTP in the background.
-         * Wait a few seconds for the first NTP response, then sync PCF85063. */
+         * Also fetch the latest alarm config from server and write to PCF85063. */
         if (notified & EVENT_NTP_SYNC) {
             wifi_ensure_netif();
             if (wifi_init_sta() == ESP_OK) {
@@ -799,6 +799,20 @@ void app_main(void)
                     pcf85063_sync_from_system();
                 }
 #endif
+                /* Fetch alarm config from server and update PCF85063 + display. */
+                if (audio_init() == ESP_OK) {
+                    esp_err_t fetch_rc = audio_fetch_api();
+                    if (fetch_rc == ESP_OK) {
+#if CONFIG_PCF85063_ENABLE
+                        arm_pcf85063_alarm_wakeup();
+#endif
+                        const audio_alarm_config_t *acfg = audio_get_alarm_config();
+                        if (acfg && acfg->valid) {
+                            clock_screen_set_alarm_time(acfg->hour, acfg->minute);
+                        }
+                    }
+                    audio_deinit();
+                }
                 clock_screen_set_station_name("时间已更新");
             } else {
                 clock_screen_set_station_name("WiFi 失败");
