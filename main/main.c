@@ -874,6 +874,13 @@ void app_main(void)
 #if CONFIG_PCF85063_ENABLE
                     s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
 #endif
+                    /* Update alarm display from server response. */
+                    {
+                        const audio_alarm_config_t *acfg = audio_get_alarm_config();
+                        if (acfg && acfg->valid) {
+                            clock_screen_set_alarm_time(acfg->hour, acfg->minute);
+                        }
+                    }
                 }
                 if (audio_radio_url_is_set()) {
                     if (audio_play_url() == ESP_OK) {
@@ -929,6 +936,14 @@ void app_main(void)
                         if (gi) {
                             audio_set_indoor_env(t2, h2);
                             clock_screen_set_indoor_env(t2, h2);
+                        }
+#if CONFIG_PCF85063_ENABLE
+                        s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
+#endif
+                        /* Update alarm display from server response. */
+                        const audio_alarm_config_t *acfg2 = audio_get_alarm_config();
+                        if (acfg2 && acfg2->valid) {
+                            clock_screen_set_alarm_time(acfg2->hour, acfg2->minute);
                         }
                     }
                     if (audio_radio_url_is_set()) {
