@@ -246,6 +246,19 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
 
     clock_screen_set_station_name(audio_get_station_name());
     apply_weather_and_indoor(audio_get_weather());
+
+    /* Apply alarm from API response (parsed by audio_radio_fetch or
+     * audio_fetch_api — whichever fetched /api/esp for the radio URL). */
+    {
+        const audio_alarm_config_t *acfg = audio_get_alarm_config();
+        if (acfg && acfg->valid) {
+            clock_screen_set_alarm_time(acfg->hour, acfg->minute);
+#if CONFIG_PCF85063_ENABLE
+            arm_pcf85063_alarm_wakeup();
+#endif
+        }
+    }
+
     clock_screen_set_audio_indicator(true);
     s_audio_playing = true;
     return ESP_OK;

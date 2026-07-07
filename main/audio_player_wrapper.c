@@ -513,6 +513,7 @@ static esp_err_t audio_radio_fetch(void)
 
     audio_parse_radio(root);
     audio_parse_weather(root);
+    audio_parse_alarm(root);
     cJSON_Delete(root);
 
     if (s_radio_url[0] == '\0') {
