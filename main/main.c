@@ -308,10 +308,6 @@ static void left_short_click_cb(void *button_handle, void *usr_data)
         ESP_LOGI(TAG, "左键 short click — ignored (normal=%d)", s_normal_mode);
         return;
     }
-    /* Always sync alarm from server, regardless of agent state. */
-    clock_screen_set_station_name("同步时间...");
-    if (s_main_task) xTaskNotify(s_main_task, EVENT_NTP_SYNC, eSetBits);
-
     agent_config_t acfg;
     bool agent_on = (agent_config_load(&acfg) == ESP_OK && acfg.enabled);
     if (agent_on) {
@@ -320,6 +316,8 @@ static void left_short_click_cb(void *button_handle, void *usr_data)
         clock_screen_set_audio_indicator(!s_audio_playing);
     } else {
         ESP_LOGI(TAG, "左键 short click → NTP sync (agent off)");
+        clock_screen_set_station_name("同步时间...");
+        if (s_main_task) xTaskNotify(s_main_task, EVENT_NTP_SYNC, eSetBits);
     }
 #else
     ESP_LOGI(TAG, "Audio disabled, ignoring 左键 short click");
@@ -793,18 +791,17 @@ void app_main(void)
          * Wait a few seconds for the first NTP response, then sync PCF85063.
          * Does NOT fetch API or update alarm — agent-disabled means no alarm. */
         if (notified & EVENT_NTP_SYNC) {
-            wifi_ensure_netif();
-            if (wifi_init_sta() == ESP_OK) {
-#if CONFIG_PCF85063_ENABLE
-                if (pcf85063_is_present()) {
-                    vTaskDelay(pdMS_TO_TICKS(3000));
-                    pcf85063_sync_from_system();
-                }
-#endif
-                clock_screen_set_station_name("时间已更新");
-            } else {
-                clock_screen_set_station_name("WiFi 失败");
+            if (!wifi_is_connected()) {
+                wifi_ensure_netif();
+                wifi_init_sta();
             }
+#if CONFIG_PCF85063_ENABLE
+            if (pcf85063_is_present()) {
+                vTaskDelay(pdMS_TO_TICKS(3000));
+                pcf85063_sync_from_system();
+            }
+#endif
+            clock_screen_set_station_name("时间已更新");
         }
 
 #if CONFIG_AUDIO_ENABLE
@@ -918,6 +915,15 @@ void app_main(void)
                 audio_deinit();
                 ESP_LOGI(TAG, "Audio deinit, fetching next song...");
                 vTaskDelay(pdMS_TO_TICKS(1000));
+
+                /* Sync PCF85063 from SNTP-corrected system time before
+                 * fetching the next track. SNTP runs in the background during
+                 * playback; by now it should have a fresh NTP fix. */
+#if CONFIG_PCF85063_ENABLE
+                if (pcf85063_is_present()) {
+                    pcf85063_sync_from_system();
+                }
+#endif
 
                 clock_screen_set_station_name("Next song...");
                 if (!wifi_is_connected()) {

@@ -128,8 +128,14 @@ void wifi_mark_radio_started(void)
     s_wifi_started = true;
 }
 
+static bool s_sntp_started = false;
+
 static void sntp_init_time(void)
 {
+    if (s_sntp_started) {
+        ESP_LOGI(TAG, "SNTP already running, skipping init");
+        return;
+    }
     /* PCF85063 already set the system clock at boot, so we don't need to
      * block on SNTP. Fire-and-forget: start the NTP client in the background;
      * lwIP runs SNTP polls on its own timer and corrects the clock gradually.
@@ -141,6 +147,7 @@ static void sntp_init_time(void)
     sntp_setservername(1, "time.nist.gov");
     sntp_setoperatingmode(SNTP_OPMODE_POLL);
     sntp_init();
+    s_sntp_started = true;
 }
 
 static bool s_netif_inited = false;

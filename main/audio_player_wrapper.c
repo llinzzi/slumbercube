@@ -435,10 +435,16 @@ static void audio_parse_alarm(cJSON *root)
     s_alarm_config.disabled = false;
 
     cJSON *j_alarm = cJSON_GetObjectItem(root, "alarm");
-    if (!j_alarm || !cJSON_IsObject(j_alarm)) return;
+    if (!j_alarm || !cJSON_IsObject(j_alarm)) {
+        ESP_LOGW(TAG, "Alarm: missing or not an object in API response");
+        return;
+    }
 
     cJSON *j_enabled = cJSON_GetObjectItem(j_alarm, "enabled");
-    if (!j_enabled || !cJSON_IsBool(j_enabled)) return;
+    if (!j_enabled || !cJSON_IsBool(j_enabled)) {
+        ESP_LOGW(TAG, "Alarm: 'enabled' field missing or not boolean");
+        return;
+    }
 
     /* Server explicitly disabled the alarm — record and bail. */
     if (cJSON_IsFalse(j_enabled)) {
