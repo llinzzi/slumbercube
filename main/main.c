@@ -261,7 +261,7 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
             if (pcf85063_is_present()) {
                 pcf85063_sync_from_system();
             }
-            arm_pcf85063_alarm_wakeup();
+            s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
 #endif
         }
     }
