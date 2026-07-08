@@ -1,5 +1,5 @@
-# Use external 32.768kHz crystal for RTC clock to preserve time during deep sleep
-CONFIG_RTC_CLK_SRC_EXT_CRYS=y
+# Use internal 150kHz RC oscillator (no external 32kHz crystal on this board)
+CONFIG_RTC_CLK_SRC_INT_RC=y
 
 # Use custom 1800K factory partition (binary too large for standard 1500K large partition)
 CONFIG_PARTITION_TABLE_CUSTOM=y
