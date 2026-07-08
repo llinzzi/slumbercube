@@ -490,6 +490,12 @@ const audio_alarm_config_t *audio_get_alarm_config(void)
  * audio_play_url() can skip a redundant HTTP round-trip. */
 esp_err_t audio_fetch_api(void)
 {
+    /* Ensure agent config is loaded before the HTTP call — callers may
+     * invoke this before audio_init() (e.g. left button toggle). */
+    if (!s_agent_loaded) {
+        audio_agent_init();
+    }
+
     cJSON *root = NULL;
     esp_err_t err = audio_http_get_json(&root);
     if (err != ESP_OK) return err;
@@ -504,17 +510,12 @@ esp_err_t audio_fetch_api(void)
 }
 
 /* Fetch /api/esp for a fresh radio URL (auto-advance, button toggle).
- * Always clears previous radio state before parsing. */
+ * Delegates to audio_fetch_api() which fetches and parses the full
+ * /api/esp response (weather, radio, alarm). */
 static esp_err_t audio_radio_fetch(void)
 {
-    cJSON *root = NULL;
-    esp_err_t err = audio_http_get_json(&root);
+    esp_err_t err = audio_fetch_api();
     if (err != ESP_OK) return err;
-
-    audio_parse_radio(root);
-    audio_parse_weather(root);
-    audio_parse_alarm(root);
-    cJSON_Delete(root);
 
     if (s_radio_url[0] == '\0') {
         ESP_LOGW(TAG, "Radio: no URL in response");

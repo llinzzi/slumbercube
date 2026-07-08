@@ -827,17 +827,9 @@ void app_main(void)
                 clock_screen_set_station_name("Stopped");
                 s_audio_playing = false;
             } else if (wifi_is_connected()) {
-                /* Fetch fresh API data (alarm + radio) before starting playback. */
-                esp_err_t fetch_rc = audio_fetch_api();
-                if (fetch_rc == ESP_OK) {
-#if CONFIG_PCF85063_ENABLE
-                    arm_pcf85063_alarm_wakeup();
-#endif
-                    const audio_alarm_config_t *acfg = audio_get_alarm_config();
-                    if (acfg && acfg->valid) {
-                        clock_screen_set_alarm_time(acfg->hour, acfg->minute);
-                    }
-                }
+                /* audio_start_playback() fetches /api/esp internally
+                 * (via audio_play_url → audio_radio_fetch → audio_fetch_api)
+                 * and applies alarm + weather automatically. */
                 audio_start_playback(false);
             } else {
                 wifi_ensure_netif();
@@ -999,17 +991,8 @@ void app_main(void)
         if (s_audio_pending) {
             if (wifi_is_connected()) {
                 s_audio_pending = false;
-                /* Fetch fresh API data (alarm + radio) before starting playback. */
-                esp_err_t fetch_rc = audio_fetch_api();
-                if (fetch_rc == ESP_OK) {
-#if CONFIG_PCF85063_ENABLE
-                    arm_pcf85063_alarm_wakeup();
-#endif
-                    const audio_alarm_config_t *acfg = audio_get_alarm_config();
-                    if (acfg && acfg->valid) {
-                        clock_screen_set_alarm_time(acfg->hour, acfg->minute);
-                    }
-                }
+                /* audio_start_playback() fetches /api/esp internally
+                 * and applies alarm + weather automatically. */
                 audio_start_playback(false);
             } else if (++s_audio_pending_ticks >= 30) {
                 s_audio_pending = false;
