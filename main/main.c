@@ -248,12 +248,19 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
     apply_weather_and_indoor(audio_get_weather());
 
     /* Apply alarm from API response (parsed by audio_radio_fetch or
-     * audio_fetch_api — whichever fetched /api/esp for the radio URL). */
+     * audio_fetch_api — whichever fetched /api/esp for the radio URL).
+     * Sync PCF85063 clock FIRST: during deep sleep the RTC drifts,
+     * but system time is now SNTP-corrected. If we don't sync, the
+     * alarm comparison runs against the drifted PCF85063 clock and
+     * fires at the wrong real time (or not at all). */
     {
         const audio_alarm_config_t *acfg = audio_get_alarm_config();
         if (acfg && acfg->valid) {
             clock_screen_set_alarm_time(acfg->hour, acfg->minute);
 #if CONFIG_PCF85063_ENABLE
+            if (pcf85063_is_present()) {
+                pcf85063_sync_from_system();
+            }
             arm_pcf85063_alarm_wakeup();
 #endif
         }
