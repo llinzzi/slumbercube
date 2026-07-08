@@ -237,11 +237,12 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
         return ESP_FAIL;
     }
 
-    /* Apply weather + alarm from API response FIRST — they were already
-     * fetched and cached inside audio_play_url() → audio_radio_fetch() →
-     * audio_fetch_api(). Do this before checking audio_play_url()'s return
-     * value so weather and alarm display even when playback fails (e.g.
-     * missing radio URL, transient network issue). */
+    /* audio_play_url() internally fetches /api/esp (weather + alarm + radio).
+     * Apply weather + alarm AFTER the fetch (so they have fresh data) but
+     * BEFORE checking the return value — so they display even if playback
+     * cannot start (e.g. missing URL, transient network issue). */
+    esp_err_t play_rc = audio_play_url();
+
     apply_weather_and_indoor(audio_get_weather());
 
     {
@@ -257,7 +258,7 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
         }
     }
 
-    if (audio_play_url() != ESP_OK) {
+    if (play_rc != ESP_OK) {
         clock_screen_set_audio_indicator(false);
         clock_screen_set_station_name(audio_failure_station_name());
         s_audio_playing = false;
