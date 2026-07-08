@@ -237,22 +237,13 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
         return ESP_FAIL;
     }
 
-    if (audio_play_url() != ESP_OK) {
-        clock_screen_set_audio_indicator(false);
-        clock_screen_set_station_name(audio_failure_station_name());
-        s_audio_playing = false;
-        return ESP_FAIL;
-    }
-
-    clock_screen_set_station_name(audio_get_station_name());
+    /* Apply weather + alarm from API response FIRST — they were already
+     * fetched and cached inside audio_play_url() → audio_radio_fetch() →
+     * audio_fetch_api(). Do this before checking audio_play_url()'s return
+     * value so weather and alarm display even when playback fails (e.g.
+     * missing radio URL, transient network issue). */
     apply_weather_and_indoor(audio_get_weather());
 
-    /* Apply alarm from API response (parsed by audio_radio_fetch or
-     * audio_fetch_api — whichever fetched /api/esp for the radio URL).
-     * Sync PCF85063 clock FIRST: during deep sleep the RTC drifts,
-     * but system time is now SNTP-corrected. If we don't sync, the
-     * alarm comparison runs against the drifted PCF85063 clock and
-     * fires at the wrong real time (or not at all). */
     {
         const audio_alarm_config_t *acfg = audio_get_alarm_config();
         if (acfg && acfg->valid) {
@@ -266,6 +257,14 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
         }
     }
 
+    if (audio_play_url() != ESP_OK) {
+        clock_screen_set_audio_indicator(false);
+        clock_screen_set_station_name(audio_failure_station_name());
+        s_audio_playing = false;
+        return ESP_FAIL;
+    }
+
+    clock_screen_set_station_name(audio_get_station_name());
     clock_screen_set_audio_indicator(true);
     s_audio_playing = true;
     return ESP_OK;
