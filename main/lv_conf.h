@@ -63,7 +63,7 @@
 #define LV_USE_CONTAINER     1
 
 /* Disable animation, GPU, file system, etc. */
-#define LV_USE_ANIMATION    0
+#define LV_USE_ANIMATION    1
 #define LV_USE_DRAW_SW      1
 #define LV_USE_DRAW_VGLITE  0
 #define LV_USE_DRAW_PXP     0
