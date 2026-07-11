@@ -33,11 +33,11 @@ ESP32-C3 (RISC-V). If switching target (e.g., to ESP32), use `idf.py set-target 
 app_main()
 ├── GPIO early init (hold RST/MOSI/CLK/DC low before SSD1322 init)
 ├── ssd1322_init()          — SPI driver, display stays OFF
-├── Button init (GPIO3)
-├── wifi_set_timezone()
+├── wifi_set_timezone() + PCF85063 RTC time sync
 ├── lvgl_adapter_init()     — LVGL display adapter, L8→I4 conversion
 ├── ui_wrapper_init()       — EEZ Studio generated UI (clock_screen)
 ├── ssd1322_display_on()    — AFTER first frame rendered (anti-white-flash)
+├── Button init (GPIO3 + left)  — deferred, after screen visible
 ├── WiFi STA + SNTP sync
 ├── Weather fetch (AMAP)
 └── Main loop (600s, 1s tick) → deep sleep
@@ -58,6 +58,8 @@ app_main()
 | Fonts | `main/font_weather.c/h` | Chinese weather descriptions |
 | Icons | `main/weather_icons.c/h` | Programmatic weather icons (no image files) |
 | Loading | `main/loading_img.c/h` | Splash image (PNG→C array) |
+
+`docs/solutions/` — documented solutions to past problems (bugs, best practices, patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`).
 
 ### Anti-white-flash on wake
 
