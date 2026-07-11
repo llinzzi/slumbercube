@@ -46,6 +46,24 @@ static bool visible = false;
 static bool night_mode = false;
 static int8_t s_night_override = -1;  /* -1=auto, 0=force day, 1=force night */
 
+/* ── Day-mode slide animation state (U3) ──
+ * Each animating position (HH, MM) has one label currently on-screen
+ * ("show") and another waiting below ("hide"). trigger_slide() writes
+ * the new digits to `hide`, slides `show` up + fades out, slides
+ * `hide` up from below + fades in, and the completed_cb swaps the
+ * roles so the next call uses the slots in the opposite configuration.
+ * Sentinel -1 in last_hh/last_mm signals "first paint — prime only,
+ * no animation". reset_animation_state() (called on wake and on
+ * day-mode entry) re-aligns roles and clears the sentinel. */
+static lv_obj_t *hh_show = NULL;
+static lv_obj_t *hh_hide = NULL;
+static lv_obj_t *mm_show = NULL;
+static lv_obj_t *mm_hide = NULL;
+static int last_hh = -1;
+static int last_mm = -1;
+#define SLIDE_DURATION_MS 300
+#define SLIDE_DISTANCE_PX 32
+
 /* ── Canvas drawing helpers ── */
 
 static void draw_pixel(int x, int y, uint8_t gray)
@@ -74,6 +92,9 @@ static void draw_line(int x0, int y0, int x1, int y1, uint8_t gray)
 
 /* Forward decl: defined below clock_screen_update_time (used by draw_chart). */
 static void set_day_mode_time(int hour, int minute);
+static void reset_animation_state(void);
+static void trigger_slide(lv_obj_t *show, lv_obj_t *hide, bool do_anim,
+                          int new_digits, lv_anim_completed_cb_t completed_cb);
 
 static void draw_chart(void)
 {
@@ -242,9 +263,160 @@ static void set_day_mode_time(int hour, int minute)
     lv_label_set_text(mm_label, mm_buf);
 }
 
+/* LVGL animation callbacks: translate_y and opacity are style properties,
+ * so we wrap the style setters to fit the lv_anim_exec_xcb_t signature
+ * (void (*)(void *var, int32_t value)). */
+static void anim_exec_translate_y(void *var, int32_t value)
+{
+    lv_obj_set_style_translate_y((lv_obj_t *)var, (lv_coord_t)value, 0);
+}
+
+static void anim_exec_opa(void *var, int32_t value)
+{
+    lv_obj_set_style_opa((lv_obj_t *)var, (lv_opa_t)value, 0);
+}
+
+/* Called from clock_screen_show() and the day-mode entry branch of
+ * clock_screen_set_night_mode(). Re-aligns show/hide roles to their
+ * create-time defaults, cancels any in-flight animations on the four
+ * time labels, and primes last_hh/last_mm back to the sentinel so the
+ * next clock_screen_update_time() tick is treated as a fresh paint
+ * (R5/R6: no animation on first paint after wake or mode switch). */
+static void reset_animation_state(void)
+{
+    last_hh = -1;
+    last_mm = -1;
+
+    /* Cancel any in-flight animations on each of the four time labels. */
+    lv_anim_delete(hh_label, anim_exec_translate_y);
+    lv_anim_delete(hh_label, anim_exec_opa);
+    lv_anim_delete(hh_label_secondary, anim_exec_translate_y);
+    lv_anim_delete(hh_label_secondary, anim_exec_opa);
+    lv_anim_delete(mm_label, anim_exec_translate_y);
+    lv_anim_delete(mm_label, anim_exec_opa);
+    lv_anim_delete(mm_label_secondary, anim_exec_translate_y);
+    lv_anim_delete(mm_label_secondary, anim_exec_opa);
+
+    /* Restore create-time positions and visibility. */
+    if (hh_label) {
+        lv_obj_set_style_translate_y(hh_label, 0, 0);
+        lv_obj_set_style_opa(hh_label, LV_OPA_COVER, 0);
+    }
+    if (hh_label_secondary) {
+        lv_obj_set_style_translate_y(hh_label_secondary, SLIDE_DISTANCE_PX, 0);
+        lv_obj_set_style_opa(hh_label_secondary, LV_OPA_TRANSP, 0);
+        lv_label_set_text(hh_label_secondary, "");
+    }
+    if (mm_label) {
+        lv_obj_set_style_translate_y(mm_label, 0, 0);
+        lv_obj_set_style_opa(mm_label, LV_OPA_COVER, 0);
+    }
+    if (mm_label_secondary) {
+        lv_obj_set_style_translate_y(mm_label_secondary, SLIDE_DISTANCE_PX, 0);
+        lv_obj_set_style_opa(mm_label_secondary, LV_OPA_TRANSP, 0);
+        lv_label_set_text(mm_label_secondary, "");
+    }
+
+    hh_show = hh_label;
+    hh_hide = hh_label_secondary;
+    mm_show = mm_label;
+    mm_hide = mm_label_secondary;
+}
+
+static void hh_anim_completed_cb(lv_anim_t *a)
+{
+    /* Swap roles: the label that just slid in becomes the new "show",
+     * the one that slid out becomes the new "hide" waiting below. */
+    lv_obj_t *tmp = hh_show;
+    hh_show = hh_hide;
+    hh_hide = tmp;
+    /* Park the now-out-of-view "hide" off-screen for the next cycle. */
+    lv_obj_set_style_translate_y(hh_hide, SLIDE_DISTANCE_PX, 0);
+    lv_obj_set_style_opa(hh_hide, LV_OPA_TRANSP, 0);
+    lv_label_set_text(hh_hide, "");
+    /* The user_data carries the value that was being animated to; update
+     * last_hh so subsequent ticks can detect the next transition. */
+    last_hh = (int)(intptr_t)lv_anim_get_user_data(a);
+}
+
+static void mm_anim_completed_cb(lv_anim_t *a)
+{
+    lv_obj_t *tmp = mm_show;
+    mm_show = mm_hide;
+    mm_hide = tmp;
+    lv_obj_set_style_translate_y(mm_hide, SLIDE_DISTANCE_PX, 0);
+    lv_obj_set_style_opa(mm_hide, LV_OPA_TRANSP, 0);
+    lv_label_set_text(mm_hide, "");
+    last_mm = (int)(intptr_t)lv_anim_get_user_data(a);
+}
+
+/* Slide the digit pair: existing on-screen digits (`show`) move up + out
+ * while the new digits (`hide`) slide in from below. Called per position
+ * (HH and MM separately); both fire when the hour changes (and the minute
+ * necessarily changes with it). */
+static void trigger_slide(lv_obj_t *show, lv_obj_t *hide, bool do_anim,
+                          int new_digits, lv_anim_completed_cb_t completed_cb)
+{
+    if (!do_anim) return;
+
+    char buf[3];
+    snprintf(buf, sizeof(buf), "%02d", (unsigned)new_digits);
+    lv_label_set_text(hide, buf);
+
+    /* Re-anchor `hide` below the visible area and fully transparent so
+     * it starts the animation cleanly even if a prior cycle left it
+     * offset. */
+    lv_obj_set_style_translate_y(hide, SLIDE_DISTANCE_PX, 0);
+    lv_obj_set_style_opa(hide, LV_OPA_TRANSP, 0);
+
+    /* Animation 1: show slides up 0 → -32 */
+    lv_anim_t a1;
+    lv_anim_init(&a1);
+    lv_anim_set_var(&a1, show);
+    lv_anim_set_duration(&a1, SLIDE_DURATION_MS);
+    lv_anim_set_path_cb(&a1, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a1, anim_exec_translate_y);
+    lv_anim_set_values(&a1, 0, -SLIDE_DISTANCE_PX);
+    lv_anim_start(&a1);
+
+    /* Animation 2: hide slides up +32 → 0 */
+    lv_anim_t a2;
+    lv_anim_init(&a2);
+    lv_anim_set_var(&a2, hide);
+    lv_anim_set_duration(&a2, SLIDE_DURATION_MS);
+    lv_anim_set_path_cb(&a2, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a2, anim_exec_translate_y);
+    lv_anim_set_values(&a2, SLIDE_DISTANCE_PX, 0);
+    lv_anim_start(&a2);
+
+    /* Animation 3: show fades out (255 → 0) */
+    lv_anim_t a3;
+    lv_anim_init(&a3);
+    lv_anim_set_var(&a3, show);
+    lv_anim_set_duration(&a3, SLIDE_DURATION_MS);
+    lv_anim_set_path_cb(&a3, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a3, anim_exec_opa);
+    lv_anim_set_values(&a3, LV_OPA_COVER, LV_OPA_TRANSP);
+    lv_anim_start(&a3);
+
+    /* Animation 4: hide fades in (0 → 255). Hook the role-swap
+     * completed_cb here — same duration as the others, so all four
+     * finish within the same LVGL tick. */
+    lv_anim_t a4;
+    lv_anim_init(&a4);
+    lv_anim_set_var(&a4, hide);
+    lv_anim_set_duration(&a4, SLIDE_DURATION_MS);
+    lv_anim_set_path_cb(&a4, lv_anim_path_ease_out);
+    lv_anim_set_exec_cb(&a4, anim_exec_opa);
+    lv_anim_set_values(&a4, LV_OPA_TRANSP, LV_OPA_COVER);
+    lv_anim_set_completed_cb(&a4, completed_cb);
+    lv_anim_set_user_data(&a4, (void *)(intptr_t)new_digits);
+    lv_anim_start(&a4);
+}
+
 void clock_screen_update_time(void)
 {
-    if (!visible || !hh_label) return;
+    if (!visible || !hh_show) return;
 
     if (night_mode) {
         draw_night_clock();
@@ -254,7 +426,27 @@ void clock_screen_update_time(void)
     time_t now = time(NULL);
     struct tm tm_now = {0};
     localtime_r(&now, &tm_now);
-    set_day_mode_time(tm_now.tm_hour, tm_now.tm_min);
+    int cur_hh = tm_now.tm_hour;
+    int cur_mm = tm_now.tm_min;
+
+    /* First paint (sentinel still -1): prime the labels with current time,
+     * skip animation. See reset_animation_state() callers in
+     * clock_screen_show() and the day-mode branch of
+     * clock_screen_set_night_mode(). */
+    if (last_hh == -1) {
+        set_day_mode_time(cur_hh, cur_mm);
+        last_hh = cur_hh;
+        last_mm = cur_mm;
+        return;
+    }
+
+    /* No digit change: nothing to animate (R8 — per-second tick stays cheap). */
+    if (cur_hh == last_hh && cur_mm == last_mm) return;
+
+    bool hh_changed = (cur_hh != last_hh);
+    bool mm_changed = (cur_mm != last_mm);
+    trigger_slide(hh_show, hh_hide, hh_changed, cur_hh, hh_anim_completed_cb);
+    trigger_slide(mm_show, mm_hide, mm_changed, cur_mm, mm_anim_completed_cb);
 }
 
 /* ── Public API ── */
@@ -329,6 +521,16 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_set_style_translate_y(mm_label_secondary, 32, 0);
     lv_obj_set_style_opa(mm_label_secondary, LV_OPA_TRANSP, 0);
     lv_label_set_text(mm_label_secondary, "");
+
+    /* Initialize animation roles. reset_animation_state() re-aligns these
+     * on every wake-up and day-mode entry; this is the create-time
+     * baseline so the first clock_screen_update_time() tick can find
+     * hh_show/mm_show before reset_animation_state() runs (e.g., if the
+     * 1Hz tick fires before clock_screen_show() is called). */
+    hh_show = hh_label;
+    hh_hide = hh_label_secondary;
+    mm_show = mm_label;
+    mm_hide = mm_label_secondary;
 
     /* ── Indoor temp cache (hidden label, used by draw_chart) ── */
     indoor_label = lv_label_create(container);
@@ -479,6 +681,11 @@ void clock_screen_show(void)
     if (!container) return;
     visible = true;
 
+    /* Prime the slide animation state so the first paint after wake-up
+     * is static (R5). reset_animation_state() also clears any in-flight
+     * animations left over from the previous active session. */
+    reset_animation_state();
+
     /* Apply night/day mode based on current time on first show.
      * night_mode starts as false but the clock may already be in night
      * hours (e.g. after a cold boot at 22:00). Without this, the
@@ -561,6 +768,13 @@ void clock_screen_set_night_mode(bool enable)
         if (station_label) lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
     } else {
         ssd1322_set_contrast(0x9F); /* restore normal contrast */
+
+        /* Reset the slide animation state on every day-mode entry (R6:
+         * first paint after night→day switch is static, no animation).
+         * set_night_mode(true) does not need this — labels are hidden
+         * anyway and reset_animation_state() runs on the next day entry. */
+        reset_animation_state();
+
         if (canvas) lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
         if (hh_label) lv_obj_remove_flag(hh_label, LV_OBJ_FLAG_HIDDEN);
         if (colon_label) lv_obj_remove_flag(colon_label, LV_OBJ_FLAG_HIDDEN);
