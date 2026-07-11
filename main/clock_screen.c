@@ -37,6 +37,7 @@ static const weather_data_t *weather = NULL;
 static bool visible = false;
 static bool night_mode = false;
 static int8_t s_night_override = -1;  /* -1=auto, 0=force day, 1=force night */
+static bool s_night_mode_deferred = false;  /* set before time sync, cleared after */
 
 /* ── Canvas drawing helpers ── */
 
@@ -486,8 +487,14 @@ int8_t clock_screen_get_night_override(void)
     return s_night_override;
 }
 
+void clock_screen_defer_night_mode(bool defer)
+{
+    s_night_mode_deferred = defer;
+}
+
 void clock_screen_set_night_mode(bool enable)
 {
+    if (s_night_mode_deferred) return;
     if (night_mode == enable) return;
     night_mode = enable;
 

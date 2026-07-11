@@ -486,6 +486,15 @@ void app_main(void)
     ESP_ERROR_CHECK(ssd1322_init());
     int64_t t2 = esp_timer_get_time();
 
+    // Always set timezone after wake (TZ env var is lost during deep sleep)
+    wifi_set_timezone();
+
+#if CONFIG_PCF85063_ENABLE
+    pcf85063_init();
+    apply_pcf85063_time();
+#endif
+    int64_t t3 = esp_timer_get_time();
+
     // Initialize LVGL before WiFi (clean heap avoids allocation failures)
     ESP_ERROR_CHECK(lvgl_adapter_init());
     int64_t t4 = esp_timer_get_time();
@@ -583,19 +592,7 @@ void app_main(void)
         }
     }
 
-    // Always set timezone after wake (TZ env var is lost during deep sleep)
-    wifi_set_timezone();
-
-#if CONFIG_PCF85063_ENABLE
-    pcf85063_init();
-    apply_pcf85063_time();
-#endif
-    int64_t t3 = esp_timer_get_time();
-
-    /* PCF85063 just synced the system clock — re-evaluate night mode now that
-     * the time is correct. The initial check inside ui_wrapper_init ran with
-     * stale (pre-sync) time; this corrects any transient night/day flicker. */
-    clock_screen_set_night_mode(clock_screen_is_night_time());
+    int64_t t_post = esp_timer_get_time();
 
     /* ── Boot timing summary (microseconds from app_main entry) ── */
     ESP_LOGI(TAG, "╔══════════════════════════════════════════╗");
@@ -603,17 +600,18 @@ void app_main(void)
     ESP_LOGI(TAG, "╠══════════════════════════════════════════╣");
     ESP_LOGI(TAG, "║ GPIO early init:   %6lld us            ║", (long long)(t1 - t_boot));
     ESP_LOGI(TAG, "║ ssd1322_init:      %6lld us            ║", (long long)(t2 - t1));
-    ESP_LOGI(TAG, "║ lvgl_adapter_init: %6lld us            ║", (long long)(t4 - t2));
+    ESP_LOGI(TAG, "║ timezone+RTC:      %6lld us            ║", (long long)(t3 - t2));
+    ESP_LOGI(TAG, "║ lvgl_adapter_init: %6lld us            ║", (long long)(t4 - t3));
     ESP_LOGI(TAG, "║ LVGL wait+UI init: %6lld us            ║", (long long)(t5 - t4));
     ESP_LOGI(TAG, "║ lv_refr_now:       %6lld us            ║", (long long)(t6 - t5));
     ESP_LOGI(TAG, "║ display_on:        %6lld us            ║", (long long)(t7 - t6));
     ESP_LOGI(TAG, "║ post-display wait: %6lld us            ║", (long long)(t8 - t7));
-    ESP_LOGI(TAG, "║ post-display init: %6lld us            ║", (long long)(t3 - t8));
+    ESP_LOGI(TAG, "║ button init:       %6lld us            ║", (long long)(t_post - t8));
     ESP_LOGI(TAG, "╠══════════════════════════════════════════╣");
     ESP_LOGI(TAG, "║ TOTAL to display:  %6lld us  (%lld ms) ║",
              (long long)(t7 - t_boot), (long long)((t7 - t_boot) / 1000));
     ESP_LOGI(TAG, "║ TOTAL to post-init:%6lld us  (%lld ms) ║",
-             (long long)(t3 - t_boot), (long long)((t3 - t_boot) / 1000));
+             (long long)(t_post - t_boot), (long long)((t_post - t_boot) / 1000));
     ESP_LOGI(TAG, "╚══════════════════════════════════════════╝");
 
     /* Read indoor sensor on every wake (for no-network display fallback). */
