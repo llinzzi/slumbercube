@@ -491,8 +491,9 @@ void app_main(void)
     int64_t t4 = esp_timer_get_time();
     log_heap("lvgl_init");
 
-    // Wait for LVGL task to start (one tick at 100Hz = 10ms, 20ms is ample)
-    vTaskDelay(pdMS_TO_TICKS(20));
+    // Wait for LVGL task to start (one tick at 100Hz = 10ms; LVGL task prio 3
+    // gets scheduled within the first tick, so one tick is sufficient)
+    vTaskDelay(pdMS_TO_TICKS(10));
 
     /* Route to one of two pages based on NVS state. No more init-both-then-swap:
      * clock and QR are independent LVGL screens, each loaded only on its own path. */
@@ -606,6 +607,8 @@ void app_main(void)
     ESP_LOGI(TAG, "╠══════════════════════════════════════════╣");
     ESP_LOGI(TAG, "║ TOTAL to display:  %6lld us  (%lld ms) ║",
              (long long)(t7 - t_boot), (long long)((t7 - t_boot) / 1000));
+    ESP_LOGI(TAG, "║ TOTAL to post-init:%6lld us  (%lld ms) ║",
+             (long long)(t3 - t_boot), (long long)((t3 - t_boot) / 1000));
     ESP_LOGI(TAG, "╚══════════════════════════════════════════╝");
 
     /* Read indoor sensor on every wake (for no-network display fallback). */
