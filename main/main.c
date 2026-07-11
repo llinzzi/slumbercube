@@ -486,6 +486,59 @@ void app_main(void)
     ESP_ERROR_CHECK(ssd1322_init());
     int64_t t2 = esp_timer_get_time();
 
+    // Always set timezone after wake (TZ env var is lost during deep sleep)
+    wifi_set_timezone();
+
+#if CONFIG_PCF85063_ENABLE
+    pcf85063_init();
+    apply_pcf85063_time();
+#endif
+    int64_t t3 = esp_timer_get_time();
+
+    // Initialize LVGL before WiFi (clean heap avoids allocation failures)
+    ESP_ERROR_CHECK(lvgl_adapter_init());
+    int64_t t4 = esp_timer_get_time();
+    log_heap("lvgl_init");
+
+    // Wait for LVGL task to start (one tick at 100Hz = 10ms; LVGL task prio 3
+    // gets scheduled within the first tick, so one tick is sufficient)
+    vTaskDelay(pdMS_TO_TICKS(10));
+
+    /* Route to one of two pages based on NVS state. No more init-both-then-swap:
+     * clock and QR are independent LVGL screens, each loaded only on its own path. */
+    wifi_creds_t boot_creds;
+    bool has_creds = (wifi_creds_load(&boot_creds) == ESP_OK);
+    s_normal_mode = has_creds;  /* unless provisioning later turns this off */
+
+    if (has_creds) {
+        ESP_ERROR_CHECK(ui_wrapper_init());
+    } else {
+        uint8_t mac[6];
+        esp_read_mac(mac, ESP_MAC_WIFI_STA);
+        char ap_ssid[32];
+        snprintf(ap_ssid, sizeof(ap_ssid), "SlumberCube-%02X%02X", mac[4], mac[5]);
+        config_screen_init(ap_ssid, CONFIG_WIFI_PROV_AP_PASSWORD);
+        config_screen_show();
+    }
+    int64_t t5 = esp_timer_get_time();
+
+    /* Force a synchronous flush so the active screen is in GDDRAM *before*
+     * we turn the panel on. The lvgl_task is running at 10 ms intervals and
+     * may have queued a flush of the default (now black) screen; the sync
+     * flush here runs immediately and overwrites GDDRAM with the real screen.
+     * This is the second half of the anti-white-flash fix (the first half
+     * is painting the default screen black in lvgl_adapter_init). */
+    lv_refr_now(lv_disp_get_default());
+    int64_t t6 = esp_timer_get_time();
+
+    // Turn on display AFTER first frame is in GDDRAM — eliminates white flash on wake
+    ssd1322_display_on();
+    int64_t t7 = esp_timer_get_time();
+
+    // Brief settle before sensor I2C (display already rendered)
+    vTaskDelay(pdMS_TO_TICKS(10));
+    int64_t t8 = esp_timer_get_time();
+
     // ── 右键 (电源) (wake / sleep / night toggle / factory reset) ──
     {
         button_config_t btn_cfg = {
@@ -539,57 +592,7 @@ void app_main(void)
         }
     }
 
-    // Always set timezone after wake (TZ env var is lost during deep sleep)
-    wifi_set_timezone();
-
-#if CONFIG_PCF85063_ENABLE
-    pcf85063_init();
-    apply_pcf85063_time();
-#endif
-    int64_t t3 = esp_timer_get_time();
-
-    // Initialize LVGL before WiFi (clean heap avoids allocation failures)
-    ESP_ERROR_CHECK(lvgl_adapter_init());
-    int64_t t4 = esp_timer_get_time();
-    log_heap("lvgl_init");
-
-    // Wait for LVGL task to start (one tick at 100Hz = 10ms, 20ms is ample)
-    vTaskDelay(pdMS_TO_TICKS(20));
-
-    /* Route to one of two pages based on NVS state. No more init-both-then-swap:
-     * clock and QR are independent LVGL screens, each loaded only on its own path. */
-    wifi_creds_t boot_creds;
-    bool has_creds = (wifi_creds_load(&boot_creds) == ESP_OK);
-    s_normal_mode = has_creds;  /* unless provisioning later turns this off */
-
-    if (has_creds) {
-        ESP_ERROR_CHECK(ui_wrapper_init());
-    } else {
-        uint8_t mac[6];
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
-        char ap_ssid[32];
-        snprintf(ap_ssid, sizeof(ap_ssid), "SlumberCube-%02X%02X", mac[4], mac[5]);
-        config_screen_init(ap_ssid, CONFIG_WIFI_PROV_AP_PASSWORD);
-        config_screen_show();
-    }
-    int64_t t5 = esp_timer_get_time();
-
-    /* Force a synchronous flush so the active screen is in GDDRAM *before*
-     * we turn the panel on. The lvgl_task is running at 10 ms intervals and
-     * may have queued a flush of the default (now black) screen; the sync
-     * flush here runs immediately and overwrites GDDRAM with the real screen.
-     * This is the second half of the anti-white-flash fix (the first half
-     * is painting the default screen black in lvgl_adapter_init). */
-    lv_refr_now(lv_disp_get_default());
-    int64_t t6 = esp_timer_get_time();
-
-    // Turn on display AFTER first frame is in GDDRAM — eliminates white flash on wake
-    ssd1322_display_on();
-    int64_t t7 = esp_timer_get_time();
-
-    // Brief settle before sensor I2C (display already rendered)
-    vTaskDelay(pdMS_TO_TICKS(10));
-    int64_t t8 = esp_timer_get_time();
+    int64_t t_post = esp_timer_get_time();
 
     /* ── Boot timing summary (microseconds from app_main entry) ── */
     ESP_LOGI(TAG, "╔══════════════════════════════════════════╗");
@@ -597,15 +600,18 @@ void app_main(void)
     ESP_LOGI(TAG, "╠══════════════════════════════════════════╣");
     ESP_LOGI(TAG, "║ GPIO early init:   %6lld us            ║", (long long)(t1 - t_boot));
     ESP_LOGI(TAG, "║ ssd1322_init:      %6lld us            ║", (long long)(t2 - t1));
-    ESP_LOGI(TAG, "║ Button+WiFi+RTC:   %6lld us            ║", (long long)(t3 - t2));
+    ESP_LOGI(TAG, "║ timezone+RTC:      %6lld us            ║", (long long)(t3 - t2));
     ESP_LOGI(TAG, "║ lvgl_adapter_init: %6lld us            ║", (long long)(t4 - t3));
     ESP_LOGI(TAG, "║ LVGL wait+UI init: %6lld us            ║", (long long)(t5 - t4));
     ESP_LOGI(TAG, "║ lv_refr_now:       %6lld us            ║", (long long)(t6 - t5));
     ESP_LOGI(TAG, "║ display_on:        %6lld us            ║", (long long)(t7 - t6));
     ESP_LOGI(TAG, "║ post-display wait: %6lld us            ║", (long long)(t8 - t7));
+    ESP_LOGI(TAG, "║ button init:       %6lld us            ║", (long long)(t_post - t8));
     ESP_LOGI(TAG, "╠══════════════════════════════════════════╣");
     ESP_LOGI(TAG, "║ TOTAL to display:  %6lld us  (%lld ms) ║",
              (long long)(t7 - t_boot), (long long)((t7 - t_boot) / 1000));
+    ESP_LOGI(TAG, "║ TOTAL to post-init:%6lld us  (%lld ms) ║",
+             (long long)(t_post - t_boot), (long long)((t_post - t_boot) / 1000));
     ESP_LOGI(TAG, "╚══════════════════════════════════════════╝");
 
     /* Read indoor sensor on every wake (for no-network display fallback). */
