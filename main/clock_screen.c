@@ -26,7 +26,15 @@ static const char *TAG = "WEATHER_CHART";
 static lv_obj_t *container = NULL;
 static lv_obj_t *canvas = NULL;
 static uint8_t *canvas_buf = NULL;
-static lv_obj_t *time_label = NULL;
+/* Time area: five labels. Each animating position (HH, MM) has a primary
+ * label (currently visible) and a secondary label (idle, positioned below
+ * the visible area at translate_y=+32, opacity=0). Colon is a single
+ * static label between HH and MM. See KTD2/KTD6 in the plan. */
+static lv_obj_t *hh_label = NULL;
+static lv_obj_t *hh_label_secondary = NULL;
+static lv_obj_t *colon_label = NULL;
+static lv_obj_t *mm_label = NULL;
+static lv_obj_t *mm_label_secondary = NULL;
 static lv_obj_t *weather_label = NULL;
 static lv_obj_t *temp_label = NULL;
 static lv_obj_t *indoor_label = NULL;
@@ -64,6 +72,9 @@ static void draw_line(int x0, int y0, int x1, int y1, uint8_t gray)
 
 /* ── Draw chart ── */
 
+/* Forward decl: defined below clock_screen_update_time (used by draw_chart). */
+static void set_day_mode_time(int hour, int minute);
+
 static void draw_chart(void)
 {
     if (!canvas || !canvas_buf || !weather || !weather->valid || weather->count < 1) return;
@@ -78,12 +89,7 @@ static void draw_chart(void)
     time_t now = time(NULL);
     struct tm tm_now = {0};
     localtime_r(&now, &tm_now);
-    {
-        char buf[8];
-        snprintf(buf, sizeof(buf), "%02d:%02d",
-                 (unsigned char)tm_now.tm_hour, (unsigned char)tm_now.tm_min);
-        lv_label_set_text(time_label, buf);
-    }
+    set_day_mode_time(tm_now.tm_hour, tm_now.tm_min);
     /* ── Right: Weather (current condition + indoor temp in parens) ── */
     {
         char buf[64];
@@ -224,9 +230,21 @@ static void draw_night_clock(void)
     lv_obj_invalidate(canvas);
 }
 
+/* Update the day-mode time labels for the given hour and minute.
+ * Writes only to the primary HH/MM labels — the colon is static,
+ * and the secondary labels are managed by the animation trigger path. */
+static void set_day_mode_time(int hour, int minute)
+{
+    char hh_buf[3], mm_buf[3];
+    snprintf(hh_buf, sizeof(hh_buf), "%02d", (unsigned)hour);
+    snprintf(mm_buf, sizeof(mm_buf), "%02d", (unsigned)minute);
+    lv_label_set_text(hh_label, hh_buf);
+    lv_label_set_text(mm_label, mm_buf);
+}
+
 void clock_screen_update_time(void)
 {
-    if (!visible || !time_label) return;
+    if (!visible || !hh_label) return;
 
     if (night_mode) {
         draw_night_clock();
@@ -236,10 +254,7 @@ void clock_screen_update_time(void)
     time_t now = time(NULL);
     struct tm tm_now = {0};
     localtime_r(&now, &tm_now);
-    char buf[8];
-    snprintf(buf, sizeof(buf), "%02d:%02d",
-             (unsigned char)tm_now.tm_hour, (unsigned char)tm_now.tm_min);
-    lv_label_set_text(time_label, buf);
+    set_day_mode_time(tm_now.tm_hour, tm_now.tm_min);
 }
 
 /* ── Public API ── */
@@ -265,14 +280,55 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_canvas_set_buffer(canvas, canvas_buf, CANVAS_W, CANVAS_H, LV_COLOR_FORMAT_L8);
     lv_obj_set_pos(canvas, 0, 0);
 
-    /* ── Time label (left, big digital-7) ── */
-    time_label = lv_label_create(container);
-    lv_obj_set_style_text_color(time_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
-    lv_obj_set_style_text_font(time_label, &lv_font_digital, 0);
-    lv_obj_set_style_text_align(time_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(time_label, 0, 2);
-    lv_obj_set_size(time_label, TIME_W, 48);
-    lv_label_set_text(time_label, "");
+    /* ── Time labels (left half, big digital-7) ──
+     * Five labels total: HH primary, HH secondary, colon (static),
+     * MM primary, MM secondary. Layout per KTD6: HH at x=0..44, colon
+     * at x=44..66, MM at x=66..110 within the 128px time area at y=2.
+     * Secondary labels are positioned below the visible area
+     * (translate_y=+32, opacity 0) and slide in for minute transitions. */
+    hh_label = lv_label_create(container);
+    lv_obj_set_style_text_color(hh_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
+    lv_obj_set_style_text_font(hh_label, &lv_font_digital, 0);
+    lv_obj_set_style_text_align(hh_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(hh_label, 0, 2);
+    lv_obj_set_size(hh_label, 44, 48);
+    lv_label_set_text(hh_label, "");
+
+    hh_label_secondary = lv_label_create(container);
+    lv_obj_set_style_text_color(hh_label_secondary, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
+    lv_obj_set_style_text_font(hh_label_secondary, &lv_font_digital, 0);
+    lv_obj_set_style_text_align(hh_label_secondary, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(hh_label_secondary, 0, 2);
+    lv_obj_set_size(hh_label_secondary, 44, 48);
+    lv_obj_set_style_translate_y(hh_label_secondary, 32, 0);
+    lv_obj_set_style_opa(hh_label_secondary, LV_OPA_TRANSP, 0);
+    lv_label_set_text(hh_label_secondary, "");
+
+    colon_label = lv_label_create(container);
+    lv_obj_set_style_text_color(colon_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
+    lv_obj_set_style_text_font(colon_label, &lv_font_digital, 0);
+    lv_obj_set_style_text_align(colon_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(colon_label, 44, 2);
+    lv_obj_set_size(colon_label, 22, 48);
+    lv_label_set_text(colon_label, ":");
+
+    mm_label = lv_label_create(container);
+    lv_obj_set_style_text_color(mm_label, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
+    lv_obj_set_style_text_font(mm_label, &lv_font_digital, 0);
+    lv_obj_set_style_text_align(mm_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(mm_label, 66, 2);
+    lv_obj_set_size(mm_label, 44, 48);
+    lv_label_set_text(mm_label, "");
+
+    mm_label_secondary = lv_label_create(container);
+    lv_obj_set_style_text_color(mm_label_secondary, lv_color_make(COL_TEMP, COL_TEMP, COL_TEMP), 0);
+    lv_obj_set_style_text_font(mm_label_secondary, &lv_font_digital, 0);
+    lv_obj_set_style_text_align(mm_label_secondary, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(mm_label_secondary, 66, 2);
+    lv_obj_set_size(mm_label_secondary, 44, 48);
+    lv_obj_set_style_translate_y(mm_label_secondary, 32, 0);
+    lv_obj_set_style_opa(mm_label_secondary, LV_OPA_TRANSP, 0);
+    lv_label_set_text(mm_label_secondary, "");
 
     /* ── Indoor temp cache (hidden label, used by draw_chart) ── */
     indoor_label = lv_label_create(container);
@@ -494,7 +550,11 @@ void clock_screen_set_night_mode(bool enable)
     if (enable) {
         ssd1322_set_contrast(0x01); /* dim contrast current */
         if (canvas) lv_obj_remove_flag(canvas, LV_OBJ_FLAG_HIDDEN);
-        if (time_label) lv_obj_add_flag(time_label, LV_OBJ_FLAG_HIDDEN);
+        if (hh_label) lv_obj_add_flag(hh_label, LV_OBJ_FLAG_HIDDEN);
+        if (hh_label_secondary) lv_obj_add_flag(hh_label_secondary, LV_OBJ_FLAG_HIDDEN);
+        if (colon_label) lv_obj_add_flag(colon_label, LV_OBJ_FLAG_HIDDEN);
+        if (mm_label) lv_obj_add_flag(mm_label, LV_OBJ_FLAG_HIDDEN);
+        if (mm_label_secondary) lv_obj_add_flag(mm_label_secondary, LV_OBJ_FLAG_HIDDEN);
         if (weather_label) lv_obj_add_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
         if (temp_label) lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
         if (indoor_label) lv_obj_add_flag(indoor_label, LV_OBJ_FLAG_HIDDEN);
@@ -502,7 +562,11 @@ void clock_screen_set_night_mode(bool enable)
     } else {
         ssd1322_set_contrast(0x9F); /* restore normal contrast */
         if (canvas) lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
-        if (time_label) lv_obj_remove_flag(time_label, LV_OBJ_FLAG_HIDDEN);
+        if (hh_label) lv_obj_remove_flag(hh_label, LV_OBJ_FLAG_HIDDEN);
+        if (colon_label) lv_obj_remove_flag(colon_label, LV_OBJ_FLAG_HIDDEN);
+        if (mm_label) lv_obj_remove_flag(mm_label, LV_OBJ_FLAG_HIDDEN);
+        /* hh_label_secondary and mm_label_secondary stay hidden until
+         * U3's transition-detection path triggers their first slide-in. */
         if (weather && weather->valid) {
             if (weather_label) lv_obj_remove_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
             if (temp_label) lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
