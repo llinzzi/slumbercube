@@ -143,18 +143,16 @@ esp_err_t ssd1322_init(void)
     gpio_set_level(PIN_NUM_RST, 0);
     vTaskDelay(pdMS_TO_TICKS(1));  // 保持低电平 1ms
     gpio_set_level(PIN_NUM_RST, 1);
-    /* Wait ~4ms after RST high before accessing SSD1322 — the chip needs tRES
-     * (~2µs in datasheet) plus internal oscillator startup before it can
-     * reliably accept commands. Matches u8g2 timing. */
-    esp_rom_delay_us(4000);
+    /* Wait ~2ms after RST high before accessing SSD1322. The datasheet tRES
+     * is ~2µs, and internal oscillator startup is typically <1ms. 2ms provides
+     * a safe margin without the conservatism of the original 4ms. */
+    esp_rom_delay_us(2000);
 
     /* Immediately turn display OFF — SSD1322 defaults to Display ON after
      * hardware reset, so any delay here causes a visible white flash from
      * random GDDRAM contents. */
     ssd1322_send_cmd(0xFD); ssd1322_send_data(0x12);  // unlock
     ssd1322_send_cmd(0xAE);                            // display off
-
-    vTaskDelay(pdMS_TO_TICKS(5));  // 等待内部初始化完成
 
     // 初始化SSD1322寄存器
     ssd1322_send_cmd(0xB3); ssd1322_send_data(0x91);
