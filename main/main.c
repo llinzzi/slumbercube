@@ -495,13 +495,6 @@ void app_main(void)
     // gets scheduled within the first tick, so one tick is sufficient)
     vTaskDelay(pdMS_TO_TICKS(10));
 
-    // Always set timezone before UI init (TZ env var is lost during deep sleep).
-    // wifi_set_timezone() is instant (setenv+tzset, no I2C), so it does not
-    // add meaningful delay to the display path. Timezone must be correct before
-    // the first clock_screen_is_night_time() call inside ui_wrapper_init →
-    // tick_screen_main, otherwise the night-mode check reads the wrong local hour.
-    wifi_set_timezone();
-
     /* Route to one of two pages based on NVS state. No more init-both-then-swap:
      * clock and QR are independent LVGL screens, each loaded only on its own path. */
     wifi_creds_t boot_creds;
@@ -589,6 +582,9 @@ void app_main(void)
                      CONFIG_LEFT_BUTTON_GPIO, esp_err_to_name(err));
         }
     }
+
+    // Always set timezone after wake (TZ env var is lost during deep sleep)
+    wifi_set_timezone();
 
 #if CONFIG_PCF85063_ENABLE
     pcf85063_init();
