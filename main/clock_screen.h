@@ -11,10 +11,6 @@ void clock_screen_hide(void);
 bool clock_screen_is_visible(void);
 bool clock_screen_is_night_time(void);
 void clock_screen_set_night_mode(bool enable);
-/* Defer night-mode application until the caller clears the flag and calls
- * clock_screen_set_night_mode() with the correct time. Use when system time
- * is not yet synchronised (e.g. before PCF85063 RTC read on wake). */
-void clock_screen_defer_night_mode(bool defer);
 /* Night mode override: -1 = auto (time-based), 0 = force day, 1 = force night.
  * Resets to auto (-1) on every wake. Valid only for the current session. */
 void clock_screen_set_night_override(int8_t override);
