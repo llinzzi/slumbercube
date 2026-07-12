@@ -1007,8 +1007,11 @@ void app_main(void)
 
 #endif
 
-        /* Refresh indoor temp every 10s */
-        if (tick % 10 == 0) {
+        /* Refresh indoor temp every 60s — room T/RH time constant is
+         * minutes, no perceptual benefit from faster updates; combined
+         * with the SHTC3 SLEEP-between-reads change this drops average
+         * sensor current to ~0.13 µA. */
+        if (tick % 60 == 0) {
             float t = 0, h = 0;
             if (shtc3_read(&t, &h)) {
                 audio_set_indoor_env(t, h);

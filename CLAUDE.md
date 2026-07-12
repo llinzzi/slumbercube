@@ -44,7 +44,7 @@ app_main()
 ├── Button init (GPIO3 + left)  — deferred, after screen visible
 ├── WiFi STA + SNTP sync
 ├── Weather fetch (AMAP)
-├── SHTC3 indoor T/RH read (every 10s in active loop)
+├── SHTC3 indoor T/RH read (every 60s in active loop, SLEEP between)
 └── Main loop (600s, 1s tick) → deep sleep
 ```
 
