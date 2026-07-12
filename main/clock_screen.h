@@ -32,6 +32,11 @@ void clock_screen_set_indoor_full(float temp_c, float humidity);
 /* No-network display: show alarm time below indoor temp. */
 void clock_screen_set_alarm_time(int hour, int minute);
 
+/* No-network display: agent is on but no valid RTC alarm — show "闹铃关闭"
+ * in the same slot as clock_screen_set_alarm_time. Honours the same
+ * visibility rules (no temp_label / night_mode → return). */
+void clock_screen_set_alarm_off(void);
+
 /* Show button hint at the bottom (no-network display). */
 void clock_screen_show_button_hint(void);
 

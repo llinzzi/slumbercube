@@ -25,7 +25,10 @@ esp_err_t i2c_bus_init(void)
         .scl_io_num = CONFIG_I2C_BUS_SCL_GPIO,
         .clk_source = I2C_CLK_SRC_DEFAULT,
         .glitch_ignore_cnt = 7,
-        .flags.enable_internal_pullup = true,
+        /* External pull-ups are present on the board (PCF85063 + SHTC3
+         * both need stronger than internal ~45kΩ). Keep ESP32-C3's
+         * weak internal pull-ups OFF to avoid contention. */
+        .flags.enable_internal_pullup = false,
     };
     esp_err_t err = i2c_new_master_bus(&bus_cfg, &s_bus);
     if (err != ESP_OK) {

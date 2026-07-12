@@ -379,6 +379,15 @@ void clock_screen_set_alarm_time(int hour, int minute)
     lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
 }
 
+void clock_screen_set_alarm_off(void)
+{
+    if (!temp_label) return;
+    if (night_mode) return;
+
+    lv_label_set_text(temp_label, "闹铃关闭");
+    lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
+}
+
 void clock_screen_show_button_hint(void)
 {
     if (!station_label) return;

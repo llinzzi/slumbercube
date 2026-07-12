@@ -77,6 +77,10 @@ esp_err_t pcf85063_init(void)
     i2c_device_config_t dev_cfg = {
         .dev_addr_length = I2C_ADDR_BIT_LEN_7,
         .device_address = PCF85063_ADDR,
+        /* Bus-level rate (default 400kHz). The earlier 100kHz throttle
+         * was a workaround for the ESP32-C3's weak internal pull-ups —
+         * now disabled (i2c_bus.c) and external pull-ups on the board
+         * are strong enough for the full rate. */
         .scl_speed_hz = CONFIG_I2C_BUS_FREQ_HZ,
     };
     err = i2c_master_bus_add_device(bus, &dev_cfg, &s_dev);
@@ -85,18 +89,35 @@ esp_err_t pcf85063_init(void)
         return err;
     }
 
-    /* Probe: read the seconds register. Any ACK + valid data means the
-     * chip is on the bus. The seconds register's low nibble is always
-     * 0-9 in BCD — if the top nibble is >9 the chip isn't responding. */
-    uint8_t sec;
-    err = read_regs(REG_SECONDS, &sec, 1);
+    /* Probe: read the seconds register. The seconds register's top nibble
+     * (tens of seconds) is always 0-5; if it's >9 the read returned
+     * garbage (SDA not settled, crystal not stabilised, or no chip).
+     * With external pull-ups at 400kHz the first attempt succeeds, so
+     * the retry loop is purely defensive (e.g. against an unusually
+     * slow crystal cold-start). */
+    enum { PROBE_ATTEMPTS = 3 };
+    uint8_t sec = 0xFF;
+    for (int attempt = 1; attempt <= PROBE_ATTEMPTS; attempt++) {
+        err = read_regs(REG_SECONDS, &sec, 1);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "probe attempt %d/%d: I2C err on 0x%02X: %s",
+                     attempt, PROBE_ATTEMPTS, PCF85063_ADDR, esp_err_to_name(err));
+        } else if (((sec >> 4) & 0x0Fu) > 9u) {
+            ESP_LOGW(TAG, "probe attempt %d/%d: garbage 0x%02X",
+                     attempt, PROBE_ATTEMPTS, sec);
+        } else {
+            break;  /* valid BCD, chip present */
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
     if (err != ESP_OK) {
-        ESP_LOGW(TAG, "probe failed (no ACK on 0x%02X): %s",
-                 PCF85063_ADDR, esp_err_to_name(err));
+        ESP_LOGW(TAG, "probe failed after %d attempts (no ACK on 0x%02X)",
+                 PROBE_ATTEMPTS, PCF85063_ADDR);
         goto fail;
     }
     if (((sec >> 4) & 0x0Fu) > 9u) {
-        ESP_LOGW(TAG, "probe returned garbage 0x%02X, chip likely absent", sec);
+        ESP_LOGW(TAG, "probe returned garbage 0x%02X after %d attempts, chip likely absent",
+                 sec, PROBE_ATTEMPTS);
         goto fail;
     }
 

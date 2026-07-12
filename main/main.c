@@ -669,11 +669,23 @@ void app_main(void)
                             /* PCF85063 stores alarm in UTC; convert to CST for display */
                             int display_h = ((int)al.hour + 8) % 24;
                             clock_screen_set_alarm_time(display_h, al.minute);
+                        } else {
+                            /* Agent on, chip present, but RTC alarm is either
+                             * disabled, read failed, or sentinel field set.
+                             * Show "闹铃关闭" so the user can distinguish
+                             * "no alarm configured" from "no network". We
+                             * still don't fall back to CONFIG defaults —
+                             * the alarm text always comes from the server,
+                             * never from menuconfig. */
+                            clock_screen_set_alarm_off();
                         }
-                        /* else: no valid PCF85063 alarm — don't show anything.
-                         * Never fall back to CONFIG defaults; the alarm comes
-                         * exclusively from the server. */
+                    } else {
+                        /* Agent on, but PCF85063 absent on I2C bus. */
+                        clock_screen_set_alarm_off();
                     }
+#else
+                    /* Agent on, PCF85063 driver disabled in sdkconfig. */
+                    clock_screen_set_alarm_off();
 #endif
                 }
                 if (agent_on) {
