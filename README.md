@@ -460,7 +460,7 @@ sequenceDiagram
 | Host | `agent_cfg` | `host` | string (≤ 64) |
 | 启用标志 | `agent_cfg` | `enabled` | uint8 (0/1) |
 
-与 `wifi_cfg`、`clock` 命名空间平行。`wifi_creds_clear()` 不会动 `agent_cfg`，反之亦然。
+与 `wifi_cfg`、`clock` 命名空间平行。各命名空间的 NVS 数据互不影响：擦除 WiFi 凭据只动 `wifi_cfg`，反之亦然。
 
 ### Host 校验
 
@@ -580,7 +580,7 @@ graph TB
 | 屏幕 UI | `clock_screen.c/h` | 时间/天气/温度/歌名布局 + Canvas 绘制 + 按键提示 |
 | PCF85063 RTC | `components/pcf85063/pcf85063.c/h` | I²C RTC 读写, 闹钟配置, 中断清除 |
 | SHTC3 驱动 | `components/shtc3/shtc3.c/h` | I²C 传感器读取, CRC8 校验 |
-| UI 框架 | `ui/screens.c, ui/styles.c, ui/ui.c` | EEZ Studio 生成 |
+| UI 框架 | `ui/screens.c, ui/ui.c` | EEZ Studio 生成 (实际 UI 在 clock_screen.c + config_screen.c) |
 | 数字字体 | `font_digital.c/h` | digital-7 48px 4bpp (时钟) |
 | 通用字体 | `font_station.c/h` | fusion-pixel 10px 1bpp (11031 CJK + ASCII + 标点) |
 

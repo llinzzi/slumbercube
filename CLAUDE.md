@@ -53,7 +53,7 @@ app_main()
 | WiFi/SNTP | `main/wifi.c/h` | STA connect, timezone, NTP sync |
 | Weather API | `main/weather_service.c/h` | AMAP HTTPS client, JSON parse |
 | Weather UI | `main/clock_screen.c/h` | Full-screen clock/weather/chart canvas |
-| UI framework | `main/ui/` | EEZ Studio generated (screens.c, styles.c, ui.c) |
+| UI framework | `main/ui/` | EEZ Studio generated (screens.c, ui.c) — actual UI in clock_screen.c + config_screen.c |
 | Fonts | `main/font_digital.c/h` | digital-7 clock digits |
 | Fonts | `main/font_weather.c/h` | Chinese weather descriptions |
 | Icons | `main/weather_icons.c/h` | Programmatic weather icons (no image files) |

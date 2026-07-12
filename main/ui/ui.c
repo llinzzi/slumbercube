@@ -5,5 +5,5 @@ void ui_init(void) {
 }
 
 void ui_tick(void) {
-    tick_screen(0);
+    tick_screen_main();
 }
