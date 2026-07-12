@@ -135,4 +135,17 @@ menu "SlumberCube Configuration"
             depends on PCF85063_ENABLE
     endmenu
 
+    menu "SHTC3 Sensor Configuration"
+        config SHTC3_TEMP_OFFSET_TENTHS_C
+            int "SHTC3 temperature offset in tenths of °C subtracted from raw reading"
+            default 0
+            range -100 100
+            help
+              Compensate for systematic bias from PCB self-heating. Causes:
+              SHTC3 idle current ~200 µA, nearby LDO/charger IC, ESP32-C3 die,
+              OLED display. Typical bedside-clock bias is +1 to +3 °C
+              (set value 10..30 to subtract that much). Tune against a
+              reference thermometer after the device has been running >=5 min.
+    endmenu
+
 endmenu

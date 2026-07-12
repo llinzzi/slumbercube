@@ -416,6 +416,7 @@ void app_main(void)
         ESP_LOGI(TAG, "Woke from RTC timer");
         break;
     case ESP_SLEEP_WAKEUP_GPIO: {
+#if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
         uint64_t wake_pins = esp_sleep_get_gpio_wakeup_status();
         /* Check button FIRST: if 右键 is in the wake mask, user pressed it. */
         if (wake_pins & (1ULL << CONFIG_WAKEUP_GPIO)) {
@@ -438,6 +439,14 @@ void app_main(void)
         s_wake_kind = WAKE_BTN;
         ESP_LOGI(TAG, "Woke from unknown GPIO (mask=0x%llX)", (unsigned long long)wake_pins);
         break;
+#else
+        /* GPIO deep-sleep wakeup isn't available on this chip — nothing
+         * to attribute the wake to. Treat as cold boot. */
+        audio_set_wake_source("sys");
+        s_wake_kind = WAKE_SYS;
+        ESP_LOGW(TAG, "GPIO wakeup reported but not supported on this chip");
+        break;
+#endif
     }
     case ESP_SLEEP_WAKEUP_UNDEFINED:
         audio_set_wake_source("sys");
@@ -998,8 +1007,11 @@ void app_main(void)
 
 #endif
 
-        /* Refresh indoor temp every 10s */
-        if (tick % 10 == 0) {
+        /* Refresh indoor temp every 60s — room T/RH time constant is
+         * minutes, no perceptual benefit from faster updates; combined
+         * with the SHTC3 SLEEP-between-reads change this drops average
+         * sensor current to ~0.13 µA. */
+        if (tick % 60 == 0) {
             float t = 0, h = 0;
             if (shtc3_read(&t, &h)) {
                 audio_set_indoor_env(t, h);

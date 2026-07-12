@@ -93,10 +93,24 @@ static bool try_measure(uint16_t meas_cmd, float *temp_c, float *humidity)
     uint16_t raw_t  = ((uint16_t)buf[0] << 8) | buf[1];
     uint16_t raw_rh = ((uint16_t)buf[3] << 8) | buf[4];
 
-    *temp_c   = (175.0f * raw_t)  / 65536.0f - 45.0f;
+    *temp_c   = (175.0f * raw_t)  / 65536.0f - 45.0f
+                - ((float)CONFIG_SHTC3_TEMP_OFFSET_TENTHS_C / 10.0f);
     *humidity = (100.0f * raw_rh) / 65536.0f;
 
-    ESP_LOGD(TAG, "raw T=0x%04X RH=0x%04X → %.1f°C %.0f%%", raw_t, raw_rh, *temp_c, *humidity);
+    ESP_LOGD(TAG, "raw T=0x%04X RH=0x%04X → %.2f°C %.0f%% (offset=%d/10 °C)",
+             raw_t, raw_rh, *temp_c, *humidity, CONFIG_SHTC3_TEMP_OFFSET_TENTHS_C);
+
+    /* Drop back to sleep mode (~0.5 µA) instead of leaving the sensor
+     * in idle (~200 µA). The 200 µA idle current measurably heats the
+     * die (~0.5–1 °C bias on top of the PCB self-heating offset above)
+     * and wastes ~2 mC per 10 s poll cycle. try_measure() already
+     * issues WAKE before every measurement, so the SLEEP→WAKE
+     * transition is exercised on every call and the 3-tier retry in
+     * shtc3_read() still covers any flaky wake-ups. */
+    if (write_cmd(CMD_SLEEP) != ESP_OK) {
+        ESP_LOGD(TAG, "post-measure SLEEP failed (best-effort, harmless)");
+    }
+
     return true;
 }
 
@@ -146,10 +160,11 @@ bool shtc3_init(void)
     uint16_t id = ((uint16_t)id_buf[0] << 8) | id_buf[1];
     ESP_LOGI(TAG, "SHTC3 detected (ID=0x%04X)", id);
 
-    /* Leave sensor in idle mode (don't SLEEP). On shared I2C buses the
-     * sleep→wake transition is unreliable — WAKE commands sometimes
-     * fail to bring the sensor out of sleep. Idle current is ~200 μA,
-     * negligible for the 30-min active window. */
+    /* Leave sensor in idle mode after probe; the first shtc3_read()
+     * call will issue its own WAKE and then put the sensor back to
+     * SLEEP after the measurement completes. Going straight to SLEEP
+     * here would race with the subsequent read and the early 2 ms
+     * guard is too tight to guarantee a clean wake. */
 
     s_present = true;
     return true;
