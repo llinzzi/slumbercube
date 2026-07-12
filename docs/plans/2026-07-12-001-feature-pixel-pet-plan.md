@@ -67,7 +67,7 @@ flowchart TB
 
 - R1. The pet occupies a 24×24 pixel region anchored to the bottom-right of the 256×64 clock canvas, with its top-left at approximately `(232, 40)`. The pet region never overlaps or obscures the time digits, the weather text, or the temperature range.
 - R2. The pet renders onto the same LVGL canvas buffer (`canvas_buf` in `main/clock_screen.c`) that already carries clock, weather, and station label, and follows the same draw order rules (after weather panel content, alongside or after station label).
-- R3. The existing `station_label` is repositioned (right-aligned within the bottom row, or shortened in length) so it does not collide with the pet region.
+- R3. The existing `station_label` is shortened to a maximum of 16 characters (truncated with an ellipsis if longer) and remains centered within the bottom row, leaving the rightmost ~32 pixels of that row free for the pet region.
 
 ```mermaid
 flowchart LR
@@ -89,8 +89,8 @@ flowchart LR
 
 - R6. **Shape layer** is driven by time of day: tall posture in active hours, rounder posture approaching wind-down, flat posture near sleep.
 - R7. **Eye-state layer** is driven by time of day and outdoor weather: wide open mid-day, half-lidded in evening, nearly closed near sleep; squinted in bright sun, relaxed in rain, soft in fog.
-- R8. **Surface layer** is driven by outdoor weather and indoor T/RH: smooth under comfortable conditions; one or more small sweat dots in hot or hot/humid; a droplet in rain; tiny dot accents in snow.
-- R9. **Motion layer** is driven by music playback state: idle breathe when no music, gentle bob when music plays, closed-eye soft sway when music has been playing for several seconds.
+- R8. **Surface layer** is driven by outdoor weather and indoor T/RH: smooth under comfortable conditions; one or more small sweat dots when indoor temperature rises above 26 °C (sweat expression) or falls below 18 °C (dryness texture); a droplet in rain; tiny dot accents in snow. Humidity contributes only via the hot branch (sweat dots intensify above 60 % RH) — the cold/dry branch is temperature-driven only.
+- R9. **Motion layer** is driven by music playback state — the simple on/off signal from `audio_player_wrapper`, no BPM or beat detection: idle breathe when no music, gentle bob when music plays, closed-eye soft sway when music has been playing for several seconds.
 
 #### Coherence & transition within a wake cycle
 
@@ -178,11 +178,7 @@ flowchart LR
 
 ### Outstanding Questions
 
-**Resolve Before Planning**
-
-- What threshold values define each layer state? (e.g., what indoor temperature counts as "hot enough for a sweat dot"; what humidity counts as "dry enough for a dryness texture".) Likely defaults: piggyback on existing `CONFIG_SHTC3_TEMP_OFFSET_TENTHS_C` calibration ranges and standard comfortable bands (18–26 °C, 40–60 % RH).
-- Station label: right-align within the bottom row, or shorten length (e.g., truncate to 16 chars)? The pet region needs the rightmost ~32 pixels of the bottom row.
-- Music reactivity: confirm scope is "music on/off" only (no BPM / beat detection). Implied by "pure passive" + "combine all 4 signals simply"; explicit confirmation avoids planning rework.
+*All blocking questions resolved at brainstorm time — see R3, R8, R9 for the resolved values.*
 
 **Deferred to Planning**
 
