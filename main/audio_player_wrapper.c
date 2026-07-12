@@ -625,11 +625,15 @@ static esp_err_t audio_play_url_inner(const char *url)
         return ESP_FAIL;
     }
 
-    /* Open HTTP stream */
+    /* Open HTTP stream. buffer_size was 4KB which deadlocked on
+     * network jitter (ringbuf full → mixer write blocks → watchdog).
+     * 16KB gives the HTTP task enough headroom to absorb short stalls
+     * while still fitting comfortably in the post-playback heap budget
+     * (~189K free at boot, ~53K during playback). */
     audio_http_stream_config_t http_cfg = DEFAULT_AUDIO_HTTP_STREAM_CONFIG(url);
-    http_cfg.buffer_size          = 4 * 1024;
-    http_cfg.high_watermark       = 3 * 1024;
-    http_cfg.low_watermark        = 1 * 1024;
+    http_cfg.buffer_size          = 16 * 1024;
+    http_cfg.high_watermark       = 12 * 1024;
+    http_cfg.low_watermark        = 4  * 1024;
     http_cfg.task_stack_size      = 6 * 1024;
     http_cfg.task_priority        = 6;   // above mixer/decoder (5) so the socket
                                          // connect/read isn't starved of CPU
