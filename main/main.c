@@ -623,9 +623,21 @@ void app_main(void)
              (long long)(t_post - t_boot), (long long)((t_post - t_boot) / 1000));
     ESP_LOGI(TAG, "╚══════════════════════════════════════════╝");
 
-    /* Read indoor sensor on every wake (for no-network display fallback). */
+    /* Read indoor sensor on every wake (for no-network display fallback).
+     * The SHTC3 may need up to ~1 s to start ACKing after power-up — a
+     * single read at +700 ms reliably fails on cold boot, leaving the
+     * no-network weather_label stuck at "". Retry once after a short
+     * delay so the value lands on screen without waiting for the 60 s
+     * poll. The 800 ms cost is negligible vs the 1800 s active window. */
     float s_indoor_t = NAN, s_indoor_h = NAN;
     read_indoor_env(&s_indoor_t, &s_indoor_h);
+    if (isnan(s_indoor_t)) {
+        vTaskDelay(pdMS_TO_TICKS(800));
+        read_indoor_env(&s_indoor_t, &s_indoor_h);
+        if (!isnan(s_indoor_t)) {
+            ESP_LOGI(TAG, "Indoor sensor retry succeeded after warm-up delay");
+        }
+    }
 
     if (!clock_screen_is_night_time()) {
         /* First-boot provisioning: if NVS has no creds (and the user hasn't
