@@ -14,14 +14,20 @@ idf.py build
 # Configure (WiFi, API keys, pins, night mode, sleep)
 idf.py menuconfig
 
-# Flash & monitor
-idf.py -p /dev/ttyUSB0 flash
-idf.py -p /dev/ttyUSB0 monitor
+# Flash & monitor (Linux: /dev/ttyUSB0; macOS: /dev/cu.usbmodem*)
+idf.py -p <PORT> flash
+idf.py -p <PORT> monitor
 
 # Serial debug scripts
-python read_serial.py      # Filtered: WEATHER_SVC / WIFI / MAIN / crashes
-python read_crash.py       # Capture Guru Meditation crashes only
+python3 read_serial.py     # Filtered: WEATHER_SVC / WIFI / MAIN / crashes
+python3 read_crash.py      # Capture Guru Meditation crashes only
 ```
+
+> Serial ports: Linux uses `/dev/ttyUSB*` for both flashing and reading;
+> macOS uses `/dev/cu.usbmodem*` (callout unit). `read_serial.py` currently
+> hardcodes `/dev/cu.usbmodem1301` — edit the `serial.Serial(...)` call if
+> your device lands on a different bus. Always use `python3` on macOS;
+> `python` is not on PATH by default.
 
 > The ESP-IDF install lives at `~/esp/esp-idf/` (no version pin in the
 > path — the working tree reports its own version via `idf.py --version`).
