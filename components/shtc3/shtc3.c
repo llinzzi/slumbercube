@@ -93,10 +93,12 @@ static bool try_measure(uint16_t meas_cmd, float *temp_c, float *humidity)
     uint16_t raw_t  = ((uint16_t)buf[0] << 8) | buf[1];
     uint16_t raw_rh = ((uint16_t)buf[3] << 8) | buf[4];
 
-    *temp_c   = (175.0f * raw_t)  / 65536.0f - 45.0f;
+    *temp_c   = (175.0f * raw_t)  / 65536.0f - 45.0f
+                - ((float)CONFIG_SHTC3_TEMP_OFFSET_TENTHS_C / 10.0f);
     *humidity = (100.0f * raw_rh) / 65536.0f;
 
-    ESP_LOGD(TAG, "raw T=0x%04X RH=0x%04X → %.1f°C %.0f%%", raw_t, raw_rh, *temp_c, *humidity);
+    ESP_LOGD(TAG, "raw T=0x%04X RH=0x%04X → %.2f°C %.0f%% (offset=%d/10 °C)",
+             raw_t, raw_rh, *temp_c, *humidity, CONFIG_SHTC3_TEMP_OFFSET_TENTHS_C);
     return true;
 }
 

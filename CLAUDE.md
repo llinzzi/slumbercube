@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 # Source ESP-IDF first
-. ~/esp/v5.5.2/esp-idf/export.sh
+. ~/esp/esp-idf/export.sh
 
 # Build
 idf.py build
@@ -22,6 +22,10 @@ idf.py -p /dev/ttyUSB0 monitor
 python read_serial.py      # Filtered: WEATHER_SVC / WIFI / MAIN / crashes
 python read_crash.py       # Capture Guru Meditation crashes only
 ```
+
+> The ESP-IDF install lives at `~/esp/esp-idf/` (no version pin in the
+> path — the working tree reports its own version via `idf.py --version`).
+> If you need a specific version, clone to `~/esp/vX.Y.Z/esp-idf/` instead.
 
 ## Target
 
@@ -40,6 +44,7 @@ app_main()
 ├── Button init (GPIO3 + left)  — deferred, after screen visible
 ├── WiFi STA + SNTP sync
 ├── Weather fetch (AMAP)
+├── SHTC3 indoor T/RH read (every 10s in active loop)
 └── Main loop (600s, 1s tick) → deep sleep
 ```
 
@@ -58,6 +63,9 @@ app_main()
 | Fonts | `main/font_weather.c/h` | Chinese weather descriptions |
 | Icons | `main/weather_icons.c/h` | Programmatic weather icons (no image files) |
 | Loading | `main/loading_img.c/h` | Splash image (PNG→C array) |
+| Indoor sensor | `components/shtc3/shtc3.c/h` | SHTC3 T/RH over I²C, 3-tier retry, optional temp offset |
+| Shared I²C bus | `components/i2c_bus/i2c_bus.c/h` | Mutex-protected master bus shared by SHTC3 + PCF85063 |
+| RTC | `components/pcf85063/pcf85063.c/h` | PCF85063 RTC + alarm on shared I²C bus |
 
 `docs/solutions/` — documented solutions to past problems (bugs, best practices, patterns), organized by category with YAML frontmatter (`module`, `tags`, `problem_type`).
 
@@ -80,8 +88,28 @@ All config is in `main/Kconfig.projbuild` (ESP-IDF menuconfig → SlumberCube Co
 - **Night mode**: Start/end hour (default 22→6)
 - **Sleep**: Active duration, wake GPIO
 - **GPIO pins**: SPI (MOSI=10, CLK=7, CS=-1, DC=8, RST=20), NS4168_CTRL=2, button=3
+- **I²C bus**: SDA=21, SCL=9, 400 kHz (shared by SHTC3 + PCF85063)
+- **SHTC3 sensor**: `CONFIG_SHTC3_TEMP_OFFSET_TENTHS_C` — see *SHTC3 self-heating* below
 
 Access via `CONFIG_*` macros after `idf.py menuconfig`.
+
+## SHTC3 self-heating
+
+The on-board SHTC3 sits on the same PCB as the LDO, the Li-ion charger
+IC, the OLED panel, and the ESP32-C3 die — all of which bias the
+sensor's die temperature upward. The driver also keeps the SHTC3 in
+**idle mode (~200 µA)** between reads for reliable wake on the shared
+I²C bus, adding a further ~0.5 °C of self-heating.
+
+The raw-to-°C conversion is the textbook SHTC3 formula
+(`175·raw/65536 − 45`), so the bias comes entirely from the
+environment. To compensate without re-flashing per unit, set
+`CONFIG_SHTC3_TEMP_OFFSET_TENTHS_C` in menuconfig — the value is
+**tenths of °C subtracted from the raw reading**, range −100..+100.
+Typical bedside-clock bias is +10 to +30 (= 1.0 °C to 3.0 °C).
+
+Tune against a reference thermometer after the device has been
+running ≥5 minutes for the PCB to reach thermal equilibrium.
 
 ## Deep sleep wakeup
 
