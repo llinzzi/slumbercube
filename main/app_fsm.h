@@ -137,6 +137,7 @@ typedef struct {
     bool     alarm_disabled;
     app_audio_player_evt_t last_audio_event;   /* 由 callback 线程原子写入 */
     uint32_t pending_ticks;
+    uint32_t net_connect_ticks;    /* net_fsm CONNECTING 状态下的秒数 */
     uint8_t  stall_ticks;
     bool     first_advance_synced;
     uint8_t  alarm_ring_minutes;    /* 自 ALARM_RINGING 起累计分钟 */

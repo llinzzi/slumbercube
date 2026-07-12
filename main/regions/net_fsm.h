@@ -24,7 +24,7 @@ typedef enum net_state_e {
 
 typedef enum {
     NET_EVT_NONE = 0,
-    NET_EVT_NO_CREDS_AT_BOOT,
+    NET_EVT_BOOT_DONE,           /* 一次性,router 在 BOOT_DONE 时 fan-out */
     NET_EVT_BTN_REQUEST_PROVISION,
     NET_EVT_PROV_OK,
     NET_EVT_PROV_FAIL,
