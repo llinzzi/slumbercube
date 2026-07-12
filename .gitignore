@@ -5,6 +5,7 @@ managed_components
 .cache/
 .agent_history/
 .minimax/
+.claude/
 .DS_Store
 *.swp
 .DS_Store
