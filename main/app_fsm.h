@@ -135,6 +135,7 @@ typedef struct {
     bool     audio_url_set;
     bool     alarm_valid;
     bool     alarm_disabled;
+    bool     night_now;              /* clock_screen_is_night_time() 由 executor 读 */
     app_audio_player_evt_t last_audio_event;   /* 由 callback 线程原子写入 */
     uint32_t pending_ticks;
     uint32_t net_connect_ticks;    /* net_fsm CONNECTING 状态下的秒数 */
