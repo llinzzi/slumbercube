@@ -34,7 +34,6 @@ static lv_obj_t *station_label = NULL;
 static bool s_indicator_on = false;
 
 static const weather_data_t *weather = NULL;
-static bool visible = false;
 static bool night_mode = false;
 static int8_t s_night_override = -1;  /* -1=auto, 0=force day, 1=force night */
 
@@ -226,7 +225,7 @@ static void draw_night_clock(void)
 
 void clock_screen_update_time(void)
 {
-    if (!visible || !time_label) return;
+    if (!time_label) return;
 
     if (night_mode) {
         draw_night_clock();
@@ -430,7 +429,6 @@ void clock_screen_set_data(const weather_data_t *data)
 void clock_screen_show(void)
 {
     if (!container) return;
-    visible = true;
 
     /* Apply night/day mode based on current time on first show.
      * night_mode starts as false but the clock may already be in night
@@ -444,18 +442,6 @@ void clock_screen_show(void)
     }
     lv_obj_remove_flag(container, LV_OBJ_FLAG_HIDDEN);
     lv_obj_invalidate(container);
-}
-
-void clock_screen_hide(void)
-{
-    if (!container) return;
-    visible = false;
-    lv_obj_add_flag(container, LV_OBJ_FLAG_HIDDEN);
-}
-
-bool clock_screen_is_visible(void)
-{
-    return visible;
 }
 
 bool clock_screen_is_night_time(void)

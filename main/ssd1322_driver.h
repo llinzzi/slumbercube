@@ -52,11 +52,6 @@ void ssd1322_display_off(void);
 void ssd1322_display_on(void);
 
 /**
- * @brief 清空GDDRAM（全黑），避免唤醒时闪白
- */
-void ssd1322_clear_display(void);
-
-/**
  * @brief 设置列/行地址窗口
  * @param col_start 起始列地址 (0x1C..0x5B, 每列=4像素)
  * @param col_end   结束列地址

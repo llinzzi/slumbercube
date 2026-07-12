@@ -9,7 +9,6 @@
 #include "esp_wifi.h"
 #include "esp_event.h"
 #include "esp_netif.h"
-#include "esp_netif_types.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
 #include "lwip/apps/sntp.h"
@@ -183,7 +182,7 @@ static esp_err_t wifi_wait_connected(int timeout_ms)
 /* Non-blocking: init + configure + start the STA radio.
  * Returns ESP_OK when the radio is started and the driver will attempt
  * to connect automatically (WIFI_EVENT_STA_START → esp_wifi_connect()).
- * The caller polls wifi_is_connected() or waits on wifi_get_event_group().
+ * The caller polls wifi_is_connected() to detect when the link comes up.
  *
  * Safe to call when already connected (idempotent fast path). */
 esp_err_t wifi_sta_ensure(void)
@@ -285,11 +284,6 @@ esp_err_t wifi_init_sta(void)
 bool wifi_is_connected(void)
 {
     return s_wifi_connected;
-}
-
-void *wifi_get_event_group(void)
-{
-    return (void *)s_wifi_event_group;
 }
 
 static const char *NVS_NAMESPACE = "clock";
@@ -425,34 +419,4 @@ fail:
     ESP_LOGW(TAG, "wifi_creds_save failed at step: %s", esp_err_to_name(err));
     nvs_close(handle);
     return err;
-}
-
-esp_err_t wifi_creds_clear(void)
-{
-    nvs_handle_t handle;
-    esp_err_t err = nvs_open(WIFI_CREDS_NAMESPACE, NVS_READWRITE, &handle);
-    if (err == ESP_ERR_NVS_NOT_FOUND) {
-        /* Already absent — success. */
-        return ESP_OK;
-    }
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_open('%s') failed: %s", WIFI_CREDS_NAMESPACE, esp_err_to_name(err));
-        return err;
-    }
-
-    /* Erase the whole namespace — ssid, pass, flag all vanish together. */
-    err = nvs_erase_all(handle);
-    if (err != ESP_OK) {
-        nvs_close(handle);
-        ESP_LOGW(TAG, "nvs_erase_all failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    err = nvs_commit(handle);
-    nvs_close(handle);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_commit failed: %s", esp_err_to_name(err));
-        return err;
-    }
-    ESP_LOGI(TAG, "Credentials cleared from NVS");
-    return ESP_OK;
 }

@@ -1,7 +1,6 @@
 #include "ssd1322_driver.h"
 #include "driver/gpio.h"
 #include "esp_log.h"
-#include "esp_heap_caps.h"
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -66,31 +65,6 @@ void ssd1322_set_window(uint8_t col_start, uint8_t col_end, uint8_t row_start, u
     ssd1322_send_cmd(0x75);
     ssd1322_send_data(row_start);
     ssd1322_send_data(row_end);
-}
-
-void ssd1322_clear_display(void)
-{
-    /* Fill GDDRAM with zeros (all black) via SPI */
-    size_t buf_size = (LCD_H_RES / 2) * LCD_V_RES;
-    uint8_t *clear_buf = (uint8_t *)heap_caps_malloc(buf_size, MALLOC_CAP_DMA);
-    if (!clear_buf) {
-        ESP_LOGE(TAG, "Failed to allocate clear buffer");
-        return;
-    }
-    memset(clear_buf, 0, buf_size);
-
-    ssd1322_set_window(0x1C, 0x5B, 0, 63);
-    ssd1322_send_cmd(0x5C);
-
-    gpio_set_level(PIN_NUM_DC, 1);
-    spi_transaction_t t = {
-        .length = buf_size * 8,
-        .tx_buffer = clear_buf,
-    };
-    spi_device_polling_transmit(g_spi, &t);
-
-    free(clear_buf);
-    ESP_LOGI(TAG, "Display cleared");
 }
 
 esp_err_t ssd1322_init(void)

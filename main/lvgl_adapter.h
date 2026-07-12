@@ -10,12 +10,6 @@
  */
 esp_err_t lvgl_adapter_init(void);
 
-/**
- * @brief 获取LVGL显示器对象
- * @return LVGL显示器对象指针
- */
-lv_display_t* lvgl_adapter_get_display(void);
-
 /* Force a full-screen render from the main task. */
 void lvgl_adapter_refr_now(void);
 

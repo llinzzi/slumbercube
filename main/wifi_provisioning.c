@@ -5,7 +5,6 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <ctype.h>
 #include <errno.h>
 
 #include "freertos/FreeRTOS.h"
@@ -18,13 +17,9 @@
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_http_server.h"
-#include "esp_system.h"
-#include "nvs_flash.h"
-#include "esp_random.h"
 
 /* lwIP BSD sockets — for the DNS redirect task on UDP/53. */
 #include "lwip/sockets.h"
-#include "lwip/netdb.h"
 #include "lwip/inet.h"
 
 /* Captive-portal HTTP port — 80 is what phone browsers probe first. */
@@ -717,7 +712,6 @@ wifi_prov_result_t wifi_provisioning_run(void)
      * or call esp_wifi_set_mode(APSTA). On first boot (NVS empty), main.c
      * hasn't called wifi_init_sta() yet, so the driver is uninitialised —
      * which is what blew up on real hardware. */
-    extern esp_err_t wifi_init_sta(void);   /* forward decl — see main/wifi.c */
     /* Best-effort: if NVS has creds, this connects; if not, it fails after 30 s
      * ESP_FAIL if NVS is empty (no menuconfig fallback any more — the device
      * refuses to silently connect to a baked-in SSID). Either way, the driver
