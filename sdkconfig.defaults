@@ -28,9 +28,10 @@ CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
 # Enable LVGL QR code widget (used by config_screen)
 CONFIG_LV_USE_QRCODE=y
 
-# Enable CPU frame pointer for full backtraces on watchdog/panic
-# (otherwise only PC/RA/SP are dumped, no call chain).
-CONFIG_ESP_SYSTEM_USE_FRAME_POINTER=y
+# Frame pointer disabled — saves a few KB of flash + slightly faster ISR
+# entry. Means watchdog/panic only dumps PC/RA/SP (no call chain).
+# Re-enable if a future crash needs deeper forensics.
+# CONFIG_ESP_SYSTEM_USE_FRAME_POINTER is not set
 
 # Reduce LWIP footprint. Must be ≥ 3 (HTTP server internal) + 3 (open)
 # = 6 minimum for provisioning HTTP server to start.
