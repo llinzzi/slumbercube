@@ -39,7 +39,9 @@ typedef struct {
  *  - 返回:          各 region 应处理的子事件
  *
  * 始终返回一个 full struct;unused 子事件以 *_EVT_NONE 表示。 */
-routed_events_t route_event(app_event_t raw, const app_input_t *inp);
+routed_events_t route_event(app_event_t raw,
+                       const app_state_t *state,
+                       const app_input_t *inp);
 
 #ifdef __cplusplus
 }
