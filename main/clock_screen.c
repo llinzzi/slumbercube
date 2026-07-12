@@ -446,18 +446,6 @@ void clock_screen_show(void)
     lv_obj_invalidate(container);
 }
 
-void clock_screen_hide(void)
-{
-    if (!container) return;
-    visible = false;
-    lv_obj_add_flag(container, LV_OBJ_FLAG_HIDDEN);
-}
-
-bool clock_screen_is_visible(void)
-{
-    return visible;
-}
-
 bool clock_screen_is_night_time(void)
 {
     /* Override takes priority (session-only, resets to auto on wake) */

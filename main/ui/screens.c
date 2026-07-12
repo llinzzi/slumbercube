@@ -1,14 +1,9 @@
 #include "screens.h"
-#include "vars.h"
-#include "ssd1322_driver.h"
 #include "clock_screen.h"
 #include <string.h>
-#include <time.h>
 #include <sys/time.h>
 
 objects_t objects;
-lv_obj_t *tick_value_change_obj;
-uint32_t active_theme_index = 0;
 
 static const weather_data_t *volatile pending_weather_data = NULL;
 
@@ -78,9 +73,6 @@ tick_screen_func_t tick_screen_funcs[] = {
 };
 void tick_screen(int screen_index) {
     tick_screen_funcs[screen_index]();
-}
-void tick_screen_by_id(enum ScreensEnum screenId) {
-    tick_screen_funcs[screenId - 1]();
 }
 
 void create_screens() {

@@ -8,16 +8,12 @@
 esp_err_t wifi_init_sta(void);
 
 /* Non-blocking: init + start radio, return immediately.
- * Poll wifi_is_connected() or wait on wifi_get_event_group(). */
+ * Poll wifi_is_connected() to detect when the link comes up. */
 esp_err_t wifi_sta_ensure(void);
 
 esp_err_t wifi_ensure_netif(void);
 bool wifi_is_connected(void);
 
-/* FreeRTOS event group for non-blocking connection polling.
- * Returns an opaque handle; cast to EventGroupHandle_t after including
- * "freertos/event_groups.h" (must be AFTER "freertos/FreeRTOS.h"). */
-void *wifi_get_event_group(void);
 bool wifi_is_time_set(void);
 void wifi_mark_time_set(void);
 void wifi_set_timezone(void);
@@ -55,9 +51,5 @@ esp_err_t wifi_creds_load(wifi_creds_t *out);
 /* Persist credentials. Sets configured=1 and commits.
  * Validates non-empty ssid before writing; returns ESP_ERR_INVALID_ARG otherwise. */
 esp_err_t wifi_creds_save(const wifi_creds_t *c);
-
-/* Remove credentials from NVS. After this returns ESP_OK, wifi_creds_load
- * returns ESP_ERR_NOT_FOUND. */
-esp_err_t wifi_creds_clear(void);
 
 #endif // WIFI_MANAGER_H

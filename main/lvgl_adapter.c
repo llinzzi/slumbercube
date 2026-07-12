@@ -229,11 +229,6 @@ static void lvgl_task(void *arg)
     }
 }
 
-lv_display_t* lvgl_adapter_get_display(void)
-{
-    return g_disp;
-}
-
 void lvgl_adapter_refr_now(void)
 {
     if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {

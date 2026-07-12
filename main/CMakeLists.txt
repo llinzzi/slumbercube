@@ -9,7 +9,6 @@ idf_component_register(SRCS "config_screen.c" "wifi_provisioning.c" "main.c"
                             "font_station.c"
                             "ui/ui.c"
                             "ui/screens.c"
-                            "ui/styles.c"
                             "audio_player_wrapper.c"
                     INCLUDE_DIRS "."
                     REQUIRES lvgl__lvgl driver esp_netif esp_wifi esp_http_server lwip nvs_flash esp_http_client json mbedtls esp-audio-player esp_driver_i2s espressif__button esp-libhelix-mp3 shtc3 i2c_bus pcf85063 esp_timer)

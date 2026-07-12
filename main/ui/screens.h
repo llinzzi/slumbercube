@@ -19,7 +19,6 @@ enum ScreensEnum {
 
 void create_screen_main(void);
 void tick_screen_main(void);
-void tick_screen_by_id(enum ScreensEnum screenId);
 void tick_screen(int screen_index);
 void create_screens(void);
 

@@ -75,13 +75,6 @@ static void audio_agent_init(void)
              s_agent.enabled ? "enabled" : "disabled", s_agent.host);
 }
 
-esp_err_t audio_agent_reload(void)
-{
-    s_agent_loaded = false;
-    audio_agent_init();
-    return ESP_OK;
-}
-
 /* Query-string fragment "t=24.3&h=58" (no leading ? or &) — empty if no sensor.
  * Tries SHTC3 here as a last-chance read in case main.c didn't. */
 static const char *indoor_query(void)
