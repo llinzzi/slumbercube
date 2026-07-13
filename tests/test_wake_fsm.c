@@ -41,7 +41,7 @@ static void test_dormant_detect_btn(void)
 {
     wake_state_t s = WAKE_DORMANT;
     app_input_t inp = mk_inp();
-    inp.wake_kind = WAKE_KIND_BTN;
+    inp.wake_kind = WAKE_BTN;
     fsm_actions_t a = wake_fsm_step(&s, WAKE_EVT_DETECT_SOURCE, &inp);
     EXPECT(s == WAKE_FROM_BTN);
     EXPECT_ACTIONS(a, ACT_DISPLAY_FADE_IN);
@@ -51,7 +51,7 @@ static void test_dormant_detect_rtc(void)
 {
     wake_state_t s = WAKE_DORMANT;
     app_input_t inp = mk_inp();
-    inp.wake_kind = WAKE_KIND_RTC;
+    inp.wake_kind = WAKE_RTC;
     fsm_actions_t a = wake_fsm_step(&s, WAKE_EVT_DETECT_SOURCE, &inp);
     EXPECT(s == WAKE_FROM_RTC);
     EXPECT_ACTIONS(a, ACT_DISPLAY_FADE_IN, ACT_VOLUME_MAX, ACT_NET_AUTO_CONNECT);
@@ -61,7 +61,7 @@ static void test_dormant_detect_sys(void)
 {
     wake_state_t s = WAKE_DORMANT;
     app_input_t inp = mk_inp();
-    inp.wake_kind = WAKE_KIND_SYS;
+    inp.wake_kind = WAKE_SYS;
     fsm_actions_t a = wake_fsm_step(&s, WAKE_EVT_DETECT_SOURCE, &inp);
     EXPECT(s == WAKE_FROM_SYS);
     EXPECT(a.count == 0);
@@ -71,7 +71,7 @@ static void test_dormant_detect_none(void)
 {
     wake_state_t s = WAKE_DORMANT;
     app_input_t inp = mk_inp();
-    inp.wake_kind = WAKE_KIND_NONE;
+    inp.wake_kind = WAKE_NONE;
     fsm_actions_t a = wake_fsm_step(&s, WAKE_EVT_DETECT_SOURCE, &inp);
     EXPECT(s == WAKE_FROM_SYS);
 }
@@ -244,7 +244,7 @@ static void test_actions_count_invariant(void)
     /* 触发多个动作的转换:任何转换的 out.count 都 <= FSM_ACTIONS_MAX */
     wake_state_t s = WAKE_DORMANT;
     app_input_t inp = mk_inp();
-    inp.wake_kind = WAKE_KIND_RTC;
+    inp.wake_kind = WAKE_RTC;
     fsm_actions_t a = wake_fsm_step(&s, WAKE_EVT_DETECT_SOURCE, &inp);
     EXPECT(a.count <= FSM_ACTIONS_MAX);
 }

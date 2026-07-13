@@ -67,7 +67,7 @@ static volatile bool s_in_provisioning = false; /* read by button callbacks duri
 static bool s_audio_pending           = false; /* wifi connecting, start audio when done */
 static int  s_audio_pending_ticks     = 0;     /* timeout counter for pending start */
 static bool s_rtc_alarm_armed          = false; /* set after arm_pcf85063_alarm_wakeup() */
-typedef enum { WAKE_BTN, WAKE_RTC, WAKE_SYS } wake_kind_t;
+#include "app_fsm.h"  /* wake_kind_t 在 app_fsm.h 中定义 */
 static wake_kind_t s_wake_kind = WAKE_SYS;  /* default: cold boot */
 static bool s_normal_mode              = false; /* true only when we reached the
                                                         * post-provisioning "normal operation"

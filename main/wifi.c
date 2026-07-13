@@ -1,8 +1,10 @@
 #include "wifi.h"
+#include "app_fsm.h"
 #include <string.h>
 #include <time.h>
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/queue.h"
 #include "freertos/event_groups.h"
 #include "esp_system.h"
 #include "esp_mac.h"
@@ -48,6 +50,31 @@ static bool s_wifi_connected = false;
 static bool s_using_nvs_creds = false;
 static bool s_wifi_started = false;
 
+/* ── FSM event queue ──────────────────────────────────────────────────
+ * wifi_event_handler 把 ESP-IDF WiFi 事件转换为 app_event_t,
+ * 投递到 FreeRTOS Queue。主循环通过 wifi_fsm_dequeue() drain。
+ * 容量 8:足够覆盖快速触发的 STA_CONNECTED → IP_GOT 序列。 */
+static QueueHandle_t s_wifi_fsm_queue = NULL;
+
+static void wifi_fsm_queue_init(void)
+{
+    if (s_wifi_fsm_queue == NULL) {
+        s_wifi_fsm_queue = xQueueCreate(8, sizeof(app_event_t));
+    }
+}
+
+/* push 一个 app_event_t 到 fsm queue (non-blocking)。 */
+static void wifi_fsm_push(app_event_t ev)
+{
+    if (s_wifi_fsm_queue != NULL) {
+        /* 非阻塞写;queue 满则丢弃最旧的事件 */
+        app_event_t e = ev;
+        if (xQueueSend(s_wifi_fsm_queue, &e, 0) != pdTRUE) {
+            ESP_LOGW(TAG, "wifi_fsm_queue full, dropping event %d", (int)ev);
+        }
+    }
+}
+
 #define WIFI_CONNECTED_BIT  BIT0
 #define WIFI_FAIL_BIT       BIT1
 
@@ -62,6 +89,9 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         ESP_LOGI(TAG, "WIFI_EVENT_STA_START received");
         esp_err_t err = esp_wifi_connect();
         ESP_LOGI(TAG, "esp_wifi_connect returned: %s", esp_err_to_name(err));
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_CONNECTED) {
+        ESP_LOGI(TAG, "WIFI_EVENT_STA_CONNECTED -> EVT_WIFI_STA_CONNECTED");
+        wifi_fsm_push(EVT_WIFI_STA_CONNECTED);
     } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
         s_wifi_connected = false;
         if (s_suppress_auto_connect) {
@@ -99,13 +129,17 @@ static void wifi_event_handler(void *arg, esp_event_base_t event_base,
         } else {
             ESP_LOGW(TAG, "WiFi max retry reached, giving up");
             xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+            wifi_fsm_push(EVT_WIFI_TIMEOUT);
         }
+        /* 不论是否耗尽重试,都通知 FSM:连不上 */
+        wifi_fsm_push(EVT_WIFI_DISCONNECTED);
     } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
         ip_event_got_ip_t *event = (ip_event_got_ip_t *)event_data;
         ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
         s_retry_num = 0;
         s_wifi_connected = true;
         xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+        wifi_fsm_push(EVT_WIFI_IP_GOT);
     }
 }
 
@@ -159,8 +193,19 @@ esp_err_t wifi_ensure_netif(void)
     ESP_ERROR_CHECK(esp_netif_init());
     ESP_ERROR_CHECK(esp_event_loop_create_default());
     s_netif_inited = true;
+
+    /* FSM event queue: 主循环后续会 drain (Step 11)。 */
+    wifi_fsm_queue_init();
+
     ESP_LOGI(TAG, "Netif initialized");
     return ESP_OK;
+}
+
+/* 主循环 drain wifi FSM 事件。非阻塞,queue 空时返回 false。 */
+bool wifi_fsm_dequeue(app_event_t *out)
+{
+    if (s_wifi_fsm_queue == NULL || out == NULL) return false;
+    return xQueueReceive(s_wifi_fsm_queue, out, 0) == pdTRUE;
 }
 
 static bool s_wifi_inited = false;

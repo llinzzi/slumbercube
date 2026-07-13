@@ -39,18 +39,18 @@ fsm_actions_t wake_fsm_step(wake_state_t *cur, wake_evt_t evt, const app_input_t
     switch (*cur) {
     case WAKE_DORMANT:
         if (evt == WAKE_EVT_DETECT_SOURCE) {
-            if (inp->wake_kind == WAKE_KIND_BTN) {
+            if (inp->wake_kind == WAKE_BTN) {
                 /* 用户按右键。看时间。 */
                 *cur = WAKE_FROM_BTN;
                 out = add_action(out, ACT_DISPLAY_FADE_IN);
-            } else if (inp->wake_kind == WAKE_KIND_RTC) {
+            } else if (inp->wake_kind == WAKE_RTC) {
                 /* PCF85063 闹铃。强制 auto-play + 大音量 + 起 wifi。 */
                 *cur = WAKE_FROM_RTC;
                 out = add_action(out, ACT_DISPLAY_FADE_IN);
                 out = add_action(out, ACT_VOLUME_MAX);
                 out = add_action(out, ACT_NET_AUTO_CONNECT);
             } else {
-                /* WAKE_KIND_NONE / WAKE_KIND_SYS: 冷启动,纯上电。 */
+                /* WAKE_NONE / WAKE_SYS: 冷启动,纯上电。 */
                 *cur = WAKE_FROM_SYS;
             }
         }

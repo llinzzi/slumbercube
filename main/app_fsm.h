@@ -24,12 +24,14 @@ extern "C" {
  * C 不允许 incomplete enum 作为 struct 字段,所以 app_state_t 实际使用 int
  * 字段;赋值时靠编译器 int↔enum 隐式转换。region step() 函数仍用强类型。 */
 
-/* ── 唤醒来源 (boot 时由 main.c 一次性填入,后续由 wake_fsm 升级为状态) ── */
+/* ── 唤醒来源 ─────────────────────────────────────────────────────────
+ * 与 main.c 的 wake_kind_t 共用同一枚举 (WAKE_BTN / WAKE_RTC / WAKE_SYS)。
+ * 这里是定义来源;main.c 不要重复 typedef。 */
 typedef enum {
-    WAKE_KIND_NONE = 0,    /* 未检测 */
-    WAKE_KIND_BTN,         /* 用户按右键 (CONFIG_WAKEUP_GPIO) */
-    WAKE_KIND_RTC,         /* PCF85063 闹钟 (CONFIG_PCF85063_INT_GPIO) */
-    WAKE_KIND_SYS,         /* 冷启动 / 异常 */
+    WAKE_NONE = 0,  /* 未检测 (boot 前) */
+    WAKE_BTN = 1,   /* 用户按右键 (CONFIG_WAKEUP_GPIO) */
+    WAKE_RTC = 2,   /* PCF85063 闹钟 (CONFIG_PCF85063_INT_GPIO) */
+    WAKE_SYS = 3,   /* 冷启动 / 异常 */
 } wake_kind_t;
 
 /* ── 音频播放器回调事件 (来自 esp-audio-player, 简化版,避免头依赖) ── */
