@@ -58,6 +58,7 @@ static bool should_skip_alarm_today(void);
 static bool arm_pcf85063_alarm_wakeup(void);
 #endif
 static void do_factory_reset(void);
+static void apply_actions(const fsm_actions_t *a);
 
 /* ── FSM 全局状态(必须在 build_context 之前声明) ───────────────────── */
 static app_state_t s_state = {
@@ -138,6 +139,16 @@ static void update_state_caches(void)
 
     /* s_audio_playing 跟踪:audio wrapper 的 logical state */
     s_audio_playing = (s_state.audio == AUDIO_PLAYING);
+
+    /* audio_fsm STOPPING 收尾:audio_stop() 是同步阻塞函数,返回时音频已停。
+     * 这里主动喂 AUDIO_EVT_STOP_DONE 让 audio_fsm 转到 IDLE,
+     * 否则后续按钮事件会被吞(STOPPING 只接受 STOP_DONE)。 */
+    if (s_state.audio == AUDIO_STOPPING) {
+        app_input_t inp = build_context();
+        fsm_actions_t a = audio_fsm_step(
+            (audio_state_t *)&s_state.audio, AUDIO_EVT_STOP_DONE, &inp);
+        apply_actions(&a);
+    }
 }
 
 /* 执行一个 region step 返回的动作列表。Step 11 用 inline 实现,
@@ -274,6 +285,9 @@ static void apply_actions(const fsm_actions_t *a)
         case ACT_AUDIO_PLAY_URL:
 #if CONFIG_AUDIO_ENABLE
             audio_play_url();
+            /* 同步 station 名称到显示 — audio_player_wrapper 只更新内部
+             * s_status,不刷新 OLED;executor 负责 */
+            clock_screen_set_station_name(audio_get_station_name());
 #endif
             break;
         case ACT_AUDIO_STOP:
