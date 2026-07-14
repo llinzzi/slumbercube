@@ -619,15 +619,11 @@ static void right_short_click_cb(void *button_handle, void *usr_data)
     if (s_main_task) xTaskNotify(s_main_task, EVENT_SLEEP_PENDING, eSetBits);
 }
 
-/* 右键 long press: flip between night and day display.
- * No "auto" in the cycle — auto is only the default on wake. */
+/* 右键 long press: toggle night/day display.
+ * FSM display_fsm 接收 EVENT_NIGHT_TOGGLE 后自行处理三态循环。 */
 static void right_long_press_cb(void *button_handle, void *usr_data)
 {
-    bool currently_night = clock_screen_is_night_time();
-    /* Force the opposite of what's currently shown */
-    int8_t next = currently_night ? 0 : 1;  /* 0=day, 1=night */
-    clock_screen_set_night_override(next);
-    ESP_LOGI(TAG, "右键 long press → force %s", currently_night ? "DAY" : "NIGHT");
+    ESP_LOGI(TAG, "右键 long press → night toggle (deferred to FSM)");
     if (s_main_task) xTaskNotify(s_main_task, EVENT_NIGHT_TOGGLE, eSetBits);
 }
 
@@ -1159,10 +1155,13 @@ void app_main(void)
         apply_actions(&a);
         a = sys_fsm_step((sys_state_t *)&s_state.sys, r.sys, &boot_inp);
         apply_actions(&a);
-        a = net_fsm_step((net_state_t *)&s_state.net, r.net, &boot_inp);
-        apply_actions(&a);
+        /* net_fsm 不在 boot 时自动连网 — 保持 OFFLINE。
+         * 用户按左键时 audio_fsm IDLE→PENDING 触发 wifi。
+         * RTC 闹钟唤醒时 audio_fsm AUTO_PLAY_REQUEST 独立起音频。 */
         a = audio_fsm_step((audio_state_t *)&s_state.audio, r.audio, &boot_inp);
         apply_actions(&a);
+        /* display_fsm 初始态匹配当前夜间状态 */
+        if (boot_inp.night_now) s_state.display = DISP_NIGHT_AUTO;
         a = display_fsm_step((display_state_t *)&s_state.display, r.display, &boot_inp);
         apply_actions(&a);
     }
