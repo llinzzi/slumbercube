@@ -52,6 +52,33 @@ static void log_heap(const char *label)
              heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 }
 
+/* ── 前向声明(build_context / apply_actions 引用,本体在文件下方) ─── */
+static bool should_skip_alarm_today(void);
+#if CONFIG_PCF85063_ENABLE
+static bool arm_pcf85063_alarm_wakeup(void);
+#endif
+static void do_factory_reset(void);
+
+/* ── FSM 全局状态(必须在 build_context 之前声明) ───────────────────── */
+static app_state_t s_state = {
+    .wake    = WAKE_DORMANT,
+    .sys     = SYS_BOOT,
+    .net     = NET_OFFLINE,
+    .audio   = AUDIO_IDLE,
+    .display = DISP_DAY,
+};
+
+/* executor 私有缓存(沿用旧 main.c 命名,Step 13 一并清理)。
+ * 必须放在 build_context 之前 — build_context 直接读这些。 */
+static volatile bool s_audio_playing       = false;
+static bool          s_audio_pending       = false;
+static int           s_audio_pending_ticks = 0;
+static bool          s_rtc_alarm_armed     = false;
+static bool          s_rtc_alarm_attempted = false;
+static int           stall_ticks           = 0;
+static bool          s_first_advance_synced = false;
+static uint8_t       s_alarm_ring_minutes  = 0;
+
 /* ── FSM executor ────────────────────────────────────────────────────── */
 /* 组装 app_input_t:每 tick 由 main loop 调用,region step 读这个上下文。 */
 static app_input_t build_context(void)
@@ -73,13 +100,44 @@ static app_input_t build_context(void)
         inp.alarm_disabled = ac->disabled;
     }
 #endif
-    inp.pending_ticks = 0;  /* TODO: 从 executor 累积 */
-    inp.net_connect_ticks = 0;  /* TODO */
-    inp.stall_ticks = s_stall_ticks;
+    inp.pending_ticks = s_audio_pending_ticks;
+    inp.stall_ticks = stall_ticks;
     inp.first_advance_synced = s_first_advance_synced;
     inp.alarm_ring_minutes = s_alarm_ring_minutes;
     inp.night_now = clock_screen_is_night_time();
     return inp;
+}
+
+/* post-step 状态缓存:每 tick FSM 跑完后更新。
+ * 让 audio_fsm / wake_fsm / net_fsm 通过 inp 读累计计数器,
+ * 它们决定何时触发状态转换;executor 把转换结果写回缓存。 */
+static void update_state_caches(void)
+{
+    /* 闹钟分钟:仅在 ALARM_RINGING 累计 */
+    if (s_state.wake == WAKE_ALARM_RINGING) {
+        s_alarm_ring_minutes++;
+    } else {
+        s_alarm_ring_minutes = 0;
+    }
+
+    /* stall_ticks:仅在 PLAYING 累计 */
+    if (s_state.audio == AUDIO_PLAYING) {
+        stall_ticks++;
+    } else {
+        stall_ticks = 0;
+        s_first_advance_synced = false;
+    }
+
+    /* s_audio_pending 跟踪:状态从 IDLE/PENDING/PLAYING 等变化时同步 */
+    s_audio_pending = (s_state.audio == AUDIO_PENDING);
+    if (s_state.audio == AUDIO_PENDING) {
+        s_audio_pending_ticks++;
+    } else {
+        s_audio_pending_ticks = 0;
+    }
+
+    /* s_audio_playing 跟踪:audio wrapper 的 logical state */
+    s_audio_playing = (s_state.audio == AUDIO_PLAYING);
 }
 
 /* 执行一个 region step 返回的动作列表。Step 11 用 inline 实现,
@@ -301,24 +359,19 @@ static void apply_actions(const fsm_actions_t *a)
 
 /* 配置项通过 menuconfig 设置 (参见 Kconfig.projbuild) */
 
+/* ── 前向声明(build_context + apply_actions 引用,本体在文件下方) ─── */
+static bool should_skip_alarm_today(void);
+#if CONFIG_PCF85063_ENABLE
+static bool arm_pcf85063_alarm_wakeup(void);
+#endif
+static void do_factory_reset(void);
+
 /* ── FSM 应用状态 ──────────────────────────────────────────────────────
  * 5 个 region 的正交状态聚合。app_state_t 字段是 int(不强类型)因为 C
  * 不允许 incomplete enum 作为 struct 字段。
  *
- * 注意:executor 仍复用现有 main.c 旧全局变量 (s_audio_playing /
- * s_audio_pending / s_audio_pending_ticks / s_rtc_alarm_armed /
- * stall_ticks / s_first_advance_synced),Step 13 才统一替换。
- * 闹钟分钟计时器暂用 s_alarm_ring_minutes (本块定义,后续 Step 13
- * 移到 app_input_t 的传递逻辑中)。 */
-static app_state_t s_state = {
-    .wake    = WAKE_DORMANT,
-    .sys     = SYS_BOOT,
-    .net     = NET_OFFLINE,
-    .audio   = AUDIO_IDLE,
-    .display = DISP_DAY,
-};
-
-static uint8_t s_alarm_ring_minutes = 0;
+ * 真实的 s_state / s_audio_playing / s_audio_pending 等定义在
+ * log_heap 之后(放在 build_context 之前,见 log_heap 后的全局块)。 */
 
 /* 路由器需要这些原始事件 → 由主循环在 EVT_TICK_1HZ 触发前检查。 */
 
@@ -338,11 +391,8 @@ static TaskHandle_t s_main_task = NULL;  /* set at top of app_main() */
 static button_handle_t g_btn_right = NULL;
 static button_handle_t g_btn_left = NULL;
 
-static volatile bool s_audio_playing = false;   /* read by button callbacks AND main loop */
+/* s_audio_playing 等已上移到 FSM 块,这里仅保留 s_in_provisioning 和 wake_kind。 */
 static volatile bool s_in_provisioning = false; /* read by button callbacks during captive portal */
-static bool s_audio_pending           = false; /* wifi connecting, start audio when done */
-static int  s_audio_pending_ticks     = 0;     /* timeout counter for pending start */
-static bool s_rtc_alarm_armed          = false; /* set after arm_pcf85063_alarm_wakeup() */
 #include "app_fsm.h"  /* wake_kind_t 在 app_fsm.h 中定义 */
 static wake_kind_t s_wake_kind = WAKE_SYS;  /* default: cold boot */
 static bool s_normal_mode              = false; /* true only when we reached the
@@ -1099,35 +1149,25 @@ void app_main(void)
     ESP_LOGI(TAG, "Running for %d seconds before sleep, button wakes", CONFIG_ACTIVE_DURATION_SECS);
 
     // ── FSM-driven main loop ───────────────────────────────────────────
-    // 每 tick: drain button bits + wifi queue + audio queue,处理每个原始事件,
-    // 然后跑 1Hz TICK_1HZ 推动 region 内部 timeout/周期逻辑。
-    // Step 12+ 进一步细化每个 region 的 TICK 行为。
+    // 每 tick:
+    //  1. xTaskNotifyWait 1s timeout for button bits
+    //  2. drain events from 3 sources (button/wifi/audio) + 1Hz tick fallback
+    //  3. 对每个 event: route → 5 region step → executor
+    //  4. update_state_caches():把 FSM 状态写入 executor 本地缓存
+    //  5. 60s 周期任务(SHTC3 + heap log)
+    //  6. 1Hz 显示刷新
     for (uint32_t tick = 0; tick < (uint32_t)CONFIG_ACTIVE_DURATION_SECS; tick++) {
         uint32_t notified = 0;
         xTaskNotifyWait(0, EVENT_BUTTON_MASK, &notified, pdMS_TO_TICKS(1000));
 
-        // 1Hz 累积计时器(后续 Step 12 由 region 自己管)
-        if (s_audio_playing) s_stall_ticks++;
-        if (s_audio_pending) {
-            s_audio_pending_ticks++;
-            if (s_audio_pending_ticks >= 30) {
-                s_audio_pending = false;
-                clock_screen_set_audio_indicator(false);
-                clock_screen_set_station_name("WiFi failed");
-            }
-        }
-        if (s_state.wake == WAKE_ALARM_RINGING) {
-            s_alarm_ring_minutes++;
-        }
-
-        /* Drain 三个事件源,逐个跑 FSM 流程 */
+        /* Drain 三个事件源 + 1Hz tick,逐个跑 FSM */
         int safety = 16;
         while (safety-- > 0) {
             app_event_t raw = EVT_NONE;
 
-            /* Buttons 优先 (用户意图) */
+            /* Buttons 优先 */
             if (notified & EVENT_SLEEP_PENDING)        { raw = EVT_BTN_SLEEP_PRESS;        notified &= ~EVENT_SLEEP_PENDING; }
-            else if (notified & EVENT_PROVISION_REQUEST){ raw = EVT_BTN_PROVISION_REQUEST;  notified &= ~EVENT_PROVISION_REQUEST; }
+            else if (notified & EVENT_PROVISIONING_REQUEST){ raw = EVT_BTN_PROVISION_REQUEST;  notified &= ~EVENT_PROVISIONING_REQUEST; }
             else if (notified & EVENT_NIGHT_TOGGLE)     { raw = EVT_BTN_NIGHT_TOGGLE;       notified &= ~EVENT_NIGHT_TOGGLE; }
             else if (notified & EVENT_AUDIO_TOGGLE)     { raw = EVT_BTN_AUDIO_TOGGLE;       notified &= ~EVENT_AUDIO_TOGGLE; }
             else if (notified & EVENT_NTP_SYNC)         { raw = EVT_BTN_NTP_SYNC;           notified &= ~EVENT_NTP_SYNC; }
@@ -1139,36 +1179,31 @@ void app_main(void)
             /* 1Hz tick fallback */
             else                                          { raw = EVT_TICK_1HZ; }
 
-            ESP_LOGD(TAG, "FSM evt=%d wake=%d sys=%d net=%d audio=%d disp=%d",
-                     (int)raw, s_state.wake, s_state.sys, s_state.net, s_state.audio, s_state.display);
-
-            /* 路由 → 5 region step → executor。顺序固定:wake → sys → net → audio → display */
+            /* 路由 → 5 region step → executor。顺序:wake → sys → net → audio → display */
             app_input_t inp = build_context();
             routed_events_t r = route_event(raw, &s_state, &inp);
 
             fsm_actions_t a;
-            a = wake_fsm_step(&s_state.wake,    r.wake,    &inp);
+            /* s_state.* 是 int 字段(见 app_state_t 注释),需要 cast 到
+             * 强类型 enum * (C 不允许 incomplete enum 直接做 struct 字段)。 */
+            a = wake_fsm_step    ((wake_state_t *)   &s_state.wake,    r.wake,    &inp);
             apply_actions(&a);
-            a = sys_fsm_step(&s_state.sys,     r.sys,     &inp);
+            a = sys_fsm_step     ((sys_state_t *)    &s_state.sys,     r.sys,     &inp);
             apply_actions(&a);
-            a = net_fsm_step(&s_state.net,     r.net,     &inp);
+            a = net_fsm_step     ((net_state_t *)    &s_state.net,     r.net,     &inp);
             apply_actions(&a);
-            a = audio_fsm_step(&s_state.audio,   r.audio,   &inp);
+            a = audio_fsm_step   ((audio_state_t *)  &s_state.audio,   r.audio,   &inp);
             apply_actions(&a);
-            a = display_fsm_step(&s_state.display, r.display, &inp);
+            a = display_fsm_step ((display_state_t *)&s_state.display, r.display, &inp);
             apply_actions(&a);
 
-            /* Pending audio: WiFi 已连上时启动播放(旧逻辑保留,Step 12 移入 audio_fsm) */
-            if (s_audio_pending && !raw && wifi_is_connected()) {
-                /* 占位逻辑 — 不再使用 raw=0 触发,改为 audio_fsm 内部 IP_GOT_FANOUT */
-            }
+            update_state_caches();
 
             if (s_state.sys == SYS_SLEEPING) goto fsm_sleep;
             if (raw == EVT_TICK_1HZ) break;  /* 1Hz 跑完退出 */
         }
 
-        /* 60s 周期任务(SHTC3 + heap log + 显示刷新)。
-         * 后续 Step 12+ 可改为 region 内 ACT_INDOOR_READ / ACT_LOG_HEAP / ACT_REFRESH_DISPLAY。 */
+        /* 60s 周期任务 */
         if (tick % 60 == 0) {
             float t = 0, h = 0;
             if (shtc3_read(&t, &h)) {

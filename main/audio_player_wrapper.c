@@ -902,3 +902,10 @@ void audio_deinit(void)
 
     ESP_LOGI(TAG, "Deinitialized");
 }
+
+/* 主循环 drain audio FSM 事件。非阻塞,queue 空时返回 false。 */
+bool audio_fsm_dequeue(app_event_t *out)
+{
+    if (s_audio_fsm_queue == NULL || out == NULL) return false;
+    return xQueueReceive(s_audio_fsm_queue, out, 0) == pdTRUE;
+}
