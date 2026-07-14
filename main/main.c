@@ -114,17 +114,11 @@ static app_input_t build_context(void)
  * 它们决定何时触发状态转换;executor 把转换结果写回缓存。 */
 static void update_state_caches(void)
 {
-    /* 闹钟分钟:仅在 ALARM_RINGING 累计 */
-    if (s_state.wake == WAKE_ALARM_RINGING) {
-        s_alarm_ring_minutes++;
-    } else {
-        s_alarm_ring_minutes = 0;
-    }
+    /* 闹钟分钟:仅在 ALARM_RINGING 累计(per tick, 由外部递增) */
 
-    /* stall_ticks:仅在 PLAYING 累计 */
-    if (s_state.audio == AUDIO_PLAYING) {
-        stall_ticks++;
-    } else {
+    /* stall_ticks & first_advance_synced: 仅在 PLAYING 累计。
+     * 注意:更新频率由外部控制(每 tick 一次),不在这里递增。 */
+    if (s_state.audio != AUDIO_PLAYING) {
         stall_ticks = 0;
         s_first_advance_synced = false;
     }
@@ -144,12 +138,9 @@ static void update_state_caches(void)
      * 这里主动喂 AUDIO_EVT_STOP_DONE 让 audio_fsm 转到 IDLE,
      * 否则后续按钮事件会被吞(STOPPING 只接受 STOP_DONE)。 */
     if (s_state.audio == AUDIO_STOPPING) {
-        ESP_LOGW(TAG, "audio STOPPING detected, feeding STOP_DONE");
         app_input_t inp = build_context();
         fsm_actions_t a = audio_fsm_step(
             (audio_state_t *)&s_state.audio, AUDIO_EVT_STOP_DONE, &inp);
-        ESP_LOGW(TAG, "audio after STOP_DONE: state=%d, actions=%d",
-                 s_state.audio, a.count);
         apply_actions(&a);
     }
 }
@@ -288,9 +279,9 @@ static void apply_actions(const fsm_actions_t *a)
         case ACT_AUDIO_PLAY_URL:
 #if CONFIG_AUDIO_ENABLE
             audio_play_url();
-            /* 同步 station 名称到显示 — audio_player_wrapper 只更新内部
-             * s_status,不刷新 OLED;executor 负责 */
             clock_screen_set_station_name(audio_get_station_name());
+            stall_ticks = 0;   /* 新曲目开始,复位 stall 计数器 */
+            audio_fsm_push_event(EVT_AUDIO_PLAYER_PLAYING);
 #endif
             break;
         case ACT_AUDIO_STOP:
@@ -1219,6 +1210,10 @@ void app_main(void)
             if (s_state.sys == SYS_SLEEPING) goto fsm_sleep;
             if (raw == EVT_TICK_1HZ) break;  /* 1Hz 跑完退出 */
         }
+
+        /* 每 tick 累加计数器(不是在 drain loop 里累加,保证 tick 粒度): */
+        if (s_state.wake == WAKE_ALARM_RINGING) s_alarm_ring_minutes++;
+        if (s_state.audio == AUDIO_PLAYING) stall_ticks++;
 
         /* 60s 周期任务 */
         if (tick % 60 == 0) {

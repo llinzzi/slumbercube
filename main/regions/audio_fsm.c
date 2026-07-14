@@ -23,7 +23,7 @@
 #include <string.h>
 
 #define AUDIO_PENDING_TIMEOUT_SEC 30
-#define STALL_THRESHOLD_TICKS     3
+#define STALL_THRESHOLD_TICKS     10   /* 10s 无进度才 force-advance */
 
 static fsm_actions_t add_action(fsm_actions_t a, app_action_kind_t kind)
 {

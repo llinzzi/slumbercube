@@ -175,32 +175,31 @@ static void audio_fsm_push(app_event_t ev)
     }
 }
 
-static void audio_player_event_cb(audio_player_cb_ctx_t *ctx)
+/* 轮询 audio_stream 状态,检测到 IDLE 时 push 到 FSM 队列。
+ * 用于自动 advance(上一曲自然结束 → 切下一曲)。
+ * PLAYING 事件由 executor 在 audio_play_url 成功后主动推,不依赖轮询。 */
+static void audio_fsm_poll_stream_state(void)
 {
-    if (ctx == NULL) return;
-    app_event_t mapped = EVT_NONE;
-    switch (ctx->audio_event) {
-    case AUDIO_PLAYER_CALLBACK_EVENT_PLAYING:
-        mapped = EVT_AUDIO_PLAYER_PLAYING;
-        break;
-    case AUDIO_PLAYER_CALLBACK_EVENT_IDLE:
-        mapped = EVT_AUDIO_PLAYER_IDLE;
-        break;
-    case AUDIO_PLAYER_CALLBACK_EVENT_COMPLETED_PLAYING_NEXT:
-        mapped = EVT_AUDIO_PLAYER_NEXT;
-        break;
-    case AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE:
-    case AUDIO_PLAYER_CALLBACK_EVENT_SHUTDOWN:
-        mapped = EVT_AUDIO_PLAYER_ERROR;
-        break;
-    case AUDIO_PLAYER_CALLBACK_EVENT_PAUSE:
-    case AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN:
-    default:
-        /* pause / unknown 不驱动 FSM 转换 (暂未建模) */
-        return;
+    if (s_stream == NULL || s_audio_fsm_queue == NULL) return;
+    static audio_player_state_t prev = AUDIO_PLAYER_STATE_SHUTDOWN;
+    audio_player_state_t cur = audio_stream_get_state(s_stream);
+    if (cur == prev) return;
+
+    if (cur == AUDIO_PLAYER_STATE_IDLE || cur == AUDIO_PLAYER_STATE_SHUTDOWN) {
+        if (prev == AUDIO_PLAYER_STATE_PLAYING) {
+            ESP_LOGD(TAG, "audio_fsm: stream PLAYING->IDLE, pushing IDLE event");
+            app_event_t e = EVT_AUDIO_PLAYER_IDLE;
+            xQueueSend(s_audio_fsm_queue, &e, 0);
+        }
     }
-    ESP_LOGI(TAG, "audio_player event %d -> EVT %d", (int)ctx->audio_event, (int)mapped);
-    audio_fsm_push(mapped);
+    prev = cur;
+}
+
+/* executor 主动推事件到 FSM 队列。 */
+void audio_fsm_push_event(app_event_t ev)
+{
+    if (s_audio_fsm_queue == NULL) return;
+    xQueueSend(s_audio_fsm_queue, &ev, 0);
 }
 static const char *s_status = NULL;
 static int s_content_length = 0;
@@ -664,9 +663,8 @@ static esp_err_t audio_play_url_inner(const char *url)
     }
     s_mixer_ready = true;
 
-    /* FSM 事件队列 + 回调注册 (首次 audio_init 后生效) */
+    /* FSM 事件队列 (首次 audio_mixer_init 后生效) */
     audio_fsm_queue_init();
-    audio_player_callback_register(audio_player_event_cb, NULL);
 
     /* Create decoder stream */
     audio_stream_config_t stream_cfg = DEFAULT_AUDIO_STREAM_CONFIG("music");
@@ -903,9 +901,16 @@ void audio_deinit(void)
     ESP_LOGI(TAG, "Deinitialized");
 }
 
-/* 主循环 drain audio FSM 事件。非阻塞,queue 空时返回 false。 */
+/* 主循环 drain audio FSM 事件。
+ * 顺序:先调 audio_fsm_poll_stream_state() 把状态转换翻译成事件 push 进 queue,
+ * 再 dequeue。两者协同保证 FSM 拿到完整事件流。 */
 bool audio_fsm_dequeue(app_event_t *out)
 {
     if (s_audio_fsm_queue == NULL || out == NULL) return false;
-    return xQueueReceive(s_audio_fsm_queue, out, 0) == pdTRUE;
+    audio_fsm_poll_stream_state();
+    bool got = xQueueReceive(s_audio_fsm_queue, out, 0) == pdTRUE;
+    if (got) {
+        ESP_LOGW("AUDIO_CB", "dequeue got EVT %d", (int)*out);
+    }
+    return got;
 }
