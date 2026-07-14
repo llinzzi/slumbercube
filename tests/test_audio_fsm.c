@@ -74,11 +74,13 @@ static void test_idle_btn_no_wifi_to_pending(void)
     app_input_t inp = mk_inp(true, false);
     fsm_actions_t a = audio_fsm_step(&s, AUDIO_EVT_BTN_TOGGLE, &inp);
     EXPECT(s == AUDIO_PENDING);
-    /* 关键:不亮 indicator,只显示 "Connecting..." */
-    EXPECT(a.count == 1);
+    /* 关键:不亮 indicator,只显示 "Connecting..." + 触发 wifi 连接 */
+    EXPECT(a.count == 3);
     EXPECT(a.items[0].kind == ACT_DISPLAY_STATION);
     EXPECT(!contains_action(&a, ACT_DISPLAY_AUDIO_INDICATOR));
     EXPECT(!contains_action(&a, ACT_AUDIO_INIT));
+    EXPECT(contains_action(&a, ACT_WIFI_ENSURE_NETIF));
+    EXPECT(contains_action(&a, ACT_WIFI_STA_ENSURE));
 }
 
 /* 关键不变量测试:遍历所有 PENDING 状态可能产生的动作,确认不含 INDICATOR(true) */

@@ -85,6 +85,11 @@ fsm_actions_t audio_fsm_step(audio_state_t *cur, audio_evt_t evt, const app_inpu
                 *cur = AUDIO_PENDING;
                 /* 关键:不发出 ACT_DISPLAY_AUDIO_INDICATOR (修复旧 bug) */
                 out = add_station(out, "Connecting...");
+                /* 必须主动起 wifi 连接 — 旧 main.c 在 BTN_AUDIO_TOGGLE 分支
+                 * 直接调 wifi_sta_ensure()。新 FSM 这里等价触发,
+                 * 否则 30s 后 PENDING timeout -> ERROR "WiFi failed"。 */
+                out = add_action(out, ACT_WIFI_ENSURE_NETIF);
+                out = add_action(out, ACT_WIFI_STA_ENSURE);
             }
         } else if (evt == AUDIO_EVT_AUTO_PLAY_REQUEST) {
             /* 闹钟唤醒强制 auto-play,忽略 agent 标志 */
