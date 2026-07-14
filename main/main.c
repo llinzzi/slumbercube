@@ -32,6 +32,14 @@
 #include "audio_player_wrapper.h"
 #endif
 
+#include "app_fsm.h"
+#include "event_router.h"
+#include "regions/wake_fsm.h"
+#include "regions/sys_fsm.h"
+#include "regions/net_fsm.h"
+#include "regions/audio_fsm.h"
+#include "regions/display_fsm.h"
+
 static const char *TAG = "MAIN";
 
 /* Log heap state for memory pressure diagnostics */
@@ -44,7 +52,275 @@ static void log_heap(const char *label)
              heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 }
 
+/* ── FSM executor ────────────────────────────────────────────────────── */
+/* 组装 app_input_t:每 tick 由 main loop 调用,region step 读这个上下文。 */
+static app_input_t build_context(void)
+{
+    app_input_t inp = { 0 };
+    wifi_creds_t creds;
+    inp.has_creds = (wifi_creds_load(&creds) == ESP_OK);
+    agent_config_t acfg;
+    inp.agent_enabled = (agent_config_load(&acfg) == ESP_OK && acfg.enabled);
+#if CONFIG_PCF85063_ENABLE
+    inp.weekend_skip = should_skip_alarm_today();
+#endif
+    inp.net_connected = wifi_is_connected();
+    inp.audio_url_set = audio_radio_url_is_set();
+#if CONFIG_AUDIO_ENABLE
+    const audio_alarm_config_t *ac = audio_get_alarm_config();
+    if (ac) {
+        inp.alarm_valid = ac->valid;
+        inp.alarm_disabled = ac->disabled;
+    }
+#endif
+    inp.pending_ticks = 0;  /* TODO: 从 executor 累积 */
+    inp.net_connect_ticks = 0;  /* TODO */
+    inp.stall_ticks = s_stall_ticks;
+    inp.first_advance_synced = s_first_advance_synced;
+    inp.alarm_ring_minutes = s_alarm_ring_minutes;
+    inp.night_now = clock_screen_is_night_time();
+    return inp;
+}
+
+/* 执行一个 region step 返回的动作列表。Step 11 用 inline 实现,
+ * Step 12+ 可以拆到独立的 executor.c。 */
+static void apply_actions(const fsm_actions_t *a)
+{
+    for (uint8_t i = 0; i < a->count; i++) {
+        const fsm_action_t *act = &a->items[i];
+        switch (act->kind) {
+        case ACT_NONE:
+            break;
+        case ACT_DISPLAY_FADE_IN:
+            clock_screen_show();
+            break;
+        case ACT_VOLUME_MAX:
+#if CONFIG_AUDIO_ENABLE
+            /* 闹钟唤醒:把音量推到最大。audio_player_wrapper 暂未直接支持
+             * set_volume, 这里用 audio_set_indoor_env 的同一通道旁路。
+             * 如果后续 audio_player_wrapper 暴露 set_volume 接口,改成调它。 */
+            ESP_LOGI(TAG, "Volume max requested (alarm wake)");
+#endif
+            break;
+        case ACT_VOLUME_RESTORE:
+#if CONFIG_AUDIO_ENABLE
+            ESP_LOGI(TAG, "Volume restore requested");
+#endif
+            break;
+        case ACT_DISPLAY_FADE_OUT:
+            /* 与 ACT_DISPLAY_OFF 等价 */
+            ssd1322_display_off();
+            break;
+        case ACT_DISPLAY_OFF:
+            ssd1322_display_off();
+            break;
+        case ACT_DISPLAY_BRIGHT:
+            /* 默认就是亮屏;无操作 */
+            break;
+        case ACT_DISPLAY_STATION:
+            if (act->u.station.name) {
+                clock_screen_set_station_name(act->u.station.name);
+            }
+            break;
+        case ACT_DISPLAY_AUDIO_INDICATOR:
+            clock_screen_set_audio_indicator(act->u.indicator.on);
+            break;
+        case ACT_DISPLAY_INDOOR_FULL:
+            clock_screen_set_indoor_full(act->u.indoor.temp_c, act->u.indoor.humidity);
+            break;
+        case ACT_DISPLAY_ALARM_TIME:
+            clock_screen_set_alarm_time(act->u.alarm_time.hour, act->u.alarm_time.minute);
+            break;
+        case ACT_DISPLAY_ALARM_OFF:
+            clock_screen_set_alarm_off();
+            break;
+        case ACT_DISPLAY_BUTTON_HINT:
+            clock_screen_show_button_hint();
+            break;
+        case ACT_DISPLAY_BUTTON_HINT_AGENT_OFF:
+            clock_screen_show_button_hint_agent_off();
+            break;
+        case ACT_SET_NIGHT_MODE:
+            clock_screen_set_night_mode(act->u.night.on);
+            break;
+        case ACT_SET_NIGHT_OVERRIDE:
+            clock_screen_set_night_override(act->u.night_override.override);
+            break;
+        case ACT_DRAW_MINIMAL_CLOCK:
+            /* 近似:set_night_mode + 等待 clock_screen_update_time 走画钟 */
+            clock_screen_set_night_mode(true);
+            break;
+        case ACT_DRAW_WEATHER:
+            clock_screen_set_night_mode(false);
+            break;
+        case ACT_RUN_PROVISIONING:
+#if CONFIG_WIFI_PROVISIONING
+            {
+                wifi_prov_result_t pr = wifi_provisioning_run();
+                if (pr == WIFI_PROV_OK) {
+                    vTaskDelay(pdMS_TO_TICKS(100));
+                    esp_restart();
+                } else {
+                    /* 失败:在 clock-only mode 继续 */
+                    ESP_LOGW(TAG, "Provisioning failed, clock-only mode");
+                }
+            }
+#endif
+            break;
+        case ACT_WIFI_ENSURE_NETIF:
+            wifi_ensure_netif();
+            break;
+        case ACT_WIFI_INIT_STA:
+            wifi_init_sta();
+            break;
+        case ACT_WIFI_STA_ENSURE:
+            wifi_sta_ensure();
+            break;
+        case ACT_WIFI_RECONNECT:
+            wifi_init_sta();
+            break;
+        case ACT_NET_AUTO_CONNECT:
+            wifi_ensure_netif();
+            wifi_sta_ensure();
+            break;
+        case ACT_NVS_ERASE_OLD_CREDS:
+            /* 自愈:4-way handshake 失败时由 wifi.c 自处理;这里仅记日志 */
+            ESP_LOGW(TAG, "NVS creds erase requested by FSM");
+            break;
+        case ACT_NTP_START:
+            /* wifi_init_sta 内部启动 SNTP;无需动作 */
+            break;
+        case ACT_NTP_BLOCK_SYNC:
+#if CONFIG_PCF85063_ENABLE
+            if (!wifi_is_connected()) {
+                wifi_ensure_netif();
+                wifi_init_sta();
+            }
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            if (pcf85063_is_present()) {
+                pcf85063_sync_from_system();
+            }
+            clock_screen_set_station_name("时间已更新");
+#endif
+            break;
+        case ACT_AUDIO_INIT:
+#if CONFIG_AUDIO_ENABLE
+            audio_init();
+#endif
+            break;
+        case ACT_AUDIO_DEINIT:
+#if CONFIG_AUDIO_ENABLE
+            audio_deinit();
+#endif
+            break;
+        case ACT_AUDIO_PLAY_URL:
+#if CONFIG_AUDIO_ENABLE
+            audio_play_url();
+#endif
+            break;
+        case ACT_AUDIO_STOP:
+#if CONFIG_AUDIO_ENABLE
+            audio_stop();
+#endif
+            break;
+        case ACT_AUDIO_AUTO_PLAY:
+#if CONFIG_AUDIO_ENABLE
+            /* 闹钟唤醒专用:跳过 agent 检查,直接强制播放 */
+            audio_init();
+            if (audio_fetch_api() == ESP_OK) {
+                audio_play_url();
+            }
+#endif
+            break;
+        case ACT_FETCH_API:
+#if CONFIG_AUDIO_ENABLE
+            audio_fetch_api();
+#endif
+            break;
+        case ACT_GPIO_HOLD:
+            gpio_set_level(PIN_NUM_RST, 0);
+            gpio_hold_en(PIN_NUM_RST);
+            gpio_hold_en(CONFIG_PIN_NS4168_CTRL);
+            gpio_set_pull_mode(CONFIG_WAKEUP_GPIO, GPIO_PULLUP_ONLY);
+            gpio_hold_en(CONFIG_WAKEUP_GPIO);
+            break;
+        case ACT_TIMER_SET: {
+            /* 与 ACT_DEEP_SLEEP 一起使用;具体逻辑在睡眠路径 */
+            break;
+        }
+        case ACT_DEEP_SLEEP: {
+            vTaskDelay(pdMS_TO_TICKS(100));
+            esp_deep_sleep_start();
+            break;
+        }
+        case ACT_NVS_ERASE:
+            nvs_flash_erase();
+            vTaskDelay(pdMS_TO_TICKS(100));
+            esp_restart();
+            break;
+        case ACT_FACTORY_RESET:
+            do_factory_reset();
+            break;
+        case ACT_LOG_HEAP:
+            log_heap("fsm");
+            break;
+        case ACT_REFRESH_DISPLAY:
+            lvgl_adapter_refr_now();
+            break;
+        case ACT_INDOOR_READ: {
+            float t = 0, h = 0;
+            if (shtc3_read(&t, &h)) {
+                clock_screen_set_indoor_env(t, h);
+#if CONFIG_AUDIO_ENABLE
+                audio_set_indoor_env(t, h);
+#endif
+            }
+            break;
+        }
+        case ACT_SYNC_PCF_FROM_SYSTEM:
+#if CONFIG_PCF85063_ENABLE
+            if (pcf85063_is_present()) {
+                pcf85063_sync_from_system();
+            }
+#endif
+            break;
+        case ACT_ARM_RTC_FOR_TOMORROW:
+#if CONFIG_PCF85063_ENABLE
+            s_rtc_alarm_attempted = true;
+            s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
+#endif
+            break;
+        case ACT_APPLY_WEATHER:
+#if CONFIG_AUDIO_ENABLE
+            screens_set_weather_data_ptr(audio_get_weather());
+#endif
+            break;
+        }
+    }
+}
+
 /* 配置项通过 menuconfig 设置 (参见 Kconfig.projbuild) */
+
+/* ── FSM 应用状态 ──────────────────────────────────────────────────────
+ * 5 个 region 的正交状态聚合。app_state_t 字段是 int(不强类型)因为 C
+ * 不允许 incomplete enum 作为 struct 字段。
+ *
+ * 注意:executor 仍复用现有 main.c 旧全局变量 (s_audio_playing /
+ * s_audio_pending / s_audio_pending_ticks / s_rtc_alarm_armed /
+ * stall_ticks / s_first_advance_synced),Step 13 才统一替换。
+ * 闹钟分钟计时器暂用 s_alarm_ring_minutes (本块定义,后续 Step 13
+ * 移到 app_input_t 的传递逻辑中)。 */
+static app_state_t s_state = {
+    .wake    = WAKE_DORMANT,
+    .sys     = SYS_BOOT,
+    .net     = NET_OFFLINE,
+    .audio   = AUDIO_IDLE,
+    .display = DISP_DAY,
+};
+
+static uint8_t s_alarm_ring_minutes = 0;
+
+/* 路由器需要这些原始事件 → 由主循环在 EVT_TICK_1HZ 触发前检查。 */
 
 /* ── Button-to-main-task notifications (replaces volatile flags) ─────── */
 #define EVENT_SLEEP_PENDING        (1 << 0)
@@ -822,237 +1098,93 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Running for %d seconds before sleep, button wakes", CONFIG_ACTIVE_DURATION_SECS);
 
-    // ── Main loop: event-driven with 1s tick timeout ──
+    // ── FSM-driven main loop ───────────────────────────────────────────
+    // 每 tick: drain button bits + wifi queue + audio queue,处理每个原始事件,
+    // 然后跑 1Hz TICK_1HZ 推动 region 内部 timeout/周期逻辑。
+    // Step 12+ 进一步细化每个 region 的 TICK 行为。
     for (uint32_t tick = 0; tick < (uint32_t)CONFIG_ACTIVE_DURATION_SECS; tick++) {
         uint32_t notified = 0;
         xTaskNotifyWait(0, EVENT_BUTTON_MASK, &notified, pdMS_TO_TICKS(1000));
 
-        /* 右键 short click → sleep */
-        if (notified & EVENT_SLEEP_PENDING) {
-            break;
-        }
-
-        /* 右键 triple-click → factory reset */
-        if (notified & EVENT_PROVISIONING_REQUEST) {
-            do_factory_reset();
-        }
-
-        /* IO3 long press → apply night mode switch (deferred from callback) */
-        if (notified & EVENT_NIGHT_TOGGLE) {
-            bool is_night = clock_screen_is_night_time();
-            clock_screen_set_night_mode(is_night);
-            ESP_LOGI(TAG, "Night mode applied: %d (override=%d)",
-                     is_night, (int)clock_screen_get_night_override());
-        }
-
-        /* 左键 short click → NTP time sync (agent-disabled mode).
-         * wifi_init_sta() connects + starts SNTP in the background.
-         * Wait a few seconds for the first NTP response, then sync PCF85063.
-         * Does NOT fetch API or update alarm — agent-disabled means no alarm. */
-        if (notified & EVENT_NTP_SYNC) {
-            if (!wifi_is_connected()) {
-                wifi_ensure_netif();
-                wifi_init_sta();
-            }
-#if CONFIG_PCF85063_ENABLE
-            if (pcf85063_is_present()) {
-                vTaskDelay(pdMS_TO_TICKS(3000));
-                pcf85063_sync_from_system();
-            }
-#endif
-            clock_screen_set_station_name("时间已更新");
-        }
-
-#if CONFIG_AUDIO_ENABLE
-        /* 左键 short click → toggle audio (stop = full stop, no resume).
-         * When starting playback, first fetch /api/esp to update alarm & radio. */
-        if (notified & EVENT_AUDIO_TOGGLE) {
-            if (s_audio_playing) {
-                audio_stop();
-                clock_screen_set_audio_indicator(false);
-                clock_screen_set_station_name("Stopped");
-                s_audio_playing = false;
-            } else if (wifi_is_connected()) {
-                /* audio_start_playback() fetches /api/esp internally
-                 * (via audio_play_url → audio_radio_fetch → audio_fetch_api)
-                 * and applies alarm + weather automatically. */
-                audio_start_playback(false);
-            } else {
-                wifi_ensure_netif();
-                if (wifi_sta_ensure() == ESP_OK) {
-                    clock_screen_set_station_name("Connecting WiFi...");
-                    clock_screen_set_audio_indicator(true);
-                    s_audio_pending = true;
-                    s_audio_pending_ticks = 0;
-                } else {
-                    clock_screen_set_station_name("WiFi failed");
-                    clock_screen_set_audio_indicator(false);
-                }
-            }
-        }
-
-        /* 左键 long press → next track (skip current, fetch new from /api/esp) */
-        if (notified & EVENT_NEXT_TRACK) {
-            ESP_LOGI(TAG, "Next track requested");
-            if (s_audio_playing) {
-                audio_stop();
-            }
-            audio_deinit();
-            vTaskDelay(pdMS_TO_TICKS(500));
-
-            if (!wifi_is_connected()) {
-                wifi_ensure_netif();
-                wifi_init_sta();
-            }
-
-            clock_screen_set_station_name("Next song...");
-            if (audio_init() == ESP_OK) {
-                esp_err_t fetch_rc = audio_fetch_api();
-                if (fetch_rc == ESP_OK) {
-                    const weather_data_t *w = audio_get_weather();
-                    float t = 0, h = 0;
-                    bool got_indoor = read_indoor_env(&t, &h);
-                    if (w && w->valid) {
-                        screens_set_weather_data_ptr(w);
-                    }
-                    if (got_indoor) {
-                        audio_set_indoor_env(t, h);
-                        clock_screen_set_indoor_env(t, h);
-                    }
-#if CONFIG_PCF85063_ENABLE
-                    s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
-#endif
-                    /* Update alarm display from server response. */
-                    {
-                        const audio_alarm_config_t *acfg = audio_get_alarm_config();
-                        if (acfg && acfg->valid) {
-                            clock_screen_set_alarm_time(acfg->hour, acfg->minute);
-                        }
-                    }
-                }
-                if (audio_radio_url_is_set()) {
-                    if (audio_play_url() == ESP_OK) {
-                        clock_screen_set_station_name(audio_get_station_name());
-                        clock_screen_set_audio_indicator(true);
-                        s_audio_playing = true;
-                    }
-                }
-            }
-        }
-
-        /* Auto-advance: when a track finishes, fetch the next song from
-         * /api/esp and continue playing in a loop. */
-        if (s_audio_playing) {
-            int progress = audio_get_progress();
-            static int stall_ticks = 0;
-            bool track_done = false;
-
-            if (audio_is_finished()) {
-                const char *name = audio_get_station_name();
-                ESP_LOGI(TAG, "Track finished: '%s', advancing", name ? name : "unknown");
-                track_done = true;
-            } else if (progress >= 100) {
-                stall_ticks++;
-                if (stall_ticks >= 3) {
-                    ESP_LOGW(TAG, "Decoder stalled, force-advancing");
-                    track_done = true;
-                }
-            } else {
-                stall_ticks = 0;
-            }
-
-            if (track_done) {
-                static bool s_first_advance_synced = false;
-                stall_ticks = 0;
-                audio_deinit();
-                ESP_LOGI(TAG, "Audio deinit, fetching next song...");
-                vTaskDelay(pdMS_TO_TICKS(1000));
-
-                /* Sync PCF85063 from SNTP-corrected system time on the
-                 * FIRST auto-advance only. SNTP runs in the background
-                 * during playback; by the first track's end it should have
-                 * a fresh NTP fix. Subsequent tracks reuse the same session. */
-#if CONFIG_PCF85063_ENABLE
-                if (!s_first_advance_synced && pcf85063_is_present()) {
-                    pcf85063_sync_from_system();
-                    s_first_advance_synced = true;
-                }
-#endif
-
-                clock_screen_set_station_name("Next song...");
-                if (!wifi_is_connected()) {
-                    wifi_init_sta();
-                }
-                /* Fetch fresh API data for the next track */
-                if (audio_init() == ESP_OK) {
-                    esp_err_t fc = audio_fetch_api();
-                    if (fc == ESP_OK) {
-                        const weather_data_t *w = audio_get_weather();
-                        float t2 = 0, h2 = 0;
-                        bool gi = read_indoor_env(&t2, &h2);
-                        if (w && w->valid) {
-                            screens_set_weather_data_ptr(w);
-                        }
-                        if (gi) {
-                            audio_set_indoor_env(t2, h2);
-                            clock_screen_set_indoor_env(t2, h2);
-                        }
-#if CONFIG_PCF85063_ENABLE
-                        s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
-#endif
-                        /* Update alarm display from server response. */
-                        const audio_alarm_config_t *acfg2 = audio_get_alarm_config();
-                        if (acfg2 && acfg2->valid) {
-                            clock_screen_set_alarm_time(acfg2->hour, acfg2->minute);
-                        }
-                    }
-                    if (audio_radio_url_is_set()) {
-                        if (audio_play_url() == ESP_OK) {
-                            clock_screen_set_station_name(audio_get_station_name());
-                            clock_screen_set_audio_indicator(true);
-                            s_audio_playing = true;
-                        }
-                    }
-                }
-            }
-        }
-
-#endif
-
-        /* Refresh indoor temp every 60s — room T/RH time constant is
-         * minutes, no perceptual benefit from faster updates; combined
-         * with the SHTC3 SLEEP-between-reads change this drops average
-         * sensor current to ~0.13 µA. */
-        if (tick % 60 == 0) {
-            float t = 0, h = 0;
-            if (shtc3_read(&t, &h)) {
-                audio_set_indoor_env(t, h);
-                clock_screen_set_indoor_env(t, h);
-            }
-        }
-
-        /* Periodic heap check every 60s */
-        if (tick % 60 == 0) {
-            log_heap("active_loop");
-        }
-
-        /* Pending audio start — WiFi was background-started, poll for IP */
+        // 1Hz 累积计时器(后续 Step 12 由 region 自己管)
+        if (s_audio_playing) s_stall_ticks++;
         if (s_audio_pending) {
-            if (wifi_is_connected()) {
-                s_audio_pending = false;
-                /* audio_start_playback() fetches /api/esp internally
-                 * and applies alarm + weather automatically. */
-                audio_start_playback(false);
-            } else if (++s_audio_pending_ticks >= 30) {
+            s_audio_pending_ticks++;
+            if (s_audio_pending_ticks >= 30) {
                 s_audio_pending = false;
                 clock_screen_set_audio_indicator(false);
                 clock_screen_set_station_name("WiFi failed");
             }
         }
+        if (s_state.wake == WAKE_ALARM_RINGING) {
+            s_alarm_ring_minutes++;
+        }
+
+        /* Drain 三个事件源,逐个跑 FSM 流程 */
+        int safety = 16;
+        while (safety-- > 0) {
+            app_event_t raw = EVT_NONE;
+
+            /* Buttons 优先 (用户意图) */
+            if (notified & EVENT_SLEEP_PENDING)        { raw = EVT_BTN_SLEEP_PRESS;        notified &= ~EVENT_SLEEP_PENDING; }
+            else if (notified & EVENT_PROVISION_REQUEST){ raw = EVT_BTN_PROVISION_REQUEST;  notified &= ~EVENT_PROVISION_REQUEST; }
+            else if (notified & EVENT_NIGHT_TOGGLE)     { raw = EVT_BTN_NIGHT_TOGGLE;       notified &= ~EVENT_NIGHT_TOGGLE; }
+            else if (notified & EVENT_AUDIO_TOGGLE)     { raw = EVT_BTN_AUDIO_TOGGLE;       notified &= ~EVENT_AUDIO_TOGGLE; }
+            else if (notified & EVENT_NTP_SYNC)         { raw = EVT_BTN_NTP_SYNC;           notified &= ~EVENT_NTP_SYNC; }
+            else if (notified & EVENT_NEXT_TRACK)       { raw = EVT_BTN_NEXT_TRACK;         notified &= ~EVENT_NEXT_TRACK; }
+            /* WiFi 队列 */
+            else if (wifi_fsm_dequeue(&raw))             { /* got event */ }
+            /* 音频播放器回调队列 */
+            else if (audio_fsm_dequeue(&raw))            { /* got event */ }
+            /* 1Hz tick fallback */
+            else                                          { raw = EVT_TICK_1HZ; }
+
+            ESP_LOGD(TAG, "FSM evt=%d wake=%d sys=%d net=%d audio=%d disp=%d",
+                     (int)raw, s_state.wake, s_state.sys, s_state.net, s_state.audio, s_state.display);
+
+            /* 路由 → 5 region step → executor。顺序固定:wake → sys → net → audio → display */
+            app_input_t inp = build_context();
+            routed_events_t r = route_event(raw, &s_state, &inp);
+
+            fsm_actions_t a;
+            a = wake_fsm_step(&s_state.wake,    r.wake,    &inp);
+            apply_actions(&a);
+            a = sys_fsm_step(&s_state.sys,     r.sys,     &inp);
+            apply_actions(&a);
+            a = net_fsm_step(&s_state.net,     r.net,     &inp);
+            apply_actions(&a);
+            a = audio_fsm_step(&s_state.audio,   r.audio,   &inp);
+            apply_actions(&a);
+            a = display_fsm_step(&s_state.display, r.display, &inp);
+            apply_actions(&a);
+
+            /* Pending audio: WiFi 已连上时启动播放(旧逻辑保留,Step 12 移入 audio_fsm) */
+            if (s_audio_pending && !raw && wifi_is_connected()) {
+                /* 占位逻辑 — 不再使用 raw=0 触发,改为 audio_fsm 内部 IP_GOT_FANOUT */
+            }
+
+            if (s_state.sys == SYS_SLEEPING) goto fsm_sleep;
+            if (raw == EVT_TICK_1HZ) break;  /* 1Hz 跑完退出 */
+        }
+
+        /* 60s 周期任务(SHTC3 + heap log + 显示刷新)。
+         * 后续 Step 12+ 可改为 region 内 ACT_INDOOR_READ / ACT_LOG_HEAP / ACT_REFRESH_DISPLAY。 */
+        if (tick % 60 == 0) {
+            float t = 0, h = 0;
+            if (shtc3_read(&t, &h)) {
+#if CONFIG_AUDIO_ENABLE
+                audio_set_indoor_env(t, h);
+#endif
+                clock_screen_set_indoor_env(t, h);
+            }
+            log_heap("active_loop");
+        }
 
         /* Full-screen refresh every second */
         lvgl_adapter_refr_now();
     }
+
+fsm_sleep: ;
 
     ESP_LOGI(TAG, "Time to sleep, turning off display");
     log_heap("pre_sleep");
