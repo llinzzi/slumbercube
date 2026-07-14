@@ -182,6 +182,14 @@ static void audio_fsm_poll_stream_state(void)
 {
     if (s_stream == NULL || s_audio_fsm_queue == NULL) return;
     static audio_player_state_t prev = AUDIO_PLAYER_STATE_SHUTDOWN;
+    static void *prev_stream = NULL;
+
+    /* stream 指针变了(旧 stream 被删,新 stream 创建) → 重置 prev */
+    if ((void *)s_stream != prev_stream) {
+        prev_stream = (void *)s_stream;
+        prev = AUDIO_PLAYER_STATE_SHUTDOWN;
+    }
+
     audio_player_state_t cur = audio_stream_get_state(s_stream);
     if (cur == prev) return;
 

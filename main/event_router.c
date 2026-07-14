@@ -73,7 +73,10 @@ routed_events_t route_event(app_event_t raw,
 
     /* ── 按钮 ──────────────────────────────────────────────────────── */
     case EVT_BTN_SLEEP_PRESS:
+        /* wake: FROM_BTN/ALARM_RINGING → GOTO_SLEEP */
         r.wake = WAKE_EVT_BTN_SLEEP_PRESS;
+        /* sys: NORMAL → SLEEPING + deep sleep actions */
+        r.sys  = SYS_EVT_BTN_SLEEP_PRESS;
         break;
 
     case EVT_BTN_NIGHT_TOGGLE:

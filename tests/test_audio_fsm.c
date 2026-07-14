@@ -239,21 +239,12 @@ static void test_playing_alarm_complete_to_stopping(void)
     EXPECT_ACTIONS(a, ACT_AUDIO_STOP);
 }
 
-static void test_playing_stall_3s_force_advance(void)
+static void test_playing_tick_hz_identity(void)
 {
+    /* stall detection removed: TICK_1HZ in PLAYING is always identity */
     audio_state_t s = AUDIO_PLAYING;
     app_input_t inp = mk_inp(true, true);
-    inp.stall_ticks = 3;
-    fsm_actions_t a = audio_fsm_step(&s, AUDIO_EVT_TICK_1HZ, &inp);
-    EXPECT(s == AUDIO_PLAYING);
-    EXPECT(contains_action(&a, ACT_AUDIO_INIT));  /* auto-advance 触发 */
-}
-
-static void test_playing_tick_below_stall(void)
-{
-    audio_state_t s = AUDIO_PLAYING;
-    app_input_t inp = mk_inp(true, true);
-    inp.stall_ticks = 1;
+    inp.stall_ticks = 99;
     fsm_actions_t a = audio_fsm_step(&s, AUDIO_EVT_TICK_1HZ, &inp);
     EXPECT(s == AUDIO_PLAYING);
     EXPECT(a.count == 0);
@@ -343,8 +334,7 @@ int main(void)
     test_playing_player_idle_auto_advance();
     test_playing_player_error_to_error();
     test_playing_alarm_complete_to_stopping();
-    test_playing_stall_3s_force_advance();
-    test_playing_tick_below_stall();
+    test_playing_tick_hz_identity();
 
     test_stopping_done_to_idle();
 

@@ -23,7 +23,6 @@
 #include <string.h>
 
 #define AUDIO_PENDING_TIMEOUT_SEC 30
-#define STALL_THRESHOLD_TICKS     10   /* 10s 无进度才 force-advance */
 
 static fsm_actions_t add_action(fsm_actions_t a, app_action_kind_t kind)
 {
@@ -155,12 +154,9 @@ fsm_actions_t audio_fsm_step(audio_state_t *cur, audio_evt_t evt, const app_inpu
             /* 闹钟时长到:立即关电台 (但 device 继续 wake → GOTO_SLEEP 由 wake_fsm 决定) */
             *cur = AUDIO_STOPPING;
             out = add_action(out, ACT_AUDIO_STOP);
-        } else if (evt == AUDIO_EVT_TICK_1HZ &&
-                   inp->stall_ticks >= STALL_THRESHOLD_TICKS) {
-            /* 3 秒 stall 兜底:强制 advance */
-            out = add_audio_reseq(out);
         }
-        /* 其他事件 → identity */
+        /* 其他事件(TICK_1HZ 等) → identity。
+         * auto-advance 由 poll 检测到 PLAYING→IDLE 时驱动。 */
         break;
 
     case AUDIO_STOPPING:

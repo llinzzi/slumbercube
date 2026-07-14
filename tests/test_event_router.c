@@ -31,7 +31,7 @@ static void test_btn_sleep_press_to_wake(void)
     app_state_t s = mk_state(WAKE_FROM_BTN);
     routed_events_t r = route_event(EVT_BTN_SLEEP_PRESS, &s, NULL);
     EXPECT(r.wake == WAKE_EVT_BTN_SLEEP_PRESS);
-    EXPECT(r.sys == SYS_EVT_NONE);
+    EXPECT(r.sys == SYS_EVT_BTN_SLEEP_PRESS);
     EXPECT(r.net == NET_EVT_NONE);
     EXPECT(r.audio == AUDIO_EVT_NONE);
     EXPECT(r.display == DISP_EVT_NONE);

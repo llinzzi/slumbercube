@@ -28,14 +28,15 @@ static fsm_actions_t add_action(fsm_actions_t a, app_action_kind_t kind)
     return a;
 }
 
-/* 标准 deep sleep 动作序列:对应 main.c:1064-1102 的旧逻辑 */
+/* 标准 deep sleep 动作序列:清理硬件资源。
+ * 注意:不包含 ACT_DEEP_SLEEP — 实际 deep sleep 由 main.c 的
+ * fsm_sleep 路径统一处理(先配 GPIO wake mask,再睡)。 */
 static fsm_actions_t emit_deep_sleep_actions(fsm_actions_t a)
 {
     a = add_action(a, ACT_AUDIO_DEINIT);
     a = add_action(a, ACT_DISPLAY_OFF);
     a = add_action(a, ACT_GPIO_HOLD);
     a = add_action(a, ACT_TIMER_SET);
-    a = add_action(a, ACT_DEEP_SLEEP);
     return a;
 }
 
@@ -67,14 +68,10 @@ fsm_actions_t sys_fsm_step(sys_state_t *cur, sys_evt_t evt, const app_input_t *i
             out = emit_deep_sleep_actions(out);
         } else if (evt == SYS_EVT_BTN_FACTORY_RESET) {
             *cur = SYS_SLEEPING;
-            out = add_action(out, ACT_NVS_ERASE);
-            out = add_action(out, ACT_DEEP_SLEEP);
+            out = add_action(out, ACT_NVS_ERASE);  /* esp_restart, 不返回 */
         } else if (evt == SYS_EVT_PROV_OK) {
-            /* 配网成功:旧 main.c 走 vTaskDelay(100); esp_restart()。
-             * 复用 ACT_DEEP_SLEEP,executor 看到 PROV_OK 后做 esp_restart
-             * 而非真正 deep sleep。 */
+            /* 配网成功:交给 executor 调 esp_restart */
             *cur = SYS_SLEEPING;
-            out = add_action(out, ACT_DEEP_SLEEP);
         }
         /* SYS_EVT_PROV_FAIL → stays (clock-only mode, 不进 SLEEPING)
          * SYS_EVT_NET_OK   → stays (信息性,给 audio_fsm 用)

@@ -33,7 +33,7 @@ static app_input_t mk_inp(void)
 
 /* 标准 deep sleep 动作序列 (来自 main.c:1064-1102 旧实现) */
 #define STANDARD_DEEP_SLEEP_ACTIONS \
-    ACT_AUDIO_DEINIT, ACT_DISPLAY_OFF, ACT_GPIO_HOLD, ACT_TIMER_SET, ACT_DEEP_SLEEP
+    ACT_AUDIO_DEINIT, ACT_DISPLAY_OFF, ACT_GPIO_HOLD, ACT_TIMER_SET
 
 /* ── BOOT 转换 ────────────────────────────────────────────────────────── */
 static void test_boot_done_to_normal(void)
@@ -71,7 +71,7 @@ static void test_normal_btn_factory_reset(void)
     app_input_t inp = mk_inp();
     fsm_actions_t a = sys_fsm_step(&s, SYS_EVT_BTN_FACTORY_RESET, &inp);
     EXPECT(s == SYS_SLEEPING);
-    EXPECT_ACTIONS(a, ACT_NVS_ERASE, ACT_DEEP_SLEEP);
+    EXPECT_ACTIONS(a, ACT_NVS_ERASE);
 }
 
 static void test_normal_prov_ok_reboot(void)
@@ -80,7 +80,7 @@ static void test_normal_prov_ok_reboot(void)
     app_input_t inp = mk_inp();
     fsm_actions_t a = sys_fsm_step(&s, SYS_EVT_PROV_OK, &inp);
     EXPECT(s == SYS_SLEEPING);
-    EXPECT_ACTIONS(a, ACT_DEEP_SLEEP);
+    EXPECT(a.count == 0);  /* executor 负责 esp_restart,无 FSM 动作 */
 }
 
 static void test_normal_prov_fail_stays(void)
@@ -145,7 +145,7 @@ static void test_actions_count_invariant(void)
     /* 标准 deep sleep 序列 = 5 个动作 */
     fsm_actions_t a = sys_fsm_step(&s, SYS_EVT_BTN_SLEEP_PRESS, &inp);
     EXPECT(a.count <= FSM_ACTIONS_MAX);
-    EXPECT(a.count == 5);  /* 文档化的固定序列 */
+    EXPECT(a.count == 4);  /* AUDIO_DEINIT + DISPLAY_OFF + GPIO_HOLD + TIMER_SET */
 }
 
 int main(void)

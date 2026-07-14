@@ -76,8 +76,6 @@ static bool          s_audio_pending       = false;
 static int           s_audio_pending_ticks = 0;
 static bool          s_rtc_alarm_armed     = false;
 static bool          s_rtc_alarm_attempted = false;
-static int           stall_ticks           = 0;
-static bool          s_first_advance_synced = false;
 static uint8_t       s_alarm_ring_minutes  = 0;
 
 /* ── FSM executor ────────────────────────────────────────────────────── */
@@ -102,8 +100,6 @@ static app_input_t build_context(void)
     }
 #endif
     inp.pending_ticks = s_audio_pending_ticks;
-    inp.stall_ticks = stall_ticks;
-    inp.first_advance_synced = s_first_advance_synced;
     inp.alarm_ring_minutes = s_alarm_ring_minutes;
     inp.night_now = clock_screen_is_night_time();
     return inp;
@@ -115,13 +111,6 @@ static app_input_t build_context(void)
 static void update_state_caches(void)
 {
     /* 闹钟分钟:仅在 ALARM_RINGING 累计(per tick, 由外部递增) */
-
-    /* stall_ticks & first_advance_synced: 仅在 PLAYING 累计。
-     * 注意:更新频率由外部控制(每 tick 一次),不在这里递增。 */
-    if (s_state.audio != AUDIO_PLAYING) {
-        stall_ticks = 0;
-        s_first_advance_synced = false;
-    }
 
     /* s_audio_pending 跟踪:状态从 IDLE/PENDING/PLAYING 等变化时同步 */
     s_audio_pending = (s_state.audio == AUDIO_PENDING);
@@ -280,7 +269,6 @@ static void apply_actions(const fsm_actions_t *a)
 #if CONFIG_AUDIO_ENABLE
             audio_play_url();
             clock_screen_set_station_name(audio_get_station_name());
-            stall_ticks = 0;   /* 新曲目开始,复位 stall 计数器 */
             audio_fsm_push_event(EVT_AUDIO_PLAYER_PLAYING);
 #endif
             break;
@@ -314,11 +302,12 @@ static void apply_actions(const fsm_actions_t *a)
             /* 与 ACT_DEEP_SLEEP 一起使用;具体逻辑在睡眠路径 */
             break;
         }
-        case ACT_DEEP_SLEEP: {
-            vTaskDelay(pdMS_TO_TICKS(100));
-            esp_deep_sleep_start();
+        case ACT_DEEP_SLEEP:
+            /* NOTE: 不在这里调用 esp_deep_sleep_start()。
+             * 实际 deep sleep 由 fsm_sleep 路径统一处理:
+             *   配置 GPIO wake mask → vTaskDelay(100) → esp_deep_sleep_start()
+             * FSM 只负责发信号(转 SLEEPING),让 main.c 的 goto fsm_sleep 走。 */
             break;
-        }
         case ACT_NVS_ERASE:
             nvs_flash_erase();
             vTaskDelay(pdMS_TO_TICKS(100));
@@ -1156,6 +1145,27 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Running for %d seconds before sleep, button wakes", CONFIG_ACTIVE_DURATION_SECS);
 
+    /* ── FSM 启动:注入两个一次性合成事件,把 region 从初始态推出来。 ── */
+    {
+        app_input_t boot_inp = build_context();
+        routed_events_t r = route_event(EVT_WAKE_DETECT, &s_state, &boot_inp);
+        fsm_actions_t a = wake_fsm_step((wake_state_t *)&s_state.wake, r.wake, &boot_inp);
+        apply_actions(&a);
+        /* BOOT_DONE 必须在 DETECT_SOURCE 之后,因为 router 依赖 s_state.wake
+         * 已经设置好,才能正确 fan-out(例如 RTC wake → audio AUTO_PLAY_REQUEST) */
+        r = route_event(EVT_BOOT_DONE, &s_state, &boot_inp);
+        a = wake_fsm_step((wake_state_t *)&s_state.wake, r.wake, &boot_inp);
+        apply_actions(&a);
+        a = sys_fsm_step((sys_state_t *)&s_state.sys, r.sys, &boot_inp);
+        apply_actions(&a);
+        a = net_fsm_step((net_state_t *)&s_state.net, r.net, &boot_inp);
+        apply_actions(&a);
+        a = audio_fsm_step((audio_state_t *)&s_state.audio, r.audio, &boot_inp);
+        apply_actions(&a);
+        a = display_fsm_step((display_state_t *)&s_state.display, r.display, &boot_inp);
+        apply_actions(&a);
+    }
+
     // ── FSM-driven main loop ───────────────────────────────────────────
     // 每 tick:
     //  1. xTaskNotifyWait 1s timeout for button bits
@@ -1211,9 +1221,8 @@ void app_main(void)
             if (raw == EVT_TICK_1HZ) break;  /* 1Hz 跑完退出 */
         }
 
-        /* 每 tick 累加计数器(不是在 drain loop 里累加,保证 tick 粒度): */
+        /* 每 tick 累加闹钟分钟计数器: */
         if (s_state.wake == WAKE_ALARM_RINGING) s_alarm_ring_minutes++;
-        if (s_state.audio == AUDIO_PLAYING) stall_ticks++;
 
         /* 60s 周期任务 */
         if (tick % 60 == 0) {
