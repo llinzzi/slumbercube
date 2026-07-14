@@ -144,9 +144,12 @@ static void update_state_caches(void)
      * 这里主动喂 AUDIO_EVT_STOP_DONE 让 audio_fsm 转到 IDLE,
      * 否则后续按钮事件会被吞(STOPPING 只接受 STOP_DONE)。 */
     if (s_state.audio == AUDIO_STOPPING) {
+        ESP_LOGW(TAG, "audio STOPPING detected, feeding STOP_DONE");
         app_input_t inp = build_context();
         fsm_actions_t a = audio_fsm_step(
             (audio_state_t *)&s_state.audio, AUDIO_EVT_STOP_DONE, &inp);
+        ESP_LOGW(TAG, "audio after STOP_DONE: state=%d, actions=%d",
+                 s_state.audio, a.count);
         apply_actions(&a);
     }
 }
