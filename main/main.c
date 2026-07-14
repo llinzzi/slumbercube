@@ -83,9 +83,9 @@ static uint8_t       s_alarm_ring_minutes  = 0;
 static app_input_t build_context(void)
 {
     app_input_t inp = { 0 };
-    wifi_creds_t creds;
+    static wifi_creds_t creds;   /* .bss, 避免栈上分配 99B */
+    static agent_config_t acfg;  /* .bss, 避免栈上分配 ~70B */
     inp.has_creds = (wifi_creds_load(&creds) == ESP_OK);
-    agent_config_t acfg;
     inp.agent_enabled = (agent_config_load(&acfg) == ESP_OK && acfg.enabled);
 #if CONFIG_PCF85063_ENABLE
     inp.weekend_skip = should_skip_alarm_today();
@@ -1145,14 +1145,15 @@ void app_main(void)
 
     ESP_LOGI(TAG, "Running for %d seconds before sleep, button wakes", CONFIG_ACTIVE_DURATION_SECS);
 
-    /* ── FSM 启动:注入两个一次性合成事件,把 region 从初始态推出来。 ── */
+    /* ── FSM 启动注入:把 region 从初始态推出来。 ── */
     {
-        app_input_t boot_inp = build_context();
-        routed_events_t r = route_event(EVT_WAKE_DETECT, &s_state, &boot_inp);
-        fsm_actions_t a = wake_fsm_step((wake_state_t *)&s_state.wake, r.wake, &boot_inp);
+        static app_input_t boot_inp;
+        static routed_events_t r;
+        static fsm_actions_t a;
+        boot_inp = build_context();
+        r = route_event(EVT_WAKE_DETECT, &s_state, &boot_inp);
+        a = wake_fsm_step((wake_state_t *)&s_state.wake, r.wake, &boot_inp);
         apply_actions(&a);
-        /* BOOT_DONE 必须在 DETECT_SOURCE 之后,因为 router 依赖 s_state.wake
-         * 已经设置好,才能正确 fan-out(例如 RTC wake → audio AUTO_PLAY_REQUEST) */
         r = route_event(EVT_BOOT_DONE, &s_state, &boot_inp);
         a = wake_fsm_step((wake_state_t *)&s_state.wake, r.wake, &boot_inp);
         apply_actions(&a);
