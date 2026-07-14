@@ -1,13 +1,17 @@
 #include "audio_player_wrapper.h"
+#include "app_fsm.h"
 #include "wifi.h"
 #include "agent_config.h"
 #include "shtc3.h"
 #include "audio_mixer.h"
+#include "audio_player.h"
 #include "audio_stream.h"
 #include "audio_http_stream.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "cJSON.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -148,6 +152,63 @@ static bool s_i2s_ready = false;
 static bool s_mixer_ready = false;
 static bool s_playback_active = false;  /* true only when playback actually started */
 static volatile bool s_shutting_down = false; /* set by audio_deinit, checked by i2s_write */
+
+/* ── FSM 事件队列 ──────────────────────────────────────────────────────
+ * esp-audio-player 的 callback 推 app_event_t 到这里,主循环在 Step 11
+ * 通过 audio_fsm_dequeue() drain。容量 8 足以覆盖 PLAYING/IDLE 快速连发。 */
+static QueueHandle_t s_audio_fsm_queue = NULL;
+
+static void audio_fsm_queue_init(void)
+{
+    if (s_audio_fsm_queue == NULL) {
+        s_audio_fsm_queue = xQueueCreate(8, sizeof(app_event_t));
+    }
+}
+
+static void audio_fsm_push(app_event_t ev)
+{
+    if (s_audio_fsm_queue != NULL) {
+        app_event_t e = ev;
+        if (xQueueSend(s_audio_fsm_queue, &e, 0) != pdTRUE) {
+            ESP_LOGW(TAG, "audio_fsm_queue full, dropping event %d", (int)ev);
+        }
+    }
+}
+
+/* 轮询 audio_stream 状态,检测到 IDLE 时 push 到 FSM 队列。
+ * 用于自动 advance(上一曲自然结束 → 切下一曲)。
+ * PLAYING 事件由 executor 在 audio_play_url 成功后主动推,不依赖轮询。 */
+static void audio_fsm_poll_stream_state(void)
+{
+    if (s_stream == NULL || s_audio_fsm_queue == NULL) return;
+    static audio_player_state_t prev = AUDIO_PLAYER_STATE_SHUTDOWN;
+    static void *prev_stream = NULL;
+
+    /* stream 指针变了(旧 stream 被删,新 stream 创建) → 重置 prev */
+    if ((void *)s_stream != prev_stream) {
+        prev_stream = (void *)s_stream;
+        prev = AUDIO_PLAYER_STATE_SHUTDOWN;
+    }
+
+    audio_player_state_t cur = audio_stream_get_state(s_stream);
+    if (cur == prev) return;
+
+    if (cur == AUDIO_PLAYER_STATE_IDLE || cur == AUDIO_PLAYER_STATE_SHUTDOWN) {
+        if (prev == AUDIO_PLAYER_STATE_PLAYING) {
+            ESP_LOGD(TAG, "audio_fsm: stream PLAYING->IDLE, pushing IDLE event");
+            app_event_t e = EVT_AUDIO_PLAYER_IDLE;
+            xQueueSend(s_audio_fsm_queue, &e, 0);
+        }
+    }
+    prev = cur;
+}
+
+/* executor 主动推事件到 FSM 队列。 */
+void audio_fsm_push_event(app_event_t ev)
+{
+    if (s_audio_fsm_queue == NULL) return;
+    xQueueSend(s_audio_fsm_queue, &ev, 0);
+}
 static const char *s_status = NULL;
 static int s_content_length = 0;
 
@@ -610,6 +671,9 @@ static esp_err_t audio_play_url_inner(const char *url)
     }
     s_mixer_ready = true;
 
+    /* FSM 事件队列 (首次 audio_mixer_init 后生效) */
+    audio_fsm_queue_init();
+
     /* Create decoder stream */
     audio_stream_config_t stream_cfg = DEFAULT_AUDIO_STREAM_CONFIG("music");
     s_stream = audio_stream_new(&stream_cfg);
@@ -843,4 +907,18 @@ void audio_deinit(void)
     s_i2s_ready = false;
 
     ESP_LOGI(TAG, "Deinitialized");
+}
+
+/* 主循环 drain audio FSM 事件。
+ * 顺序:先调 audio_fsm_poll_stream_state() 把状态转换翻译成事件 push 进 queue,
+ * 再 dequeue。两者协同保证 FSM 拿到完整事件流。 */
+bool audio_fsm_dequeue(app_event_t *out)
+{
+    if (s_audio_fsm_queue == NULL || out == NULL) return false;
+    audio_fsm_poll_stream_state();
+    bool got = xQueueReceive(s_audio_fsm_queue, out, 0) == pdTRUE;
+    if (got) {
+        ESP_LOGW("AUDIO_CB", "dequeue got EVT %d", (int)*out);
+    }
+    return got;
 }

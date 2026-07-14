@@ -193,6 +193,67 @@ USB 数据线 D+_OUT/D-_OUT 经 USBLC6-2SC6 ESD 后直连 ESP32-C3 原生 USB (I
 
 ---
 
+## 状态机架构
+
+自 v1.0-34 起，设备运行逻辑由 **5 个正交 (orthogonal) 有限状态机** 管理。每个 FSM 维护自己的状态，通过事件路由器解耦。
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    main loop (1Hz tick)                 │
+│  button bits / wifi queue / audio queue / EVT_TICK_1HZ  │
+│                          │                             │
+│                   route_event()                         │
+│                   (event_router)                        │
+│         ┌────────┬───────┼───────┬──────────┐          │
+│         ▼        ▼       ▼       ▼          ▼          │
+│     wake_fsm  sys_fsm net_fsm audio_fsm display_fsm    │
+│     (6状态)   (3状态)  (5状态)  (6状态)    (3状态)      │
+│         │        │       │       │          │          │
+│         └────────┴───────┼───────┴──────────┘          │
+│                          ▼                             │
+│                   apply_actions()                       │
+│                   (executor)                            │
+│         audio_init / audio_play / wifi_connect / ...    │
+└─────────────────────────────────────────────────────────┘
+```
+
+### 5 个 FSM 职责
+
+| FSM | 状态 | 典型转换 |
+|-----|------|---------|
+| **wake_fsm** | DORMANT / FROM_BTN / FROM_RTC / FROM_SYS / ALARM_RINGING / GOTO_SLEEP | 冷启动检测唤醒源；RTC 唤醒强制 auto-play；用户关闹钟退回 FROM_BTN |
+| **sys_fsm** | BOOT / NORMAL / SLEEPING | BOOT→NORMAL(主循环就绪)；BTN_SLEEP_PRESS→SLEEPING+deep sleep；工厂复位 |
+| **net_fsm** | OFFLINE / PROVISIONING / CONNECTING / CONNECTED / FAILED | 无凭据→PROVISIONING；IP_GOT→CONNECTED；断开→CONNECTING；30s超时→FAILED |
+| **audio_fsm** | IDLE / PENDING / INIT / PLAYING / STOPPING / ERROR | 左键短按→INIT→PLAYING；待WiFi→PENDING；停止→STOPPING→IDLE；自然播完→IDLE(自动切歌) |
+| **display_fsm** | DAY / NIGHT_AUTO / NIGHT_FORCED | 时间穿越夜间时段→NIGHT_AUTO；长按右键→强制切换 |
+
+### 事件路由器
+
+22 种原始事件 (`app_event_t`) 通过 `route_event()` 分发到 5 个区域：
+- **1-1 映射**：大部分按钮事件只到单一区域 (如 `AUDIO_TOGGLE` → `audio_fsm`)
+- **fan-out**：`EVT_TICK_1HZ` 到全部 5 个区域，`EVT_IP_GOT` 同时到 `net_fsm`+`audio_fsm` (PENDING→INIT)
+- **条件 fan-out**：`EVT_BOOT_DONE` 只在 `wake=FROM_RTC` 时才给 `audio_fsm` 发 `AUTO_PLAY_REQUEST`
+
+### 执行器
+
+FSM step 返回的动作列表 (`fsm_actions_t`) 由 `apply_actions()` 串行执行，顺序固定：**wake → sys → net → audio → display**。
+
+### 测试
+
+每个区域 FSM 的主机端单元测试位于 `tests/test_*_fsm.c`，直接链接生产代码 (`main/regions/*_fsm.c`)，不做镜像复制。运行方式：
+
+```bash
+make -C tests test   # 8/8 测试套件，109 个用例
+```
+
+相关文件：
+- `main/app_fsm.h` — 共享类型 (`app_event_t`, `app_input_t`, `fsm_action_t`)
+- `main/event_router.h/.c` — 事件路由
+- `main/regions/{wake,sys,net,audio,display}_fsm.h/.c` — 5 个 FSM 实现
+- `main/main.c` — executor + 主 FSM 循环 (~line 1148)
+
+---
+
 ## 程序启动流程
 
 ```mermaid
@@ -203,58 +264,31 @@ flowchart TD
     C -->|右键| E[wake=btn]
     C -->|冷启动| F[wake=sys]
 
-    D --> G[GPIO 早期初始化]
+    D --> G[GPIO + SSD1322 + 双键 + RTC + LVGL]
     E --> G
     F --> G
 
-    G --> H[ssd1322_init<br/>显示保持关闭]
-    H --> I[双键初始化<br/>右键: 短=睡眠 长=日夜 三击=重置<br/>左键: 短=播放 长=下一首]
-    I --> J[wifi_set_timezone<br/>CST-8]
-    J --> K[PCF85063 RTC 初始化<br/>读取时间恢复到系统]
-    K --> L[lvgl_adapter_init<br/>L8→I4 DMA]
-    L --> M{首次启动无 WiFi 凭据?}
-    M -->|是| MA[config_screen<br/>QR 码配网页面]
-    M -->|否| MB[clock_screen_create<br/>首帧渲染]
-    MA --> MC[ssd1322_display_on]
-    MB --> MC
+    G --> H{首次启动无 WiFi 凭据?}
+    H -->|是| HA[配网页面]
+    H -->|否| HB[clock_screen_create]
 
-    MC --> N{夜间模式?}
+    HA --> I[ssd1322_display_on]
+    HB --> I
 
-    N -->|是| O[跳过 WiFi/天气/音频<br/>极暗数码管显示]
-    N -->|否| P{唤醒源 = RTC?}
+    I --> J{夜间模式?}
+    J -->|是| K[极暗数码管显示]
+    J -->|否| L{唤醒源 = RTC?}
+    L -->|否| M[无网络模式<br/>室内温湿度 + 闹钟时间]
+    L -->|是| N[WiFi + /api/esp + auto-play]
 
-    P -->|否 (按键唤醒)| NA[无网络模式<br/>显示室内温湿度 + 闹钟时间<br/>底部提示: 按左键播放]
-    P -->|是 (RTC 闹钟)| Q[WiFi STA 连接]
-    Q --> R[SNTP 时间同步]
-    R --> RC[PCF85063 时间回写]
-    RC --> S{Agent 已启用?}
-    S -->|否| SA[clock-only 模式<br/>跳过 /api/esp]
-    S -->|是| T[audio_fetch_api<br/>单次 HTTP GET /api/esp]
-    T --> U[解析天气 + 电台URL]
-    U --> V{有电台URL?}
-    V -->|是| W[audio_play_url<br/>HTTP 流 MP3 解码]
-    V -->|否| WA[跳过音频]
-    T --> TB[arm_pcf85063_alarm<br/>写入下次闹钟]
+    K --> O[FSM 启动注入 EVT_BOOT_DONE]
+    M --> O
+    N --> O
 
-    O --> X[主循环 1800s]
-    NA --> X
-    SA --> X
-    W --> X
-    WA --> X
-
-    X --> Y{事件驱动 1s tick}
-    Y -->|右键短按| Z[深度睡眠]
-    Y -->|右键三击| ZA[恢复出厂 → 重启]
-    Y -->|右键长按| ZB[强制切换日夜模式]
-    Y -->|左键短按| ZC[播放/停止<br/>首次自动连 WiFi]
-    Y -->|左键长按| ZD[下一首]
-    Y -->|歌曲结束/卡住| ZE[auto_advance<br/>请求下一首]
-    Y -->|超时 1800s| Z
-    Y -->|每10秒| ZF[刷新 SHTC3 传感器]
-    ZE --> T
-    ZC --> T
-    ZD --> T
-    ZF --> X
+    O --> P[FSM 驱动主循环 1800s]
+    P -->|事件| Q[route_event → 5 region step → executor]
+    Q -->|SYS_SLEEPING| R[深度睡眠]
+    R --> A
 ```
 
 ---

@@ -33,6 +33,15 @@ void wifi_suppress_auto_connect(bool suppress);
  * STA mode. */
 void wifi_mark_radio_started(void);
 
+/* ── FSM 事件队列 ────────────────────────────────────────────────────
+ * wifi_event_handler 把 ESP-IDF WiFi 事件 (STA_CONNECTED / DISCONNECTED /
+ * IP_GOT / WIFI_TIMEOUT) 转换为 app_event_t 并推入内部 FreeRTOS Queue。
+ * 主循环通过 wifi_fsm_dequeue() 拉出后路由到 event_router。
+ *
+ * Queue 容量 8。返回 false 表示 queue 空 (无需 drain)。 */
+#include "app_fsm.h"
+bool wifi_fsm_dequeue(app_event_t *out);
+
 /* NVS-persisted WiFi credentials. Lengths sized for IEEE 802.11 max (32 SSID
  * + 64 PSK) plus a NUL each. */
 typedef struct {
