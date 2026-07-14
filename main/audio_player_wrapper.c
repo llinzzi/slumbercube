@@ -1,13 +1,17 @@
 #include "audio_player_wrapper.h"
+#include "app_fsm.h"
 #include "wifi.h"
 #include "agent_config.h"
 #include "shtc3.h"
 #include "audio_mixer.h"
+#include "audio_player.h"
 #include "audio_stream.h"
 #include "audio_http_stream.h"
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "cJSON.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/queue.h"
 #include "driver/i2s_std.h"
 #include "driver/gpio.h"
 #include "freertos/FreeRTOS.h"
@@ -148,6 +152,56 @@ static bool s_i2s_ready = false;
 static bool s_mixer_ready = false;
 static bool s_playback_active = false;  /* true only when playback actually started */
 static volatile bool s_shutting_down = false; /* set by audio_deinit, checked by i2s_write */
+
+/* ── FSM 事件队列 ──────────────────────────────────────────────────────
+ * esp-audio-player 的 callback 推 app_event_t 到这里,主循环在 Step 11
+ * 通过 audio_fsm_dequeue() drain。容量 8 足以覆盖 PLAYING/IDLE 快速连发。 */
+static QueueHandle_t s_audio_fsm_queue = NULL;
+
+static void audio_fsm_queue_init(void)
+{
+    if (s_audio_fsm_queue == NULL) {
+        s_audio_fsm_queue = xQueueCreate(8, sizeof(app_event_t));
+    }
+}
+
+static void audio_fsm_push(app_event_t ev)
+{
+    if (s_audio_fsm_queue != NULL) {
+        app_event_t e = ev;
+        if (xQueueSend(s_audio_fsm_queue, &e, 0) != pdTRUE) {
+            ESP_LOGW(TAG, "audio_fsm_queue full, dropping event %d", (int)ev);
+        }
+    }
+}
+
+static void audio_player_event_cb(audio_player_cb_ctx_t *ctx)
+{
+    if (ctx == NULL) return;
+    app_event_t mapped = EVT_NONE;
+    switch (ctx->audio_event) {
+    case AUDIO_PLAYER_CALLBACK_EVENT_PLAYING:
+        mapped = EVT_AUDIO_PLAYER_PLAYING;
+        break;
+    case AUDIO_PLAYER_CALLBACK_EVENT_IDLE:
+        mapped = EVT_AUDIO_PLAYER_IDLE;
+        break;
+    case AUDIO_PLAYER_CALLBACK_EVENT_COMPLETED_PLAYING_NEXT:
+        mapped = EVT_AUDIO_PLAYER_NEXT;
+        break;
+    case AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN_FILE_TYPE:
+    case AUDIO_PLAYER_CALLBACK_EVENT_SHUTDOWN:
+        mapped = EVT_AUDIO_PLAYER_ERROR;
+        break;
+    case AUDIO_PLAYER_CALLBACK_EVENT_PAUSE:
+    case AUDIO_PLAYER_CALLBACK_EVENT_UNKNOWN:
+    default:
+        /* pause / unknown 不驱动 FSM 转换 (暂未建模) */
+        return;
+    }
+    ESP_LOGI(TAG, "audio_player event %d -> EVT %d", (int)ctx->audio_event, (int)mapped);
+    audio_fsm_push(mapped);
+}
 static const char *s_status = NULL;
 static int s_content_length = 0;
 
@@ -609,6 +663,10 @@ static esp_err_t audio_play_url_inner(const char *url)
         return err;
     }
     s_mixer_ready = true;
+
+    /* FSM 事件队列 + 回调注册 (首次 audio_init 后生效) */
+    audio_fsm_queue_init();
+    audio_player_callback_register(audio_player_event_cb, NULL);
 
     /* Create decoder stream */
     audio_stream_config_t stream_cfg = DEFAULT_AUDIO_STREAM_CONFIG("music");

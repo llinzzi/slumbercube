@@ -80,6 +80,14 @@ void audio_set_wake_source(const char *source);
  * struct. valid=false until the first successful fetch. */
 const audio_alarm_config_t *audio_get_alarm_config(void);
 
+/* ── FSM 事件队列 drain ────────────────────────────────────────────────
+ * esp-audio-player callback 在 audio_init() 之后注册,PLAYING/IDLE/
+ * NEXT/UNKNOWN_FILE_TYPE 事件推入内部 FreeRTOS Queue。
+ * 主循环通过 audio_fsm_dequeue() 拉出后路由到 event_router (Step 11)。
+ * Queue 容量 8;返回 false 表示空。 */
+#include "app_fsm.h"
+bool audio_fsm_dequeue(app_event_t *out);
+
 #ifdef __cplusplus
 }
 #endif
