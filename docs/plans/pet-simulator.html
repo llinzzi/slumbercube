@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>SlumberCube · Pixel Pet Simulator</title>
+<style>
+  :root {
+    --bg: #0a0a0a;
+    --panel: #111;
+    --line: #222;
+    --text: #ccc;
+    --muted: #666;
+    --accent: #4a7aaa;
+    --accent-dim: #1a2a3a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    padding: 24px;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", monospace;
+    min-height: 100vh;
+  }
+  h1 {
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--muted);
+    margin: 0 0 24px;
+    letter-spacing: 2px;
+  }
+  h1 span { color: var(--accent); }
+  .stage {
+    display: flex;
+    gap: 24px;
+    max-width: 1100px;
+    flex-wrap: wrap;
+  }
+  .preview {
+    flex: 0 0 auto;
+    background: #000;
+    border: 1px solid var(--line);
+    padding: 16px;
+    border-radius: 4px;
+  }
+  .preview-grid {
+    display: grid;
+    gap: 2px;
+    background: #000;
+  }
+  .preview canvas {
+    display: block;
+    background: #000;
+    image-rendering: pixelated;
+    image-rendering: crisp-edges;
+  }
+  .readout {
+    margin-top: 12px;
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    min-height: 1.4em;
+  }
+  .controls {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    min-width: 400px;
+  }
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 12px 14px;
+  }
+  .panel h2 {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--muted);
+    margin: 0 0 10px;
+    font-weight: 500;
+  }
+  .opt-row { display: flex; flex-wrap: wrap; gap: 4px; }
+  .opt {
+    display: inline-block;
+    padding: 5px 9px;
+    background: #1a1a1a;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+    color: #888;
+    user-select: none;
+    transition: all 0.1s;
+  }
+  .opt:hover { background: #222; color: #aaa; }
+  .opt.active {
+    background: var(--accent-dim);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .toggle {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 6px 0;
+    font-size: 11px;
+    color: #aaa;
+    cursor: pointer;
+  }
+  .toggle input { margin: 0; cursor: pointer; }
+  .presets {
+    grid-column: 1 / -1;
+  }
+  .preset-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .preset {
+    padding: 7px 12px;
+    background: #1a1a1a;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 11px;
+    color: #aaa;
+    user-select: none;
+  }
+  .preset:hover { background: #2a2a2a; color: #fff; }
+  .preset.active { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
+  .footer {
+    margin-top: 24px;
+    font-size: 10px;
+    color: #444;
+    max-width: 1100px;
+  }
+  .inspector {
+    margin-top: 10px;
+    padding: 8px;
+    background: #0a0a0a;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    font-size: 10px;
+    color: var(--muted);
+    min-height: 1.4em;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+  <h1>SLUMERCUBE / <span>PIXEL PET SIMULATOR</span></h1>
+
+  <div class="stage">
+    <div class="preview">
+      <canvas id="pet" width="192" height="192"></canvas>
+      <div class="readout" id="readout">—</div>
+      <div class="inspector" id="inspector">click a pixel to inspect its level</div>
+    </div>
+
+    <div class="controls">
+      <div class="panel">
+        <h2>Shape (time of day)</h2>
+        <div class="opt-row">
+          <span class="opt" data-shape="tall">tall · active</span>
+          <span class="opt active" data-shape="round">round · mid</span>
+          <span class="opt" data-shape="flat">flat · sleepy</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Eyes (time + weather)</h2>
+        <div class="opt-row">
+          <span class="opt active" data-eyes="open">● ● open</span>
+          <span class="opt" data-eyes="half">| | half-lid</span>
+          <span class="opt" data-eyes="closed">‾ ‾ closed</span>
+          <span class="opt" data-eyes="squint">┃ ┃ squint (sun)</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Surface (weather + indoor)</h2>
+        <div class="opt-row">
+          <span class="opt active" data-surface="none">none</span>
+          <span class="opt" data-surface="sweat">○ sweat (hot)</span>
+          <span class="opt" data-surface="rain">◇ rain</span>
+          <span class="opt" data-surface="snow">* * snow</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Motion (music on/off)</h2>
+        <div class="opt-row">
+          <span class="opt active" data-motion="idle">idle · breathe</span>
+          <span class="opt" data-motion="bob">bob (music on)</span>
+          <span class="opt" data-motion="sway">soft sway (≥5s)</span>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Environment</h2>
+        <label class="toggle"><input type="checkbox" id="night"> Night mode (hides pet)</label>
+        <label class="toggle"><input type="checkbox" id="forceDay"> Force day at night (dim render)</label>
+        <label class="toggle"><input type="checkbox" id="autoCycle"> Auto-cycle presets every 4s</label>
+      </div>
+
+      <div class="panel presets">
+        <h2>Preset scenarios</h2>
+        <div class="preset-row">
+          <span class="preset" data-preset="morning-sunny">07:00 · sunny morning · music</span>
+          <span class="preset" data-preset="rainy-night">23:00 · rainy night</span>
+          <span class="preset" data-preset="hot-afternoon">14:00 · hot indoor</span>
+          <span class="preset" data-preset="snowy-evening">19:00 · snow · music</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">
+    Each canvas pixel = 1 pet pixel. Pet region is 24×24 in device space. Click a pixel to see its grayscale level (0–15).
+  </div>
+
+<script>
+// ============================================================
+//  Pixel Pet Simulator
+//  Renders the pet in 16-level grayscale at 24×24 native resolution.
+//  Each "pet pixel" maps to 8×8 display pixels (canvas 192×192).
+// ============================================================
+
+const PET_W = 24, PET_H = 24;
+const SCALE = 8;
+const canvas = document.getElementById('pet');
+canvas.width = PET_W * SCALE;
+canvas.height = PET_H * SCALE;
+const ctx = canvas.getContext('2d');
+
+// 16-level grayscale: 0..15 → 0..255 RGB
+function gray(level) {
+  const v = Math.round((level / 15) * 255);
+  return `rgb(${v},${v},${v})`;
+}
+
+// ---------- State ----------
+const state = {
+  shape: 'round',
+  eyes: 'open',
+  surface: 'none',
+  motion: 'idle',
+  night: false,
+  forceDay: false,
+};
+
+const presets = {
+  'morning-sunny': { shape: 'tall',  eyes: 'squint', surface: 'none',   motion: 'bob'   },
+  'rainy-night':   { shape: 'flat',  eyes: 'closed', surface: 'rain',   motion: 'idle'  },
+  'hot-afternoon': { shape: 'round', eyes: 'open',   surface: 'sweat',  motion: 'idle'  },
+  'snowy-evening': { shape: 'round', eyes: 'half',   surface: 'snow',   motion: 'bob'   },
+};
+
+// ---------- Shape dims ----------
+function getShapeDims() {
+  switch (state.shape) {
+    case 'tall':  return { w: 16, h: 22 };
+    case 'round': return { w: 22, h: 20 };
+    case 'flat':  return { w: 24, h: 12 };
+  }
+}
+
+// ---------- Body gradient (10..6 from center to edge) ----------
+function bodyLevel(r) {
+  // r: 0 at center, 1 at edge
+  if (r >= 1) return -1;
+  return Math.round(10 - r * 4);
+}
+
+// ---------- Eyes ----------
+// eyeY: vertical position of eye row (0 = top of pet, 1 = bottom)
+// eyeOffsetX: horizontal offset from center, as fraction of bodyW
+function applyEyes(px, drawY, cx, cy, bodyW, bodyH) {
+  const effectiveEyes = state.motion === 'sway' ? 'closed' : state.eyes;
+  const eyeY = cy - bodyH * 0.18;     // slightly above center
+  const eyeOffsetX = bodyW * 0.22;
+  const eyeRadiusX = 0.9, eyeRadiusY = 0.9;
+
+  for (const sign of [-1, 1]) {
+    const ex = cx + sign * eyeOffsetX;
+    const edx = (px + 0.5 - ex) / eyeRadiusX;
+    const edy = (drawY + 0.5 - eyeY) / eyeRadiusY;
+
+    if (effectiveEyes === 'open') {
+      if (edx * edx + edy * edy < 1.0) return 13;
+    } else if (effectiveEyes === 'squint') {
+      // narrower, more vertical
+      if (Math.abs(edx) < 0.5 && Math.abs(edy) < 1.0) return 12;
+    } else if (effectiveEyes === 'half') {
+      // shorter, lower portion only
+      if (edx * edx + edy * edy < 1.0 && edy > -0.2) return 11;
+    } else if (effectiveEyes === 'closed') {
+      // horizontal line
+      if (Math.abs(px + 0.5 - ex) < 0.9 && Math.abs(drawY + 0.5 - eyeY) < 0.3) return 11;
+    }
+  }
+  return null;
+}
+
+// ---------- Surface elements ----------
+function applySurface(px, drawY, cx, cy, bodyW, bodyH) {
+  const dots = [];
+  if (state.surface === 'sweat') {
+    dots.push({ x: cx - bodyW * 0.25, y: cy - bodyH * 0.28, level: 11, r: 0.7 });
+  } else if (state.surface === 'rain') {
+    dots.push({ x: cx + bodyW * 0.10, y: cy + bodyH * 0.40, level: 10, r: 0.8 });
+    dots.push({ x: cx - bodyW * 0.18, y: cy + bodyH * 0.30, level: 9,  r: 0.5 });
+  } else if (state.surface === 'snow') {
+    dots.push({ x: cx - bodyW * 0.30, y: cy - bodyH * 0.10, level: 12, r: 0.5 });
+    dots.push({ x: cx + bodyW * 0.28, y: cy - bodyH * 0.25, level: 12, r: 0.5 });
+    dots.push({ x: cx - bodyW * 0.05, y: cy + bodyH * 0.20, level: 12, r: 0.5 });
+    dots.push({ x: cx + bodyW * 0.15, y: cy + bodyH * 0.05, level: 12, r: 0.4 });
+  }
+  for (const d of dots) {
+    const ddx = (px + 0.5 - d.x) / d.r;
+    const ddy = (drawY + 0.5 - d.y) / d.r;
+    if (ddx * ddx + ddy * ddy < 1.0) return d.level;
+  }
+  return null;
+}
+
+// ---------- Pixel compute ----------
+function computeLevel(px, drawY, cx, cy, bodyW, bodyH) {
+  const dx = (px + 0.5 - cx) / (bodyW / 2);
+  const dy = (drawY + 0.5 - cy) / (bodyH / 2);
+  const r2 = dx * dx + dy * dy;
+  if (r2 >= 1.0) return -1;
+
+  const r = Math.sqrt(r2);
+  let level = bodyLevel(r);
+
+  // Subtle upper-left highlight (level +1)
+  if (dx < -0.3 && dy < -0.3) level += 1;
+
+  // Eyes override
+  const eyeLevel = applyEyes(px, drawY, cx, cy, bodyW, bodyH);
+  if (eyeLevel !== null) level = eyeLevel;
+
+  // Surface overrides body but not eyes
+  const surfaceLevel = applySurface(px, drawY, cx, cy, bodyW, bodyH);
+  if (surfaceLevel !== null && eyeLevel === null) level = surfaceLevel;
+
+  return Math.max(0, Math.min(15, level));
+}
+
+// ---------- Render ----------
+let frame = 0;
+function render() {
+  // Night mode hides pet
+  if (state.night && !state.forceDay) {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    return;
+  }
+  const dim = (state.night && state.forceDay) ? 0.45 : 1.0;
+
+  // Motion offsets
+  const motionY =
+    state.motion === 'bob'  ? Math.sin(frame * 0.10) * 1.5 :
+    state.motion === 'sway' ? Math.cos(frame * 0.10) * 0.5 : 0;
+
+  const heightScale =
+    state.motion === 'idle' ? 1.0 + Math.sin(frame * 0.04) * 0.05 : 1.0;
+
+  const { w: bodyW, h: bodyH } = getShapeDims();
+  const drawBodyH = bodyH * heightScale;
+  const cx = PET_W / 2;
+  const cy = PET_H / 2;
+
+  // Clear
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  for (let py = 0; py < PET_H; py++) {
+    for (let px = 0; px < PET_W; px++) {
+      const drawY = py + motionY;
+      const level = computeLevel(px, drawY, cx, cy, bodyW, drawBodyH);
+      if (level < 0) continue;
+      const finalLevel = Math.max(0, Math.min(15, Math.round(level * dim)));
+      ctx.fillStyle = gray(finalLevel);
+      ctx.fillRect(px * SCALE, py * SCALE, SCALE, SCALE);
+    }
+  }
+}
+
+// ---------- Animation loop ----------
+function loop() {
+  render();
+  frame++;
+  requestAnimationFrame(loop);
+}
+
+// ---------- UI ----------
+const readout = document.getElementById('readout');
+const inspector = document.getElementById('inspector');
+
+function updateReadout() {
+  const e = state.motion === 'sway' ? 'closed' : state.eyes;
+  readout.textContent =
+    `shape: ${state.shape} · eyes: ${e} · surface: ${state.surface} · motion: ${state.motion}` +
+    (state.night ? (state.forceDay ? ' · [force day @ dim 0.45]' : ' · [HIDDEN]') : '');
+}
+
+function setState(s) {
+  Object.assign(state, s);
+  refreshActive();
+  updateReadout();
+}
+
+function refreshActive() {
+  document.querySelectorAll('.opt').forEach(el => {
+    el.classList.remove('active');
+    const key = Object.keys(el.dataset)[0];
+    if (state[key] === el.dataset[key]) el.classList.add('active');
+  });
+  document.querySelectorAll('.preset').forEach(el => el.classList.remove('active'));
+}
+
+document.querySelectorAll('.opt').forEach(el => {
+  el.addEventListener('click', () => {
+    const key = Object.keys(el.dataset)[0];
+    state[key] = el.dataset[key];
+    refreshActive();
+    updateReadout();
+  });
+});
+
+document.querySelectorAll('.preset').forEach(el => {
+  el.addEventListener('click', () => {
+    setState(presets[el.dataset.preset]);
+    el.classList.add('active');
+  });
+});
+
+document.getElementById('night').addEventListener('change', e => {
+  state.night = e.target.checked;
+  updateReadout();
+});
+document.getElementById('forceDay').addEventListener('change', e => {
+  state.forceDay = e.target.checked;
+  updateReadout();
+});
+
+// Auto-cycle
+let autoCycleTimer = null;
+document.getElementById('autoCycle').addEventListener('change', e => {
+  if (e.target.checked) {
+    const keys = Object.keys(presets);
+    let i = 0;
+    autoCycleTimer = setInterval(() => {
+      setState(presets[keys[i]]);
+      i = (i + 1) % keys.length;
+    }, 4000);
+  } else {
+    clearInterval(autoCycleTimer);
+    autoCycleTimer = null;
+  }
+});
+
+// Pixel inspector
+canvas.addEventListener('click', (e) => {
+  const rect = canvas.getBoundingClientRect();
+  const x = e.clientX - rect.left;
+  const y = e.clientY - rect.top;
+  const px = Math.floor(x / (rect.width / PET_W));
+  const py = Math.floor(y / (rect.height / PET_H));
+  if (px < 0 || px >= PET_W || py < 0 || py >= PET_H) return;
+
+  const { w: bodyW, h: bodyH } = getShapeDims();
+  const cx = PET_W / 2, cy = PET_H / 2;
+  const motionY = state.motion === 'bob' ? Math.sin(frame * 0.10) * 1.5 : state.motion === 'sway' ? Math.cos(frame * 0.10) * 0.5 : 0;
+  const level = computeLevel(px, py + motionY, cx, cy, bodyW, bodyH);
+  inspector.textContent = level < 0
+    ? `(${px},${py}) background (L 0)`
+    : `(${px},${py}) → L ${level} / 15  (${Math.round(level * 100 / 15)}%)`;
+});
+
+updateReadout();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
