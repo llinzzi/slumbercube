@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<title>SlumberCube · Pixel Pet Simulator</title>
+<title>SlumberCube · Pixel Pet Simulator (4 Designs)</title>
 <style>
   :root {
     --bg: #0a0a0a;
@@ -26,66 +26,86 @@
     font-size: 13px;
     font-weight: 500;
     color: var(--muted);
-    margin: 0 0 24px;
+    margin: 0 0 4px;
     letter-spacing: 2px;
   }
   h1 span { color: var(--accent); }
-  .stage {
-    display: flex;
-    gap: 24px;
-    max-width: 1100px;
-    flex-wrap: wrap;
+  .subtitle {
+    font-size: 11px;
+    color: #444;
+    margin-bottom: 24px;
   }
-  .preview {
-    flex: 0 0 auto;
+  .gallery {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 12px;
+    max-width: 1100px;
+    margin-bottom: 24px;
+  }
+  .pet-card {
     background: #000;
     border: 1px solid var(--line);
-    padding: 16px;
+    padding: 12px;
     border-radius: 4px;
+    text-align: center;
   }
-  .preview canvas {
+  .pet-card canvas {
     display: block;
     background: #000;
     image-rendering: pixelated;
     image-rendering: crisp-edges;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 1;
+  }
+  .pet-name {
+    margin-top: 8px;
+    font-size: 11px;
+    color: #fff;
+    letter-spacing: 1px;
+  }
+  .pet-desc {
+    margin-top: 2px;
+    font-size: 9px;
+    color: #666;
   }
   .readout {
-    margin-top: 12px;
-    font-size: 11px;
-    color: var(--muted);
-    text-align: center;
+    margin-top: 8px;
+    padding: 4px;
+    font-size: 10px;
+    color: #888;
     min-height: 1.4em;
   }
   .controls {
-    flex: 1;
+    max-width: 1100px;
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: repeat(4, 1fr);
     gap: 12px;
-    min-width: 400px;
+    margin-bottom: 12px;
   }
   .panel {
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 4px;
-    padding: 12px 14px;
+    padding: 10px 12px;
   }
   .panel h2 {
     font-size: 10px;
     text-transform: uppercase;
     letter-spacing: 1.5px;
     color: var(--muted);
-    margin: 0 0 10px;
+    margin: 0 0 8px;
     font-weight: 500;
   }
   .opt-row { display: flex; flex-wrap: wrap; gap: 4px; }
   .opt {
     display: inline-block;
-    padding: 5px 9px;
+    padding: 4px 7px;
     background: #1a1a1a;
     border: 1px solid var(--line);
     border-radius: 3px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 10px;
     color: #888;
     user-select: none;
   }
@@ -98,36 +118,41 @@
   .toggle {
     display: flex;
     align-items: center;
-    gap: 8px;
-    margin: 6px 0;
-    font-size: 11px;
+    gap: 6px;
+    margin: 4px 0;
+    font-size: 10px;
     color: #aaa;
     cursor: pointer;
   }
   .toggle input { margin: 0; cursor: pointer; }
-  .presets { grid-column: 1 / -1; }
-  .preset-row { display: flex; flex-wrap: wrap; gap: 6px; }
+  .presets-row {
+    max-width: 1100px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 12px;
+  }
   .preset {
-    padding: 7px 12px;
+    padding: 6px 10px;
     background: #1a1a1a;
     border: 1px solid var(--line);
     border-radius: 3px;
     cursor: pointer;
-    font-size: 11px;
+    font-size: 10px;
     color: #aaa;
     user-select: none;
   }
   .preset:hover { background: #2a2a2a; color: #fff; }
   .preset.active { background: var(--accent-dim); border-color: var(--accent); color: #fff; }
   .footer {
-    margin-top: 24px;
+    margin-top: 16px;
     font-size: 10px;
     color: #444;
     max-width: 1100px;
   }
   .inspector {
-    margin-top: 10px;
-    padding: 8px;
+    margin-top: 8px;
+    padding: 6px;
     background: #0a0a0a;
     border: 1px solid var(--line);
     border-radius: 3px;
@@ -136,296 +161,347 @@
     min-height: 1.4em;
     text-align: center;
   }
-  .sprite-info {
-    margin-top: 8px;
-    padding: 6px 10px;
-    background: #0a0a0a;
-    border: 1px solid var(--line);
-    border-radius: 3px;
-    font-size: 10px;
-    color: #888;
+  .legend {
+    font-size: 9px;
+    color: #555;
     text-align: center;
+    margin-top: 6px;
   }
-  .sprite-info code {
-    color: #fff;
+  .legend code {
     background: #1a1a1a;
-    padding: 1px 4px;
+    padding: 1px 3px;
     border-radius: 2px;
+    color: #aaa;
   }
 </style>
 </head>
 <body>
-  <h1>SLUMERCUBE / <span>PIXEL PET SIMULATOR · GBA STYLE</span></h1>
+  <h1>SLUMERCUBE / <span>PIXEL PET · 4 DESIGNS</span></h1>
+  <div class="subtitle">Same state applied to all four designs. Pick the silhouette you like.</div>
 
-  <div class="stage">
-    <div class="preview">
-      <canvas id="pet" width="192" height="192"></canvas>
-      <div class="readout" id="readout">—</div>
-      <div class="inspector" id="inspector">click a pixel to inspect its level</div>
-      <div class="sprite-info">palette: <code>#</code>L0 outline · <code>%</code>L4 · <code>+</code>L8 · <code>o</code>L11 · <code>O</code>L13 · <code>W</code>L15</div>
+  <div class="gallery">
+    <div class="pet-card">
+      <canvas id="petA" width="192" height="192"></canvas>
+      <div class="pet-name">A · 复古晶体管收音机</div>
+      <div class="pet-desc">vintage transistor radio</div>
+      <div class="readout" id="readoutA">—</div>
     </div>
-
-    <div class="controls">
-      <div class="panel">
-        <h2>Body (time of day)</h2>
-        <div class="opt-row">
-          <span class="opt" data-shape="tall">tall · active</span>
-          <span class="opt active" data-shape="round">round · mid</span>
-          <span class="opt" data-shape="flat">flat · sleepy</span>
-        </div>
-      </div>
-
-      <div class="panel">
-        <h2>Eyes (time + weather)</h2>
-        <div class="opt-row">
-          <span class="opt active" data-eyes="open">● ● awake</span>
-          <span class="opt" data-eyes="half">- - half-lid</span>
-          <span class="opt" data-eyes="closed">~ ~ happy</span>
-          <span class="opt" data-eyes="squint">× × squint</span>
-        </div>
-      </div>
-
-      <div class="panel">
-        <h2>Surface (weather + indoor)</h2>
-        <div class="opt-row">
-          <span class="opt active" data-surface="none">none</span>
-          <span class="opt" data-surface="music">♪ ♪ music on</span>
-          <span class="opt" data-surface="rain">· · rain</span>
-          <span class="opt" data-surface="snow">* * snow</span>
-        </div>
-      </div>
-
-      <div class="panel">
-        <h2>Motion (music on/off)</h2>
-        <div class="opt-row">
-          <span class="opt active" data-motion="idle">idle · breathe</span>
-          <span class="opt" data-motion="bob">bob (music on)</span>
-          <span class="opt" data-motion="sway">soft sway</span>
-        </div>
-      </div>
-
-      <div class="panel">
-        <h2>Environment</h2>
-        <label class="toggle"><input type="checkbox" id="night"> Night mode (hides pet)</label>
-        <label class="toggle"><input type="checkbox" id="forceDay"> Force day at night (dim render)</label>
-        <label class="toggle"><input type="checkbox" id="autoCycle"> Auto-cycle presets every 4s</label>
-      </div>
-
-      <div class="panel presets">
-        <h2>Preset scenarios</h2>
-        <div class="preset-row">
-          <span class="preset" data-preset="morning-sunny">07:00 · sunny morning · music</span>
-          <span class="preset" data-preset="rainy-night">23:00 · rainy night</span>
-          <span class="preset" data-preset="hot-afternoon">14:00 · hot indoor</span>
-          <span class="preset" data-preset="snowy-evening">19:00 · snow · music</span>
-        </div>
-      </div>
+    <div class="pet-card">
+      <canvas id="petB" width="192" height="192"></canvas>
+      <div class="pet-name">B · 蓝牙胶囊音箱</div>
+      <div class="pet-desc">bluetooth capsule speaker</div>
+      <div class="readout" id="readoutB">—</div>
+    </div>
+    <div class="pet-card">
+      <canvas id="petC" width="192" height="192"></canvas>
+      <div class="pet-name">C · 像素小怪兽</div>
+      <div class="pet-desc">GBA-style pocket creature</div>
+      <div class="readout" id="readoutC">—</div>
+    </div>
+    <div class="pet-card">
+      <canvas id="petD" width="192" height="192"></canvas>
+      <div class="pet-name">D · GBA 机器人</div>
+      <div class="pet-desc">GBA-style bot</div>
+      <div class="readout" id="readoutD">—</div>
     </div>
   </div>
 
-  <div class="footer">
-    Each canvas pixel = 1 pet pixel. Pet region is 24×24 in device space. Click a pixel to see its grayscale level (0–15).
+  <div class="controls">
+    <div class="panel">
+      <h2>Eyes</h2>
+      <div class="opt-row">
+        <span class="opt active" data-eyes="open">● ● awake</span>
+        <span class="opt" data-eyes="half">- - half</span>
+        <span class="opt" data-eyes="closed">~ ~ happy</span>
+        <span class="opt" data-eyes="squint">× × squint</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Surface</h2>
+      <div class="opt-row">
+        <span class="opt active" data-surface="none">none</span>
+        <span class="opt" data-surface="music">♪ ♪ music</span>
+        <span class="opt" data-surface="rain">· · rain</span>
+        <span class="opt" data-surface="snow">* * snow</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Motion</h2>
+      <div class="opt-row">
+        <span class="opt active" data-motion="idle">idle · breathe</span>
+        <span class="opt" data-motion="bob">bob (music)</span>
+        <span class="opt" data-motion="sway">soft sway</span>
+      </div>
+    </div>
+    <div class="panel">
+      <h2>Environment</h2>
+      <label class="toggle"><input type="checkbox" id="night"> Night (hide)</label>
+      <label class="toggle"><input type="checkbox" id="forceDay"> Force day (dim)</label>
+      <label class="toggle"><input type="checkbox" id="autoCycle"> Auto-cycle 4s</label>
+    </div>
   </div>
+
+  <div class="presets-row">
+    <span class="preset" data-preset="morning-sunny">07:00 · sunny · music</span>
+    <span class="preset" data-preset="rainy-night">23:00 · rainy night</span>
+    <span class="preset" data-preset="hot-afternoon">14:00 · hot indoor</span>
+    <span class="preset" data-preset="snowy-evening">19:00 · snow · music</span>
+  </div>
+
+  <div class="inspector" id="inspector">click any pixel across the 4 designs to inspect its level</div>
+  <div class="legend">palette: <code>#</code>L1 outline · <code>%</code>L4 · <code>+</code>L8 · <code>o</code>L11 · <code>O</code>L13 · <code>W</code>L15</div>
 
 <script>
 // ============================================================
-//  Pixel Pet Simulator · GBA-style hand-designed sprite
-//  24×24 native, 16-level grayscale, 8× display scale.
+//  4-Design Pixel Pet Simulator
+//  Each design has its own hand-drawn 24×24 sprite. Same state.
 // ============================================================
 
 const PET_W = 24, PET_H = 24;
 const SCALE = 8;
-const canvas = document.getElementById('pet');
-canvas.width = PET_W * SCALE;
-canvas.height = PET_H * SCALE;
-const ctx = canvas.getContext('2d');
 
-// Palette: 5 main tones + outline (GBA-style limited palette)
+const canvases = {
+  A: document.getElementById('petA'),
+  B: document.getElementById('petB'),
+  C: document.getElementById('petC'),
+  D: document.getElementById('petD'),
+};
+const ctxs = {};
+for (const k in canvases) {
+  canvases[k].width = PET_W * SCALE;
+  canvases[k].height = PET_H * SCALE;
+  ctxs[k] = canvases[k].getContext('2d');
+}
+
+// Palette
 const P = {
-  '.': -1,     // transparent
-  '#': 1,      // outline (very dark)
-  '%': 4,      // body shadow
-  '+': 8,      // body main
-  'o': 11,     // body light
-  'O': 13,     // body highlight
-  'W': 15,     // eye white
-  '@': 1,      // eye pupil (same as outline, just semantically distinct)
-  'M': 2,      // mouth (very dark)
-  '~': 4,      // happy closed eye
-  '-': 2,      // half-lid eye
-  '×': 2,      // squint eye
-  '♪': 14,     // music note
-  '*': 14,     // snowflake
-  '·': 6,      // raindrop
+  '.': -1, '#': 1, '%': 4, '+': 8, 'o': 11, 'O': 13, 'W': 15,
+  '@': 1, 'M': 2, '~': 4, '-': 2, '×': 2,
+  '♪': 14, '*': 14, '·': 6,
+};
+
+function gray(level) {
+  const v = Math.round((level / 15) * 255);
+  return `rgb(${v},${v},${v})`;
+}
+
+// ============================================================
+//  4 hand-designed sprites (24×24)
+// ============================================================
+
+// ── A. Vintage Transistor Radio ──
+// Tall, antenna, 2 large round speaker holes = eyes, dial on top
+const SPRITE_A = `
+................
+............#.#..
+.......#...#..#..
+.......#####..#..
+......##...##....
+.....#ooooooo#...
+....#ooooooooo#..
+...#ooooooooooo#.
+..#ooooooooooooo#
+..#oo########oo#.
+..#o#WW......WW#o
+..#o#W@W....W@W#o
+..#o#W@W....W@W#o
+..#o#W@W....W@W#o
+..#o#WW......WW#o
+..#oo########oo#.
+..#ooooo..ooooo#.
+..#oooooMMooooo#.
+..#ooooooooooooo#
+..#oooooooooooo#.
+...#oooooooooo#..
+....#oooooooo#...
+.....#oooooo#....
+......#######....
+`;
+
+// ── B. Bluetooth Capsule Speaker ──
+// Wide, no antenna, mesh grille, LED indicator
+const SPRITE_B = `
+................
+................
+................
+..############..
+.#oooooooooooo#.
+#ooooooooooooooo#
+#ooooooooooooooo#
+#oo############o#
+#oo#WWWWWWWWWW#o#
+#oo#W@@@@@@@@@W#o
+#oo#W@@@@@@@@@W#o
+#oo#W@@@@@@@@@W#o
+#oo#W@@@@@@@@@W#o
+#oo#WWWWWWWWWW#o#
+#oo############o#
+#oo#o#o#o#o#o#o#
+#ooooooooooooooo#
+#ooooooooooooooo#
+.#oooooooooooo#.
+..############..
+................
+................
+................
+................`;
+
+// ── C. Pixel Creature (Tamagotchi / Pokemon-like) ──
+// Round body, 2 pointy ears, big anime eyes
+const SPRITE_C = `
+................
+.....##....##...
+....#..#..#..#..
+....#..#..#..#..
+.....#....#.....
+....#......#....
+...#........#...
+..#..........#..
+.#............#.
+.#............#.
+#..##......##..#
+#.#WW#....#WW#.#
+#.#W@#....#W@#.#
+#.#W@#....#W@#.#
+#.#W@#....#W@#.#
+#.#WW#....#WW#.#
+#..##......##..#
+#......MMM......#
+#..............#
+.#............#.
+.#............#.
+..#..........#..
+...#........#...
+....##....##....
+`;
+
+// ── D. GBA Robot ──
+// Square body, 2 antenna, LED mouth, screen eyes
+const SPRITE_D = `
+................
+......#.#.#.#....
+......#.#.#.#....
+......##.#.##....
+.....##.....##...
+....#.........#..
+....#.........#..
+...#...........#.
+.##...........##.
+.#.............#.
+#...............#
+#.##.........##.#
+#.#WW.......WW#.#
+#.#W@.......W@#.#
+#.#W@.......W@#.#
+#.#W@.......W@#.#
+#.#WW.......WW#.#
+#.##.........##.#
+#....#######....#
+#....#ooooo#....#
+#....#oMMMo#....#
+#....#ooooo#....#
+.#.............#.
+.##...........##.
+`;
+
+// ============================================================
+//  Parsing
+// ============================================================
+
+function parseSprite(s) {
+  const rows = s.trim().split('\n');
+  const pixels = [];
+  for (let y = 0; y < rows.length && y < PET_H; y++) {
+    for (let x = 0; x < rows[y].length && x < PET_W; x++) {
+      const ch = rows[y][x];
+      if (ch in P && P[ch] >= 0) {
+        pixels.push([x, y, P[ch]]);
+      }
+    }
+  }
+  return pixels;
+}
+
+const SPRITES = {
+  A: parseSprite(SPRITE_A),
+  B: parseSprite(SPRITE_B),
+  C: parseSprite(SPRITE_C),
+  D: parseSprite(SPRITE_D),
 };
 
 // ============================================================
-//  HAND-DESIGNED SPRITES (24×24 each)
-//  Each character is a fixed pixel — no math derivation.
+//  Overlays (eyes, surface) — design-relative coords
+//  Each design has its own eye region. Define per-design overlays.
 // ============================================================
 
-// ROUND body — square-ish with antenna
-const SPRITE_ROUND = `
-................
-................
-.......#.#......
-......#...#.....
-......#...#.....
-......#####.....
-.....##...##....
-....#.......#...
-...#.........#..
-..#...........#.
-..#...........#.
-..#...........#.
-..#...........#.
-..#..#######..#.
-..#.#WWWWW#..#.
-..#.#W@@@W#..#.
-..#.#W@@@W#..#.
-..#.#W@@@W#..#.
-..#.#WWWWW#..#.
-..#..#####..#..
-..#....M....#..
-..#...........#.
-...#.........#..
-....##.....##...
-`;
+// Eye overlay regions per design (rows where eyes are):
+//  A: rows 10-15, cols 4-9 (left) and cols 12-19 (right)
+//  B: rows 8-13, cols 4-11 (left) and cols 12-19 (right)
+//  C: rows 11-16, cols 1-6 (left) and cols 11-16 (right)
+//  D: rows 12-17, cols 2-7 (left) and cols 14-19 (right)
 
-// TALL body — narrower, taller
-const SPRITE_TALL = `
-................
-................
-.......#.#......
-......#...#.....
-......#...#.....
-......#####.....
-.....##...##....
-....#.......#...
-...#.........#..
-..#...........#.
-..#...........#.
-..#...........#.
-..#...........#.
-..#...........#.
-..#..#####..#...
-..#.#WWW#..#....
-..#.#W@W#..#....
-..#.#W@W#..#....
-..#.#WWW#..#....
-..#..#####..#...
-..#....M....#...
-..#...........#.
-...#.........#..
-....##.....##...
-`;
+function overlayEyes(design, eyes) {
+  if (eyes === 'open') return [];  // eyes are in the base sprite
+  const out = [];
+  const regions = {
+    A: { ly: 10, ry: 10, lx: 4, rx: 14 },
+    B: { ly: 8,  ry: 8,  lx: 4, rx: 12 },
+    C: { ly: 11, ry: 11, lx: 1, rx: 11 },
+    D: { ly: 12, ry: 12, lx: 2, rx: 14 },
+  }[design];
+  const level = (eyes === 'squint') ? 2 : 4;
+  // Draw a 6-wide × 1-tall line (half-lid / closed)
+  for (let dx = 0; dx < 6; dx++) {
+    out.push([regions.lx + dx, regions.ly + 4, level]);
+    out.push([regions.rx + dx, regions.ry + 4, level]);
+  }
+  if (eyes === 'squint') {
+    // Add a second line above for squint
+    for (let dx = 0; dx < 6; dx++) {
+      out.push([regions.lx + dx, regions.ly + 3, level]);
+      out.push([regions.rx + dx, regions.ry + 3, level]);
+    }
+  }
+  if (eyes === 'closed') {
+    // happy ~ shape: dot at ends, lower in middle
+    for (let dx = 0; dx < 6; dx++) {
+      const y = regions.ly + 4 + (dx === 2 || dx === 3 ? 1 : 0);
+      out.push([regions.lx + dx, y, 4]);
+      out.push([regions.rx + dx, y, 4]);
+    }
+  }
+  return out;
+}
 
-// FLAT body — wider, shorter
-const SPRITE_FLAT = `
-................
-................
-.....##.#.#.##..
-....#.#...#.#.#.
-.....#####.....
-.....#####.....
-....##.....##...
-...#.........#..
-..#...........#.
-..#...........#.
-..#..#######..#.
-..#.#WWWWW#..#.
-..#.#W@@@W#..#.
-..#.#W@@@W#..#.
-..#.#W@@@W#..#.
-..#.#WWWWW#..#.
-..#..#####..#..
-..#....M....#..
-..#...........#.
-..#...........#.
-...#.........#..
-....##.....##...
-................
-................
-`;
-
-// Eye variants — overlay the eye region of the sprite
-// Eye region is at rows 13-19, cols 4-9 (in the round sprite)
-// We'll just provide pixel patches for the eyes.
-
-// HAPPY CLOSED EYES (~ ~) — replaces the open eyes
-// Position: replaces the eye area (rows 14-19, cols 4-9)
-const EYES_CLOSED = {
-  // (px, py, level) for the round sprite — eyes are at rows 14-19, cols 4-9
-  pixels: [
-    // Left eye ~ curve
-    [4, 16, 4], [4, 17, 4],
-    [5, 17, 4], [6, 17, 4],
-    [7, 16, 4], [7, 17, 4],
-    // Right eye ~ curve
-    [10, 16, 4], [10, 17, 4],
-    [11, 17, 4], [12, 17, 4],
-    [13, 16, 4], [13, 17, 4],
-  ]
-};
-
-// HALF-LID (- -) — flat line across top of eye
-const EYES_HALF = {
-  pixels: [
-    [4, 16, 2], [5, 16, 2], [6, 16, 2], [7, 16, 2],
-    [10, 16, 2], [11, 16, 2], [12, 16, 2], [13, 16, 2],
-  ]
-};
-
-// SQUINT (× ×) — small x shapes
-const EYES_SQUINT = {
-  pixels: [
-    // Left x
-    [4, 15, 2], [7, 15, 2], [5, 16, 2], [6, 16, 2], [4, 17, 2], [7, 17, 2],
-    // Right x
-    [10, 15, 2], [13, 15, 2], [11, 16, 2], [12, 16, 2], [10, 17, 2], [13, 17, 2],
-  ]
-};
-
-// OPEN eyes are part of the base sprite already
-
-// Surface overlays — pixel-level additions
-const SURFACE_MUSIC = {
-  // Two music notes floating above
-  pixels: [
-    [4, 1, 14], [5, 1, 14], [4, 2, 14], [5, 2, 14], [6, 0, 14],
-    [12, 1, 14], [13, 1, 14], [12, 2, 14], [13, 2, 14], [14, 0, 14],
-  ]
-};
-
-const SURFACE_RAIN = {
-  // Drops around the body
-  pixels: [
-    [1, 8, 6], [1, 9, 6],
-    [22, 10, 6], [22, 11, 6],
-    [0, 18, 6], [23, 18, 6],
-    [1, 22, 6], [22, 22, 6],
-  ]
-};
-
-const SURFACE_SNOW = {
-  // Snowflakes around
-  pixels: [
-    [1, 6, 14], [1, 7, 14],
-    [22, 8, 14],
-    [0, 14, 14],
-    [23, 15, 14],
-    [2, 19, 14],
-    [21, 20, 14],
-    [1, 22, 14], [22, 22, 14],
-  ]
-};
+function overlaySurface(design, surface) {
+  const out = [];
+  if (surface === 'music') {
+    // Two music notes above the design
+    out.push([3, 1, 14], [4, 1, 14], [3, 2, 14], [4, 2, 14], [5, 0, 14]);
+    out.push([14, 1, 14], [15, 1, 14], [14, 2, 14], [15, 2, 14], [16, 0, 14]);
+  } else if (surface === 'rain') {
+    out.push([1, 4, 6], [1, 5, 6]);
+    out.push([22, 6, 6], [22, 7, 6]);
+    out.push([0, 14, 6], [23, 14, 6]);
+    out.push([1, 19, 6], [22, 19, 6]);
+    out.push([2, 22, 6], [21, 22, 6]);
+  } else if (surface === 'snow') {
+    out.push([1, 3, 14]);
+    out.push([22, 5, 14]);
+    out.push([0, 12, 14]);
+    out.push([23, 13, 14]);
+    out.push([1, 17, 14]);
+    out.push([22, 19, 14]);
+    out.push([2, 22, 14], [21, 22, 14]);
+  }
+  return out;
+}
 
 // ============================================================
 //  State
 // ============================================================
 
 const state = {
-  shape: 'round',
   eyes: 'open',
   surface: 'none',
   motion: 'idle',
@@ -434,114 +510,64 @@ const state = {
 };
 
 const presets = {
-  'morning-sunny': { shape: 'tall',  eyes: 'squint', surface: 'music', motion: 'bob'   },
-  'rainy-night':   { shape: 'flat',  eyes: 'closed', surface: 'rain',  motion: 'idle'  },
-  'hot-afternoon': { shape: 'round', eyes: 'half',   surface: 'none',  motion: 'idle'  },
-  'snowy-evening': { shape: 'round', eyes: 'half',   surface: 'snow',  motion: 'bob'   },
+  'morning-sunny': { eyes: 'squint', surface: 'music', motion: 'bob'   },
+  'rainy-night':   { eyes: 'closed', surface: 'rain',  motion: 'idle'  },
+  'hot-afternoon': { eyes: 'half',   surface: 'none',  motion: 'idle'  },
+  'snowy-evening': { eyes: 'half',   surface: 'snow',  motion: 'bob'   },
 };
 
 // ============================================================
-//  Sprite parsing & rendering
+//  Render a single design to its canvas
 // ============================================================
 
-function parseSprite(s) {
-  const rows = s.trim().split('\n');
-  const pixels = {};
-  let h = 0;
-  for (let y = 0; y < rows.length; y++) {
-    h = y + 1;
-    for (let x = 0; x < rows[y].length; x++) {
-      const ch = rows[y][x];
-      if (ch in P && P[ch] >= 0) {
-        pixels[`${x},${y}`] = P[ch];
-      }
-    }
-  }
-  return { pixels, w: PET_W, h };
-}
-
-const SPRITES = {
-  round: parseSprite(SPRITE_ROUND),
-  tall:  parseSprite(SPRITE_TALL),
-  flat:  parseSprite(SPRITE_FLAT),
-};
-
-function getOverlay(eyes, surface) {
-  const px = [];
-  if (eyes === 'closed') px.push(...EYES_CLOSED.pixels);
-  else if (eyes === 'half') px.push(...EYES_HALF.pixels);
-  else if (eyes === 'squint') px.push(...EYES_SQUINT.pixels);
-
-  if (surface === 'music') px.push(...SURFACE_MUSIC.pixels);
-  else if (surface === 'rain') px.push(...SURFACE_RAIN.pixels);
-  else if (surface === 'snow') px.push(...SURFACE_SNOW.pixels);
-
-  return px;
-}
-
-function render(frame) {
-  // Clear
+function renderDesign(ctx, design, frame) {
   ctx.fillStyle = '#000';
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillRect(0, 0, PET_W * SCALE, PET_H * SCALE);
 
   if (state.night && !state.forceDay) return;
   const dim = (state.night && state.forceDay) ? 0.5 : 1.0;
 
-  // Motion: bob (vertical translate)
-  const motionY = state.motion === 'bob' ? Math.sin(frame * 0.10) * 1.5
-                : state.motion === 'sway' ? Math.cos(frame * 0.10) * 0.8
+  const motionY = state.motion === 'bob'  ? Math.sin(frame * 0.10 + design.charCodeAt(0)) * 1.5
+                : state.motion === 'sway' ? Math.cos(frame * 0.10 + design.charCodeAt(0)) * 0.8
                 : 0;
+  const breath = state.motion === 'idle' ? 1.0 + Math.sin(frame * 0.05 + design.charCodeAt(0)) * 0.04 : 1.0;
 
-  // Idle breathe: scale Y around center
-  const breath = state.motion === 'idle' ? 1.0 + Math.sin(frame * 0.05) * 0.05 : 1.0;
-
-  // Pick sprite
-  const sprite = SPRITES[state.shape];
+  // Build pixel map for this design
+  const map = new Map();
   const cy = (PET_H - 1) / 2;
-
-  // Build pixel map
-  const map = {};
-
-  // Apply base sprite with breathe transform
-  for (const key in sprite.pixels) {
-    const [x, y] = key.split(',').map(Number);
+  const basePixels = SPRITES[design];
+  for (const [x, y, level] of basePixels) {
     const relY = y - cy;
     const newY = Math.round(cy + relY * breath);
-    if (newY < 0 || newY >= PET_H) continue;
-    map[`${x},${newY}`] = sprite.pixels[key];
+    if (newY >= 0 && newY < PET_H) {
+      map.set(`${x},${newY}`, level);
+    }
+  }
+  // Apply overlays
+  for (const [x, y, level] of overlayEyes(design, state.eyes)) {
+    if (y >= 0 && y < PET_H) map.set(`${x},${y}`, level);
+  }
+  for (const [x, y, level] of overlaySurface(design, state.surface)) {
+    if (y >= 0 && y < PET_H) map.set(`${x},${y}`, level);
   }
 
-  // Apply overlays (eyes, surface)
-  for (const [x, y, level] of getOverlay(state.eyes, state.surface)) {
-    if (y < 0 || y >= PET_H) continue;
-    map[`${x},${Math.round(y)}`] = level;
-  }
-
-  // Draw with motion offset
-  for (const key in map) {
+  // Draw
+  for (const [key, level] of map) {
     const [x, y] = key.split(',').map(Number);
     const drawY = y + motionY;
-    const px = Math.round(x);
-    const py = Math.round(drawY);
+    const px = x, py = Math.round(drawY);
     if (px < 0 || px >= PET_W || py < 0 || py >= PET_H) continue;
-    const level = Math.max(0, Math.min(15, Math.round(map[key] * dim)));
-    ctx.fillStyle = gray(level);
+    const finalLevel = Math.max(0, Math.min(15, Math.round(level * dim)));
+    ctx.fillStyle = gray(finalLevel);
     ctx.fillRect(px * SCALE, py * SCALE, SCALE, SCALE);
   }
 }
 
-function gray(level) {
-  const v = Math.round((level / 15) * 255);
-  return `rgb(${v},${v},${v})`;
-}
-
-// ============================================================
-//  Animation loop
-// ============================================================
-
 let frame = 0;
 function loop() {
-  render(frame);
+  for (const k of ['A', 'B', 'C', 'D']) {
+    renderDesign(ctxs[k], k, frame);
+  }
   frame++;
   requestAnimationFrame(loop);
 }
@@ -550,19 +576,18 @@ function loop() {
 //  UI
 // ============================================================
 
-const readout = document.getElementById('readout');
-const inspector = document.getElementById('inspector');
-
-function updateReadout() {
-  readout.textContent =
-    `body: ${state.shape} · eyes: ${state.eyes} · surface: ${state.surface} · motion: ${state.motion}` +
-    (state.night ? (state.forceDay ? ' · [force day @ 0.5]' : ' · [HIDDEN]') : '');
+function updateReadouts() {
+  const txt = `eyes:${state.eyes} · surface:${state.surface} · motion:${state.motion}` +
+              (state.night ? (state.forceDay ? ' · dim' : ' · HIDDEN') : '');
+  for (const k of ['A', 'B', 'C', 'D']) {
+    document.getElementById('readout' + k).textContent = txt;
+  }
 }
 
 function setState(s) {
   Object.assign(state, s);
   refreshActive();
-  updateReadout();
+  updateReadouts();
 }
 
 function refreshActive() {
@@ -579,7 +604,7 @@ document.querySelectorAll('.opt').forEach(el => {
     const key = Object.keys(el.dataset)[0];
     state[key] = el.dataset[key];
     refreshActive();
-    updateReadout();
+    updateReadouts();
   });
 });
 
@@ -591,12 +616,10 @@ document.querySelectorAll('.preset').forEach(el => {
 });
 
 document.getElementById('night').addEventListener('change', e => {
-  state.night = e.target.checked;
-  updateReadout();
+  state.night = e.target.checked; updateReadouts();
 });
 document.getElementById('forceDay').addEventListener('change', e => {
-  state.forceDay = e.target.checked;
-  updateReadout();
+  state.forceDay = e.target.checked; updateReadouts();
 });
 
 let autoCycleTimer = null;
@@ -615,26 +638,29 @@ document.getElementById('autoCycle').addEventListener('change', e => {
 });
 
 // Pixel inspector
-canvas.addEventListener('click', (e) => {
-  const rect = canvas.getBoundingClientRect();
-  const x = e.clientX - rect.left;
-  const y = e.clientY - rect.top;
-  const px = Math.floor(x / (rect.width / PET_W));
-  const py = Math.floor(y / (rect.height / PET_H));
-  if (px < 0 || px >= PET_W || py < 0 || py >= PET_H) {
-    inspector.textContent = `(${px},${py}) out of bounds`;
-    return;
-  }
-  const sprite = SPRITES[state.shape];
-  const level = sprite.pixels[`${px},${py}`];
-  const overlay = getOverlay(state.eyes, state.surface).find(([x, y]) => x === px && y === py);
-  const finalLevel = overlay ? overlay[2] : level;
-  inspector.textContent = finalLevel !== undefined
-    ? `(${px},${py}) → L ${finalLevel} / 15  (${Math.round(finalLevel * 100 / 15)}%)`
-    : `(${px},${py}) background (L 0)`;
-});
+const inspector = document.getElementById('inspector');
+for (const k of ['A', 'B', 'C', 'D']) {
+  canvases[k].addEventListener('click', (e) => {
+    const rect = canvases[k].getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+    const px = Math.floor(x / (rect.width / PET_W));
+    const py = Math.floor(y / (rect.height / PET_H));
+    if (px < 0 || px >= PET_W || py < 0 || py >= PET_H) return;
+    let level = -1;
+    for (const [bx, by, bl] of SPRITES[k]) {
+      if (bx === px && by === py) level = bl;
+    }
+    for (const [ox, oy, ol] of [...overlayEyes(k, state.eyes), ...overlaySurface(k, state.surface)]) {
+      if (ox === px && oy === py) level = ol;
+    }
+    inspector.textContent = level >= 0
+      ? `[${k}] (${px},${py}) → L ${level} / 15  (${Math.round(level * 100 / 15)}%)`
+      : `[${k}] (${px},${py}) background (L 0)`;
+  });
+}
 
-updateReadout();
+updateReadouts();
 requestAnimationFrame(loop);
 </script>
 </body>
