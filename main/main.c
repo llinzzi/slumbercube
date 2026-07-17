@@ -28,6 +28,11 @@
 #include <sys/time.h>
 #endif
 
+#if CONFIG_I2C_SCAN_AT_BOOT
+#include "i2c_bus.h"
+#include "driver/i2c_master.h"
+#endif
+
 #if CONFIG_AUDIO_ENABLE
 #include "audio_player_wrapper.h"
 #endif
@@ -320,7 +325,35 @@ static void right_triple_click_cb(void *button_handle, void *usr_data)
 
 /* ── 左键 (媒体) callbacks ─────────────────────────────────────── */
 
-/* 左键 short click: agent enabled → toggle audio; agent disabled → NTP sync. */
+/* Background NTP sync helper. Spawned as a one-shot task from the main loop
+ * so the main loop is never blocked by the SNTP poll or RTC round-trip.
+ * Self-deletes when finished. */
+static void ntp_sync_task(void *arg)
+{
+    ESP_LOGI("NTP_SYNC", "worker started");
+    if (!wifi_is_connected()) {
+        wifi_ensure_netif();
+        wifi_init_sta();
+    }
+#if CONFIG_PCF85063_ENABLE
+    if (pcf85063_is_present()) {
+        /* Give SNTP a few seconds to land a response. lwIP's SNTP client is
+         * fire-and-forget from sntp_init(), so 3 s is enough on a healthy
+         * link; on a slow one the next wake will catch up via the same path. */
+        vTaskDelay(pdMS_TO_TICKS(3000));
+        pcf85063_sync_from_system();
+    }
+#endif
+    clock_screen_set_station_name("时间已更新");
+    ESP_LOGI("NTP_SYNC", "worker done");
+    vTaskDelete(NULL);
+}
+
+/* 左键 short click: agent enabled → toggle audio. The first time the user
+ * STOPS playback in a wake cycle, also fire an NTP sync — that's the moment
+ * they're physically at the clock with WiFi reachable, and a natural way to
+ * catch the RTC up to network time without making them disable the agent.
+ * Subsequent toggles are audio-only. Agent disabled → NTP sync on every press. */
 static void left_short_click_cb(void *button_handle, void *usr_data)
 {
 #if CONFIG_AUDIO_ENABLE
@@ -331,8 +364,22 @@ static void left_short_click_cb(void *button_handle, void *usr_data)
     agent_config_t acfg;
     bool agent_on = (agent_config_load(&acfg) == ESP_OK && acfg.enabled);
     if (agent_on) {
-        ESP_LOGI(TAG, "左键 short click → audio toggle");
-        if (s_main_task) xTaskNotify(s_main_task, EVENT_AUDIO_TOGGLE, eSetBits);
+        static bool s_ntp_synced_this_wake = false;
+        uint32_t bits = EVENT_AUDIO_TOGGLE;
+        /* `s_audio_playing` reflects whether the clock is currently producing
+         * audio. If true, this click will be the stop transition — that's
+         * where we want to opportunistically sync NTP, once per wake. */
+        bool stopping = s_audio_playing;
+        if (stopping && !s_ntp_synced_this_wake) {
+            s_ntp_synced_this_wake = true;
+            bits |= EVENT_NTP_SYNC;
+            ESP_LOGI(TAG, "左键 short click → stop + NTP sync (first stop this wake)");
+            clock_screen_set_station_name("同步时间...");
+        } else {
+            ESP_LOGI(TAG, "左键 short click → audio toggle (stopping=%d)",
+                     stopping);
+        }
+        if (s_main_task) xTaskNotify(s_main_task, bits, eSetBits);
         clock_screen_set_audio_indicator(!s_audio_playing);
     } else {
         ESP_LOGI(TAG, "左键 short click → NTP sync (agent off)");
@@ -497,6 +544,23 @@ void app_main(void)
 
     // Always set timezone after wake (TZ env var is lost during deep sleep)
     wifi_set_timezone();
+
+#if CONFIG_I2C_SCAN_AT_BOOT
+    /* Debug-only: probe the shared I²C bus from 0x00..0x7F so we can see
+     * which addresses actually ACK before any device-specific probe runs.
+     * Config-gated; production builds leave it off (Kconfig default n). */
+    i2c_bus_init();
+    i2c_master_bus_handle_t scan_bus = i2c_bus_get();
+    ESP_LOGW("I2C_SCAN", "scanning 0x00..0x7F on bus=%p", (void *)scan_bus);
+    uint8_t scan_found = 0;
+    for (uint8_t addr = 0; addr < 0x80; addr++) {
+        if (i2c_master_probe(scan_bus, addr, 50) == ESP_OK) {
+            ESP_LOGW("I2C_SCAN", "  ACK at 0x%02X", addr);
+            scan_found++;
+        }
+    }
+    ESP_LOGW("I2C_SCAN", "done — %u device(s) ACK'd", scan_found);
+#endif
 
 #if CONFIG_PCF85063_ENABLE
     pcf85063_init();
@@ -845,25 +909,12 @@ void app_main(void)
                      is_night, (int)clock_screen_get_night_override());
         }
 
-        /* 左键 short click → NTP time sync (agent-disabled mode).
-         * wifi_init_sta() connects + starts SNTP in the background.
-         * Wait a few seconds for the first NTP response, then sync PCF85063.
-         * Does NOT fetch API or update alarm — agent-disabled means no alarm. */
-        if (notified & EVENT_NTP_SYNC) {
-            if (!wifi_is_connected()) {
-                wifi_ensure_netif();
-                wifi_init_sta();
-            }
-#if CONFIG_PCF85063_ENABLE
-            if (pcf85063_is_present()) {
-                vTaskDelay(pdMS_TO_TICKS(3000));
-                pcf85063_sync_from_system();
-            }
-#endif
-            clock_screen_set_station_name("时间已更新");
-        }
-
 #if CONFIG_AUDIO_ENABLE
+        /* AUDIO TOGGLE BEFORE NTP: a stop-press must take effect immediately
+         * — the user is standing at the clock and won't tolerate a 3s+
+         * playback-tail as the NTP handler races for the bus. The NTP sync
+         * still runs in the same tick, just after the audio state has
+         * already flipped. */
         /* 左键 short click → toggle audio (stop = full stop, no resume).
          * When starting playback, first fetch /api/esp to update alarm & radio. */
         if (notified & EVENT_AUDIO_TOGGLE) {
@@ -889,6 +940,17 @@ void app_main(void)
                     clock_screen_set_audio_indicator(false);
                 }
             }
+        }
+
+        /* 左键 short click → NTP time sync. Spawning a one-shot background
+         * task keeps the main loop free — the audio stop that accompanies
+         * this same button press (agent-on first-stop path) can take a few
+         * seconds to drain an HTTP audio stream, and stacking another 3 s
+         * SNTP/SYNC delay on top of it tips us past the 5 s task-watchdog.
+         * The main loop is not responsible for the SNTP poll at all; the
+         * helper just kicks it off and exits. */
+        if (notified & EVENT_NTP_SYNC) {
+            xTaskCreate(ntp_sync_task, "ntp_sync", 3072, NULL, 1, NULL);
         }
 
         /* 左键 long press → next track (skip current, fetch new from /api/esp) */

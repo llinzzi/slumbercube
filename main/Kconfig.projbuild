@@ -135,6 +135,17 @@ menu "SlumberCube Configuration"
             depends on PCF85063_ENABLE
     endmenu
 
+    menu "Debug Configuration"
+        config I2C_SCAN_AT_BOOT
+            bool "I2C bus scan at boot (debug, default off)"
+            default n
+            help
+              Probes all 7-bit I²C addresses 0x00..0x7F at startup and logs
+              which ones ACK. Use to confirm whether PCF85063 / SHTC3 are
+              physically present on the shared I²C bus. Disable (default) in
+              production.
+    endmenu
+
     menu "SHTC3 Sensor Configuration"
         config SHTC3_TEMP_OFFSET_TENTHS_C
             int "SHTC3 temperature offset in tenths of °C subtracted from raw reading"

@@ -89,20 +89,27 @@ esp_err_t pcf85063_init(void)
         return err;
     }
 
-    /* Probe: read the seconds register. The seconds register's top nibble
-     * (tens of seconds) is always 0-5; if it's >9 the read returned
-     * garbage (SDA not settled, crystal not stabilised, or no chip).
-     * With external pull-ups at 400kHz the first attempt succeeds, so
-     * the retry loop is purely defensive (e.g. against an unusually
-     * slow crystal cold-start). */
+    /* Probe: read the seconds register. Valid BCD is bits 6-4 = 0..5 (tens
+     * of seconds) and bits 3-0 = 0..9 (units). Bit 7 is the OS (Oscillator
+     * Stopped) sticky flag — set after any cold-start while the crystal
+     * stabilises; it must NOT be folded into the BCD check, otherwise a
+     * legitimately running chip is reported as garbage. We mask bit 7
+     * away before the validity check. Also send a dummy read first: some
+     * PCF85063 units return a stale byte on the very first register read
+     * after power-on (a known NXP cold-start anomaly). Discarding the
+     * first byte removes that confounder. */
     enum { PROBE_ATTEMPTS = 3 };
+    /* Drop a dummy byte first to shake off any cold-start stale read. */
+    uint8_t cold = 0xFF;
+    (void)read_regs(REG_SECONDS, &cold, 1);
     uint8_t sec = 0xFF;
     for (int attempt = 1; attempt <= PROBE_ATTEMPTS; attempt++) {
         err = read_regs(REG_SECONDS, &sec, 1);
         if (err != ESP_OK) {
             ESP_LOGW(TAG, "probe attempt %d/%d: I2C err on 0x%02X: %s",
                      attempt, PROBE_ATTEMPTS, PCF85063_ADDR, esp_err_to_name(err));
-        } else if (((sec >> 4) & 0x0Fu) > 9u) {
+        } else if (((sec & 0x70u) > 0x50u) || ((sec & 0x0Fu) > 0x09u)) {
+            /* masked-out OS bit — bits 6-4 must be 0..5, bits 3-0 must be 0..9 */
             ESP_LOGW(TAG, "probe attempt %d/%d: garbage 0x%02X",
                      attempt, PROBE_ATTEMPTS, sec);
         } else {
@@ -115,7 +122,7 @@ esp_err_t pcf85063_init(void)
                  PROBE_ATTEMPTS, PCF85063_ADDR);
         goto fail;
     }
-    if (((sec >> 4) & 0x0Fu) > 9u) {
+    if (((sec & 0x70u) > 0x50u) || ((sec & 0x0Fu) > 0x09u)) {
         ESP_LOGW(TAG, "probe returned garbage 0x%02X after %d attempts, chip likely absent",
                  sec, PROBE_ATTEMPTS);
         goto fail;
