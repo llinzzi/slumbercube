@@ -58,6 +58,14 @@ static void log_heap(const char *label)
 #define EVENT_NEXT_TRACK           (1 << 3)
 #define EVENT_NIGHT_TOGGLE         (1 << 4)
 #define EVENT_NTP_SYNC             (1 << 5)
+
+/* Forward declaration — the audio path uses sync_pcf85063_after_ntp() and
+ * the implementation lives further down in this file. */
+static void sync_pcf85063_after_ntp(uint32_t timeout_ms);
+
+/* Forward declaration — the audio-start path also kicks off a background
+ * NTP sync; full implementation lives further down. */
+static void ntp_sync_task(void *arg);
 #define EVENT_BUTTON_MASK          (EVENT_SLEEP_PENDING | EVENT_AUDIO_TOGGLE | \
                                     EVENT_PROVISIONING_REQUEST | EVENT_NEXT_TRACK | \
                                     EVENT_NIGHT_TOGGLE | EVENT_NTP_SYNC)
@@ -242,6 +250,13 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
         return ESP_FAIL;
     }
 
+    /* Kick off SNTP every time audio playback is about to start — the
+     * audio pending / play path uses wifi_sta_ensure() which only connects
+     * and does not start the SNTP client, so without this explicit call
+     * pressing play-then-stop on a cold boot would skip NTP entirely. */
+    wifi_ensure_netif();
+    wifi_init_sta();
+
     /* audio_play_url() internally fetches /api/esp (weather + alarm + radio).
      * Apply weather + alarm AFTER the fetch (so they have fresh data) but
      * BEFORE checking the return value — so they display even if playback
@@ -255,9 +270,14 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
         if (acfg && acfg->valid) {
             clock_screen_set_alarm_time(acfg->hour, acfg->minute);
 #if CONFIG_PCF85063_ENABLE
-            if (pcf85063_is_present()) {
-                pcf85063_sync_from_system();
-            }
+            /* Do NOT spawn an NTP sync worker here — the audio-start path
+             * already kicks off WiFi (and indirectly SNTP), but having two
+             * workers racing to call wifi_init_sta / sntp_init_time from
+             * different tasks triggered the sntp_init_time re-entry that
+             * crashed earlier. Instead, the user's stop press (or any
+             * later wake) will spawn the worker through the main-loop
+             * NTP_SYNC handler. Sync from system → RTC is idempotent, so
+             * waiting until the user-driven path is fine. */
             s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
 #endif
         }
@@ -325,6 +345,40 @@ static void right_triple_click_cb(void *button_handle, void *usr_data)
 
 /* ── 左键 (媒体) callbacks ─────────────────────────────────────── */
 
+/* Wait until SNTP has actually applied a server response to the system
+ * clock, then sync PCF85063 from it. Used at every site that previously
+ * called pcf85063_sync_from_system() unconditionally — that path was a
+ * race: a fixed vTaskDelay(3000) doesn't guarantee SNTP got a response
+ * in time, so we often ended up re-writing the RTC with the same
+ * pre-sync value the boot already had. With the sync-notification flag
+ * we wait up to timeout_ms for a real round-trip; if SNTP doesn't land
+ * one in that window (slow DNS, captive portal, dropped UDP), we leave
+ * the RTC alone and surface the timeout on screen instead of faking a
+ * successful sync. */
+static void sync_pcf85063_after_ntp(uint32_t timeout_ms)
+{
+#if CONFIG_PCF85063_ENABLE
+    if (!pcf85063_is_present()) return;
+
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(timeout_ms);
+    while (!wifi_is_time_synced()) {
+        if ((int32_t)(xTaskGetTickCount() - deadline) >= 0) {
+            ESP_LOGW(TAG, "NTP sync did not complete within %u ms — "
+                          "skipping RTC write to avoid persisting stale time",
+                          timeout_ms);
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(500));
+    }
+
+    if (pcf85063_sync_from_system() == ESP_OK) {
+        ESP_LOGI(TAG, "PCF85063 synced from NTP-corrected system time");
+    } else {
+        ESP_LOGW(TAG, "pcf85063_sync_from_system failed");
+    }
+#endif
+}
+
 /* Background NTP sync helper. Spawned as a one-shot task from the main loop
  * so the main loop is never blocked by the SNTP poll or RTC round-trip.
  * Self-deletes when finished. */
@@ -335,16 +389,14 @@ static void ntp_sync_task(void *arg)
         wifi_ensure_netif();
         wifi_init_sta();
     }
-#if CONFIG_PCF85063_ENABLE
-    if (pcf85063_is_present()) {
-        /* Give SNTP a few seconds to land a response. lwIP's SNTP client is
-         * fire-and-forget from sntp_init(), so 3 s is enough on a healthy
-         * link; on a slow one the next wake will catch up via the same path. */
-        vTaskDelay(pdMS_TO_TICKS(3000));
-        pcf85063_sync_from_system();
+
+    sync_pcf85063_after_ntp(30000);
+
+    if (wifi_is_time_synced()) {
+        clock_screen_set_station_name("时间已更新");
+    } else {
+        clock_screen_set_station_name("时间同步超时,请稍候");
     }
-#endif
-    clock_screen_set_station_name("时间已更新");
     ESP_LOGI("NTP_SYNC", "worker done");
     vTaskDelete(NULL);
 }
@@ -788,7 +840,11 @@ void app_main(void)
                     wifi_mark_time_set();
                 }
 #if CONFIG_PCF85063_ENABLE
-                if (pcf85063_is_present()) pcf85063_sync_from_system();
+                /* Spawn NTP sync in the background — see the matching
+                 * comment in audio_start_playback(). The RTC alarm-wake
+                 * path should not block the main loop on a 30 s SNTP
+                 * round-trip — audio / button handling stays responsive. */
+                xTaskCreate(ntp_sync_task, "ntp_sync_w", 3072, NULL, 1, NULL);
 #endif
                 log_heap("wifi_connected");
             }
@@ -1035,8 +1091,12 @@ void app_main(void)
                  * during playback; by the first track's end it should have
                  * a fresh NTP fix. Subsequent tracks reuse the same session. */
 #if CONFIG_PCF85063_ENABLE
-                if (!s_first_advance_synced && pcf85063_is_present()) {
-                    pcf85063_sync_from_system();
+                /* Sync PCF85063 from SNTP-corrected system time on the
+                 * FIRST auto-advance only — by then SNTP has had several
+                 * seconds of polling, but wait for the actual notification
+                 * to be sure. */
+                if (!s_first_advance_synced) {
+                    sync_pcf85063_after_ntp(30000);
                     s_first_advance_synced = true;
                 }
 #endif

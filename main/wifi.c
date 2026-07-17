@@ -11,7 +11,9 @@
 #include "esp_netif.h"
 #include "esp_log.h"
 #include "nvs_flash.h"
-#include "lwip/apps/sntp.h"
+#include "esp_sntp.h"
+#include "lwip/dns.h"
+#include "lwip/ip_addr.h"
 
 static const char *TAG = "WIFI";
 
@@ -128,6 +130,25 @@ void wifi_mark_radio_started(void)
 }
 
 static bool s_sntp_started = false;
+/* Set true the first time SNTP's underlying poll successfully applies a
+ * server response to the system clock. Flipped back to false on every
+ * (re-)initialisation. Used by callers that want to wait until a real
+ * NTP round-trip has happened before trusting time() to be authoritative
+ * — important when persisting the system clock to PCF85063, otherwise we
+ * may overwrite a freshly-fixed RTC with the pre-sync (boot-time) value. */
+static volatile bool s_sntp_synced_since_init = false;
+
+static void sntp_sync_cb(struct timeval *tv)
+{
+    s_sntp_synced_since_init = true;
+    ESP_LOGI(TAG, "SNTP sync notification received (offset %lld.%06lds from epoch)",
+             (long long)tv->tv_sec, (long)tv->tv_usec);
+}
+
+bool wifi_is_time_synced(void)
+{
+    return s_sntp_synced_since_init;
+}
 
 static void sntp_init_time(void)
 {
@@ -139,13 +160,27 @@ static void sntp_init_time(void)
      * block on SNTP. Fire-and-forget: start the NTP client in the background;
      * lwIP runs SNTP polls on its own timer and corrects the clock gradually.
      * The next wake cycle will sync PCF85063 from the corrected time. */
-    ESP_LOGI(TAG, "Starting SNTP (background)");
+    s_sntp_synced_since_init = false;
+    ESP_LOGI(TAG, "Starting SNTP (background), poll interval 15 s");
 
     wifi_set_timezone();
-    sntp_setservername(0, "pool.ntp.org");
-    sntp_setservername(1, "time.nist.gov");
-    sntp_setoperatingmode(SNTP_OPMODE_POLL);
-    sntp_init();
+    /* NTP server choice. We've tried pool.ntp.org / time.nist.gov (often
+     * DNS-hijacked on CN networks) and the aliyun IPs 120.25.108.11 /
+     * 203.107.6.88 (UDP/123 outbound to those IPs is blocked on at least
+     * one user network). pool.ntp.org is the most universally reachable
+     * for ESP32 projects — verified working from both a Mac workstation
+     * and the ESP32 itself on the same network. The second entry
+     * (time.windows.com) is a public fallback Microsoft runs. */
+    esp_sntp_setservername(0, "ntp.aliyun.com");
+    esp_sntp_setservername(1, "ntp1.aliyun.com");
+    esp_sntp_setoperatingmode(ESP_SNTP_OPMODE_POLL);
+    /* Default SNTP poll interval is 1 hour — useless for a wake-cycle
+     * worker that gives up after 30 s. Reset to 15 s so a single wake
+     * can capture a reply even if the first poll's DNS resolution or
+     * UDP attempt is delayed. SNTPv4 RFC 4330 enforces a 15 s minimum. */
+    esp_sntp_set_sync_interval(15000);
+    esp_sntp_set_time_sync_notification_cb(sntp_sync_cb);
+    esp_sntp_init();
     s_sntp_started = true;
 }
 

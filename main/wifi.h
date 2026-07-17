@@ -18,6 +18,12 @@ bool wifi_is_time_set(void);
 void wifi_mark_time_set(void);
 void wifi_set_timezone(void);
 
+/* True once SNTP has actually applied a server response to the system clock
+ * since the most recent (re-)initialisation. Resets to false on every
+ * sntp_init() / wifi_init_sta() so a caller waiting on this can be sure
+ * the value reflects a real round-trip, not a stale carry-over. */
+bool wifi_is_time_synced(void);
+
 /* Returns the device's WiFi MAC as hex, e.g. "543204470984".
  * Suitable for /api/esp/<device_id> endpoints. */
 const char *wifi_get_device_id(void);
