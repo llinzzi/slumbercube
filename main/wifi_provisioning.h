@@ -22,7 +22,7 @@ typedef enum {
  *
  * Safe to call at first boot (no NVS creds) and at runtime (after stopping
  * audio + STA). The function tears down its AP / HTTP / DNS resources
- * before returning, so the caller can hand control back to wifi_init_sta()
+ * before returning, so the caller can hand control back to wifi_sta_connect()
  * with the freshly-saved credentials.
  */
 wifi_prov_result_t wifi_provisioning_run(void);

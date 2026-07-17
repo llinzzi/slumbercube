@@ -43,7 +43,7 @@ const char *wifi_get_device_id(void)
 static EventGroupHandle_t s_wifi_event_group;
 static int s_retry_num = 0;
 static bool s_wifi_connected = false;
-/* True when wifi_init_sta() is using NVS-saved creds (vs. the menuconfig
+/* True when wifi_sta_connect() is using NVS-saved creds (vs. the menuconfig
  * fallback). Used to distinguish "wrong password" (NVS creds, recoverable
  * via factory reset → re-provisioning) from "first-boot probe of menuconfig
  * fallback" (no creds yet, provisioning already handles it). */
@@ -301,19 +301,39 @@ esp_err_t wifi_sta_ensure(void)
     return ESP_OK;
 }
 
-/* Blocking wrapper: ensure + wait for connection + SNTP. */
-esp_err_t wifi_init_sta(void)
+/* Blocking wrapper: ensure + wait for connection. Pure wifi — does NOT
+ * touch the SNTP client. The audio path and the NTP worker each
+ * decide independently whether to start SNTP via wifi_start_sntp(). */
+esp_err_t wifi_sta_connect(uint32_t timeout_ms)
 {
     esp_err_t err = wifi_sta_ensure();
     if (err != ESP_OK) return err;
 
-    if (wifi_wait_connected(30000) == ESP_OK) {
+    if (wifi_wait_connected(timeout_ms) == ESP_OK) {
         ESP_LOGI(TAG, "connected to ap");
-        sntp_init_time();
         return ESP_OK;
     }
-    ESP_LOGW(TAG, "WiFi connection timeout (30s)");
+    ESP_LOGW(TAG, "WiFi connection timeout (%u ms)", (unsigned)timeout_ms);
     return ESP_FAIL;
+}
+
+/* App-layer entry point for kicking off SNTP after wifi is up. Returns
+ * ESP_ERR_INVALID_STATE if wifi hasn't connected yet — caller is expected
+ * to sequence the wifi-init step (alarm-wake path / button-press NTP
+ * worker) before calling this. Idempotent: returns ESP_OK without
+ * re-init if SNTP is already running. */
+esp_err_t wifi_start_sntp(void)
+{
+    if (s_sntp_started) {
+        ESP_LOGI(TAG, "SNTP already running");
+        return ESP_OK;
+    }
+    if (!wifi_is_connected()) {
+        ESP_LOGE(TAG, "wifi_start_sntp called before wifi connected");
+        return ESP_ERR_INVALID_STATE;
+    }
+    sntp_init_time();
+    return ESP_OK;
 }
 
 bool wifi_is_connected(void)

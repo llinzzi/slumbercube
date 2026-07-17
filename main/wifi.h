@@ -4,8 +4,21 @@
 #include <stdbool.h>
 #include "esp_err.h"
 
-/* Blocking: init + wait for connection + SNTP (up to 30s). */
-esp_err_t wifi_init_sta(void);
+/* Blocking: ensure STA + wait for connection. Returns ESP_OK once the link
+ * is up, ESP_FAIL if the link didn't come up within timeout_ms. Idempotent
+ * — if the radio is already connected, returns ESP_OK immediately.
+ *
+ * This is the "I really need the link right now" gate; sibling wifi_sta_ensure()
+ * is the non-blocking equivalent. Does NOT touch the SNTP client — call
+ * wifi_start_sntp() to start time sync once the link is up. */
+esp_err_t wifi_sta_connect(uint32_t timeout_ms);
+
+/* App-layer hook: ensure the SNTP client is running. Idempotent (returns
+ * ESP_OK immediately if SNTP was already started). Returns ESP_ERR_INVALID_STATE
+ * if wifi hasn't connected yet — sequence wifi_sta_connect() first.
+ * This is the only call site application code should use to start time
+ * sync. */
+esp_err_t wifi_start_sntp(void);
 
 /* Non-blocking: init + start radio, return immediately.
  * Poll wifi_is_connected() to detect when the link comes up. */
@@ -20,7 +33,7 @@ void wifi_set_timezone(void);
 
 /* True once SNTP has actually applied a server response to the system clock
  * since the most recent (re-)initialisation. Resets to false on every
- * sntp_init() / wifi_init_sta() so a caller waiting on this can be sure
+ * sntp_init() / wifi_sta_connect() so a caller waiting on this can be sure
  * the value reflects a real round-trip, not a stale carry-over. */
 bool wifi_is_time_synced(void);
 
@@ -35,7 +48,7 @@ void wifi_suppress_auto_connect(bool suppress);
 
 /* Mark the WiFi radio as started (called by start_softap after esp_wifi_start).
  * Keeps wifi.c's internal s_wifi_started flag in sync so a later
- * wifi_init_sta() call knows to stop+bounce the radio before switching to
+ * wifi_sta_connect() call knows to stop+bounce the radio before switching to
  * STA mode. */
 void wifi_mark_radio_started(void);
 

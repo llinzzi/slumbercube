@@ -663,14 +663,14 @@ static esp_err_t start_softap(const char *ssid, const char *pass)
 
     /* Limit both interfaces to 802.11b/g. Excluding 802.11n (HT) avoids
      * compatibility issues with routers — notably Xiaomi — that don't respond
-     * to HT probe requests. wifi_init_sta() does the same for the STA-only
+     * to HT probe requests. wifi_sta_connect() does the same for the STA-only
      * path; here we apply it before the first esp_wifi_start() in the APSTA
-     * path (wifi_init_sta returned early when NVS was empty, so the protocol
+     * path (wifi_sta_connect(30000) returned early when NVS was empty, so the protocol
      * was never configured — defaulted to 11b/g/n). */
     ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G));
     ESP_ERROR_CHECK(esp_wifi_set_protocol(WIFI_IF_AP, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G));
 
-    /* Start the radio. wifi_init_sta() (called just above) initialised the
+    /* Start the radio. wifi_sta_connect() (called just above) initialised the
      * driver and netif but — when NVS is empty — returns early without calling
      * esp_wifi_start(). Without this the AP is configured but silent: no
      * beacons, invisible to phones. */
@@ -710,17 +710,17 @@ wifi_prov_result_t wifi_provisioning_run(void)
 
     /* Ensure WiFi driver + STA netif are up before we try to add the AP netif
      * or call esp_wifi_set_mode(APSTA). On first boot (NVS empty), main.c
-     * hasn't called wifi_init_sta() yet, so the driver is uninitialised —
+     * hasn't called wifi_sta_connect() yet, so the driver is uninitialised —
      * which is what blew up on real hardware. */
     /* Best-effort: if NVS has creds, this connects; if not, it fails after 30 s
      * ESP_FAIL if NVS is empty (no menuconfig fallback any more — the device
      * refuses to silently connect to a baked-in SSID). Either way, the driver
      * is up afterward. */
-    (void)wifi_init_sta();
+    (void)wifi_sta_connect(30000);
 
     /* Block the STA event handler from auto-connecting. Must come AFTER
-     * wifi_init_sta() — the handler skips esp_wifi_connect() when this flag
-     * is set, so calling wifi_init_sta() with suppression on would deadlock
+     * wifi_sta_connect() — the handler skips esp_wifi_connect() when this flag
+     * is set, so calling wifi_sta_connect() with suppression on would deadlock
      * wifi_wait_connected() for 30s (STA_START fires, no connect, no IP). */
     wifi_suppress_auto_connect(true);
 
@@ -769,7 +769,7 @@ wifi_prov_result_t wifi_provisioning_run(void)
     /* The QR page stays loaded — caller decides whether to reboot (success)
      * or to keep it visible while main.c falls through to clock-only mode. */
 
-    /* Switch WiFi mode back to STA-only so the next wifi_init_sta() call
+    /* Switch WiFi mode back to STA-only so the next wifi_sta_connect() call
      * finds a clean state. esp_wifi_set_mode is safe to call repeatedly. */
     esp_wifi_set_mode(WIFI_MODE_STA);
 

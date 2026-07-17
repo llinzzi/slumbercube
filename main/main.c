@@ -234,7 +234,7 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
     if (reconnect_wifi) {
         clock_screen_set_station_name("Connecting WiFi...");
         wifi_ensure_netif();
-        if (wifi_init_sta() != ESP_OK && !wifi_is_connected()) {
+        if (wifi_sta_connect(30000) != ESP_OK && !wifi_is_connected()) {
             clock_screen_set_audio_indicator(false);
             clock_screen_set_station_name("WiFi failed");
             s_audio_playing = false;
@@ -250,13 +250,6 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
         return ESP_FAIL;
     }
 
-    /* Kick off SNTP every time audio playback is about to start — the
-     * audio pending / play path uses wifi_sta_ensure() which only connects
-     * and does not start the SNTP client, so without this explicit call
-     * pressing play-then-stop on a cold boot would skip NTP entirely. */
-    wifi_ensure_netif();
-    wifi_init_sta();
-
     /* audio_play_url() internally fetches /api/esp (weather + alarm + radio).
      * Apply weather + alarm AFTER the fetch (so they have fresh data) but
      * BEFORE checking the return value — so they display even if playback
@@ -270,14 +263,11 @@ static esp_err_t audio_start_playback(bool reconnect_wifi)
         if (acfg && acfg->valid) {
             clock_screen_set_alarm_time(acfg->hour, acfg->minute);
 #if CONFIG_PCF85063_ENABLE
-            /* Do NOT spawn an NTP sync worker here — the audio-start path
-             * already kicks off WiFi (and indirectly SNTP), but having two
-             * workers racing to call wifi_init_sta / sntp_init_time from
-             * different tasks triggered the sntp_init_time re-entry that
-             * crashed earlier. Instead, the user's stop press (or any
-             * later wake) will spawn the worker through the main-loop
-             * NTP_SYNC handler. Sync from system → RTC is idempotent, so
-             * waiting until the user-driven path is fine. */
+            /* Audio playback does not own the SNTP / RTC sync surface —
+             * that's the NTP worker's job, started by the user's stop
+             * press (or by the RTC alarm-wake path on cold boot). The
+             * arm-alarm step here only writes the wake-time into the
+             * RTC's alarm registers. */
             s_rtc_alarm_armed = arm_pcf85063_alarm_wakeup();
 #endif
         }
@@ -385,9 +375,24 @@ static void sync_pcf85063_after_ntp(uint32_t timeout_ms)
 static void ntp_sync_task(void *arg)
 {
     ESP_LOGI("NTP_SYNC", "worker started");
-    if (!wifi_is_connected()) {
+    /* Application-layer SNTP trigger (left-key stop-press). SNTP is a
+     * NTP worker concern, not an audio/wifi concern. wifi_sta_connect()
+     * now only does the link — it does not start SNTP — so whichever
+     * branch we take, the next call is wifi_start_sntp() to apply the
+     * user gesture to the time sync. */
+    if (wifi_is_connected()) {
+        wifi_start_sntp();
+    } else {
         wifi_ensure_netif();
-        wifi_init_sta();
+        if (wifi_sta_connect(30000) != ESP_OK) {
+            ESP_LOGW("NTP_SYNC", "wifi did not connect within 30 s; "
+                                 "skipping SNTP sync");
+            clock_screen_set_station_name("网络未连接");
+            ESP_LOGI("NTP_SYNC", "worker done");
+            vTaskDelete(NULL);
+            return;
+        }
+        wifi_start_sntp();   /* wifi_sta_connect() is now link-only */
     }
 
     sync_pcf85063_after_ntp(30000);
@@ -835,7 +840,7 @@ void app_main(void)
             /* ── RTC alarm wake: full network + weather + auto-play ── */
             clock_screen_set_station_name("Connecting WiFi...");
             wifi_ensure_netif();
-            if (wifi_init_sta() == ESP_OK) {
+            if (wifi_sta_connect(30000) == ESP_OK) {
                 if (!wifi_is_time_set()) {
                     wifi_mark_time_set();
                 }
@@ -1020,7 +1025,7 @@ void app_main(void)
 
             if (!wifi_is_connected()) {
                 wifi_ensure_netif();
-                wifi_init_sta();
+                wifi_sta_connect(30000);
             }
 
             clock_screen_set_station_name("Next song...");
@@ -1103,7 +1108,7 @@ void app_main(void)
 
                 clock_screen_set_station_name("Next song...");
                 if (!wifi_is_connected()) {
-                    wifi_init_sta();
+                    wifi_sta_connect(30000);
                 }
                 /* Fetch fresh API data for the next track */
                 if (audio_init() == ESP_OK) {
