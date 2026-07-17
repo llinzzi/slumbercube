@@ -41,6 +41,12 @@ CONFIG_LWIP_TCPIP_RECVMBOX_SIZE=8
 # Memory optimizations
 CONFIG_LV_MEM_SIZE_KILOBYTES=16
 
+# Propagate DHCP-allocated DNS servers into lwIP so SNTP / DNS-using
+# code can resolve hostnames (e.g. ntp.aliyun.com). Without this, lwIP's
+# default DNS server list is empty and every SNTP server-name lookup
+# silently fails. Critical for any feature that uses hostnames.
+CONFIG_LWIP_DNS_SETSERVER_WITH_NETIF=y
+
 # mbedTLS: HTTPS is disabled (see above), so shrink TLS buffers to minimum.
 # SSL_IN/OUT buffers are allocated dynamically only when needed; with
 # HTTPS fully disabled they stay at 0 heap cost. Pinning a small value
