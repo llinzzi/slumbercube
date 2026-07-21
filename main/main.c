@@ -564,6 +564,26 @@ void app_main(void)
         break;
     }
 
+    /* Clear the RTC IO MUX wake-routing left over from deep sleep.
+     * gpio_hold_dis() below only releases the per-pad hold bit; it does NOT
+     * undo esp_deep_sleep_enable_gpio_wakeup()'s RTC-IO routing. On
+     * ESP32-C3 the RTC IO MUX owns GPIO0..5 even after the digital matrix
+     * is re-initialised by app_main, so gpio_get_level(GPIO3) on a
+     * PCF85063 alarm wake (GPIO0) returns the RTC-domain default instead
+     * of the real pin level — that kills iot_button polling silently
+     * (no BUTTON_PRESS_DOWN fires, callback never runs, "右键 short click"
+     * log line is missing). On a button wake (GPIO3) the wake source IS
+     * GPIO3, so the RTC domain releases it; that's why button wake works.
+     * ESP-IDF 5.5 has no symmetric "disable all GPIO wake" — only the
+     * per-pin gpio_wakeup_disable() — so we explicitly clear the two
+     * pins that can ever be in the wake mask. Idempotent on cold boot
+     * (no wakeup config to clear; returns ESP_ERR_INVALID_ARG which we
+     * ignore). */
+    gpio_wakeup_disable(CONFIG_WAKEUP_GPIO);
+#if CONFIG_PCF85063_ENABLE
+    gpio_wakeup_disable(CONFIG_PCF85063_INT_GPIO);
+#endif
+
     /* Enable GPIO hold through deep sleep, and release any hold left from
      * previous sleep cycle before reconfiguring pins. */
     gpio_deep_sleep_hold_en();
@@ -884,6 +904,55 @@ void app_main(void)
 #if CONFIG_AUDIO_ENABLE
     ESP_LOGI(TAG, "Audio block guard: wake=%d normal=%d night=%d",
              s_wake_kind, s_normal_mode, clock_screen_is_night_time());
+
+    /* ==== TEST HACK (REVERT AFTER VERIFYING gpio_wakeup_disable FIX) ====
+     * Inserted here so it runs AFTER s_normal_mode = has_creds at line 705
+     * (which would otherwise undo our override) and BEFORE the audio block
+     * below (which would call arm_pcf85063_alarm_wakeup() and overwrite our
+     * near-time alarm with the server's 07:50 alarm).
+     *
+     * Schedules a PCF85063 alarm ~1 minute from now so we can drive an
+     * actual PCF85063 INT wake on demand instead of waiting for the natural
+     * 07:50 alarm. ACTIVE_DURATION_SECS=30 in sdkconfig ensures the chip
+     * sleeps BEFORE the alarm fires (otherwise GPIO0 is already LOW when
+     * sleep runs and the chip loops without ever entering deep sleep).
+     *
+     * s_normal_mode = false skips the audio block so the test alarm
+     * survives to the next deep sleep.
+     *
+     * Delete this whole block once the fix is confirmed. */
+#if CONFIG_PCF85063_ENABLE
+    {
+        pcf85063_datetime_t now_dt;
+        if (pcf85063_read_datetime(&now_dt) == ESP_OK) {
+            int total = (int)now_dt.minute + 1;
+            uint8_t alarm_min = (uint8_t)(total % 60);
+            uint8_t alarm_hour = (uint8_t)((now_dt.hour + total / 60) % 24);
+            pcf85063_alarm_t test_alarm = {
+                .enable = true,
+                .minute = alarm_min,
+                .hour   = alarm_hour,
+                .day    = PCF85063_ALARM_DISABLE,
+                .weekday= PCF85063_ALARM_DISABLE,
+            };
+            ESP_LOGW("TEST_ALARM", "Setting PCF85063 alarm to %02u:%02u UTC (~1 min from %02u:%02u)",
+                     alarm_hour, alarm_min, now_dt.hour, now_dt.minute);
+            if (pcf85063_set_alarm(&test_alarm) == ESP_OK &&
+                pcf85063_enable_alarm_int(true) == ESP_OK) {
+                pcf85063_clear_alarm_flag();
+                s_rtc_alarm_armed = true;  /* sleep path must include GPIO0 */
+                s_normal_mode     = false; /* keep audio off so test alarm survives */
+                ESP_LOGW("TEST_ALARM", "armed; GPIO0 will wake the chip in ~1 min");
+            } else {
+                ESP_LOGE("TEST_ALARM", "failed to arm test alarm");
+            }
+        } else {
+            ESP_LOGE("TEST_ALARM", "pcf85063_read_datetime failed");
+        }
+    }
+#endif
+    /* ==== END TEST HACK ==== */
+
     if (s_wake_kind == WAKE_RTC && s_normal_mode && !clock_screen_is_night_time()) {
 #if CONFIG_PCF85063_ENABLE
         if (should_skip_alarm_today()) {
