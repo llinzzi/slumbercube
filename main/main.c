@@ -153,18 +153,20 @@ static bool arm_pcf85063_alarm_wakeup(void)
     agent_config_t agent_cfg;
     if (agent_config_load(&agent_cfg) == ESP_OK && !agent_cfg.enabled) {
         ESP_LOGW(TAG, "PCF85063: agent disabled, disabling alarm");
-        pcf85063_clear_alarm_flag();
+        pcf85063_alarm_t disabled = { .enable = false };
+        pcf85063_set_alarm(&disabled);
         pcf85063_enable_alarm_int(false);
         return false;
     }
 
-    /* Server explicitly disabled the alarm — honour it. Leave PCF85063
-     * registers untouched (whatever they were set to last cycle) and do not
-     * raise the IO0 wake pin. The caller will then also skip the internal
-     * timer fallback, leaving only the button to wake the device. */
+    /* Server explicitly disabled the alarm. Clear both the match registers
+     * and AIE so a later button/cold boot cannot revive a stale alarm. */
     const audio_alarm_config_t *srv = audio_get_alarm_config();
     if (srv && srv->disabled) {
-        ESP_LOGW(TAG, "PCF85063: server disabled alarm, skipping arm");
+        ESP_LOGW(TAG, "PCF85063: server disabled alarm");
+        pcf85063_alarm_t disabled = { .enable = false };
+        pcf85063_set_alarm(&disabled);
+        pcf85063_enable_alarm_int(false);
         return false;
     }
 
@@ -207,6 +209,42 @@ static bool arm_pcf85063_alarm_wakeup(void)
         ESP_LOGI(TAG, "PCF85063: alarm armed for %02d:%02d UTC (IO%d wake)",
                  wake_h, wake_m, CONFIG_PCF85063_INT_GPIO);
     }
+    return true;
+}
+
+/* The PCF85063 keeps alarm registers while the ESP is in deep sleep.  Restore
+ * a valid stored alarm after a button/cold boot so IO0 is included in the next
+ * deep-sleep wake mask.  A server-side disable clears these registers in the
+ * arm path above, so it cannot be accidentally resurrected here. */
+static bool restore_pcf85063_alarm_wakeup(void)
+{
+    if (!pcf85063_is_present()) return false;
+
+    pcf85063_alarm_t alarm;
+    if (pcf85063_read_alarm(&alarm) != ESP_OK || !alarm.enable ||
+        alarm.hour == PCF85063_ALARM_DISABLE ||
+        alarm.minute == PCF85063_ALARM_DISABLE) {
+        ESP_LOGI(TAG, "PCF85063: no stored alarm to restore");
+        return false;
+    }
+
+    if (pcf85063_enable_alarm_int(true) != ESP_OK) {
+        ESP_LOGW(TAG, "PCF85063: failed to restore alarm interrupt");
+        return false;
+    }
+
+    gpio_config_t int_cfg = { .pin_bit_mask = (1ULL << CONFIG_PCF85063_INT_GPIO),
+                               .mode = GPIO_MODE_INPUT, .pull_up_en = GPIO_PULLUP_ENABLE,
+                               .pull_down_en = GPIO_PULLDOWN_DISABLE,
+                               .intr_type = GPIO_INTR_DISABLE };
+    if (gpio_config(&int_cfg) != ESP_OK) {
+        ESP_LOGW(TAG, "PCF85063: failed to configure IO%d wake input",
+                 CONFIG_PCF85063_INT_GPIO);
+        return false;
+    }
+
+    ESP_LOGI(TAG, "PCF85063: restored %02u:%02u UTC alarm (IO%d wake)",
+             alarm.hour, alarm.minute, CONFIG_PCF85063_INT_GPIO);
     return true;
 }
 #endif
@@ -622,6 +660,7 @@ void app_main(void)
 #if CONFIG_PCF85063_ENABLE
     pcf85063_init();
     apply_pcf85063_time();
+    s_rtc_alarm_armed = restore_pcf85063_alarm_wakeup();
 #endif
     int64_t t3 = esp_timer_get_time();
 

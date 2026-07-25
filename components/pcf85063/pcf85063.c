@@ -135,8 +135,14 @@ esp_err_t pcf85063_init(void)
     err = write_regs(REG_CTRL1, &ctrl1, 1);
     if (err != ESP_OK) goto fail;
 
-    /* Clear Control_2: no alarm IRQ, no minute IRQ, clear AF and TF. */
-    uint8_t ctrl2 = 0x00;
+    /* Clear pending status flags without clobbering AIE.  Alarm registers
+     * and Control_2 survive ESP deep sleep because the PCF85063 remains
+     * powered; resetting Control_2 here used to silently disable a daily
+     * alarm every time the ESP woke for a button press. */
+    uint8_t ctrl2;
+    err = read_regs(REG_CTRL2, &ctrl2, 1);
+    if (err != ESP_OK) goto fail;
+    ctrl2 &= (uint8_t)~(CTRL2_AF | CTRL2_TF | CTRL2_MI | CTRL2_HMI);
     err = write_regs(REG_CTRL2, &ctrl2, 1);
     if (err != ESP_OK) goto fail;
 
