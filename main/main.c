@@ -76,6 +76,10 @@ static TaskHandle_t s_ntp_sync_task = NULL;
 
 static button_handle_t g_btn_right = NULL;
 static button_handle_t g_btn_left = NULL;
+/* A button wake starts while the active-low key is still held. If the button
+ * driver is initialized before release, it can report that same gesture as a
+ * short click and immediately put the freshly-woken device back to sleep. */
+static volatile bool s_ignore_wake_button_release = false;
 
 static volatile bool s_audio_playing = false;   /* read by button callbacks AND main loop */
 static volatile bool s_in_provisioning = false; /* read by button callbacks during captive portal */
@@ -344,6 +348,11 @@ static void apply_weather_and_indoor(const weather_data_t *w)
 /* 右键 short click: sleep immediately. Aborts captive portal if active. */
 static void right_short_click_cb(void *button_handle, void *usr_data)
 {
+    if (s_ignore_wake_button_release) {
+        s_ignore_wake_button_release = false;
+        ESP_LOGI(TAG, "右键 wake-release consumed (not sleeping again)");
+        return;
+    }
     ESP_LOGI(TAG, "右键 short click → sleep");
     if (s_in_provisioning) {
         wifi_provisioning_abort();
@@ -586,6 +595,7 @@ void app_main(void)
         if (wake_pins & (1ULL << CONFIG_WAKEUP_GPIO)) {
             audio_set_wake_source("btn");
             s_wake_kind = WAKE_BTN;
+            s_ignore_wake_button_release = true;
             ESP_LOGI(TAG, "Woke from 右键 (mask=0x%llX)", (unsigned long long)wake_pins);
             break;
         }
@@ -624,14 +634,27 @@ void app_main(void)
         break;
     }
 
-    /* Enable GPIO hold through deep sleep, and release any hold left from
-     * previous sleep cycle before reconfiguring pins. */
-    gpio_deep_sleep_hold_en();
+    /* Release the global deep-sleep hold before releasing individual pads.
+     * The old code called gpio_deep_sleep_hold_en() here, leaving the hold
+     * controller active after wake. On ESP32-C3 that can keep SSD1322 RST or
+     * the wake-input routing latched from the previous sleep cycle. */
+#if !SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP
+    gpio_deep_sleep_hold_dis();
+#endif
     gpio_hold_dis(PIN_NUM_RST);
     gpio_hold_dis(CONFIG_PIN_NS4168_CTRL);
     gpio_hold_dis(CONFIG_WAKEUP_GPIO);
 #if CONFIG_PCF85063_ENABLE
     gpio_hold_dis(CONFIG_PCF85063_INT_GPIO);
+#endif
+
+    /* Deep-sleep GPIO wake routing survives long enough to interfere with
+     * normal digital GPIO reads after wake, especially when IO0 (RTC alarm)
+     * was the source. Clear both possible routes before the button driver is
+     * initialized; the next sleep configures them again from wake_mask. */
+    gpio_wakeup_disable(CONFIG_WAKEUP_GPIO);
+#if CONFIG_PCF85063_ENABLE
+    gpio_wakeup_disable(CONFIG_PCF85063_INT_GPIO);
 #endif
 
     /* Hold all control and SPI pins at known levels before SSD1322 init.
@@ -729,6 +752,26 @@ void app_main(void)
     // Brief settle before sensor I2C (display already rendered)
     vTaskDelay(pdMS_TO_TICKS(10));
     int64_t t8 = esp_timer_get_time();
+
+    /* Consume the physical press which caused a button wake. Normally the key
+     * is released within a few hundred milliseconds, before iot_button starts.
+     * If it is still held after the timeout, the callback guard above consumes
+     * the eventual release instead of treating it as a new sleep request. */
+    if (s_wake_kind == WAKE_BTN) {
+        int waited_ms = 0;
+        while (gpio_get_level(CONFIG_WAKEUP_GPIO) == 0 && waited_ms < 1500) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            waited_ms += 10;
+        }
+        if (gpio_get_level(CONFIG_WAKEUP_GPIO) != 0) {
+            vTaskDelay(pdMS_TO_TICKS(30));  /* release debounce */
+            s_ignore_wake_button_release = false;
+            ESP_LOGI(TAG, "Wake button released after %d ms", waited_ms);
+        } else {
+            ESP_LOGW(TAG, "Wake button still held after %d ms; release will be consumed",
+                     waited_ms);
+        }
+    }
 
     // ── 右键 (电源) (wake / sleep / night toggle / factory reset) ──
     {
@@ -1280,6 +1323,13 @@ void app_main(void)
         wake_mask |= (1ULL << CONFIG_PCF85063_INT_GPIO);
         gpio_hold_en(CONFIG_PCF85063_INT_GPIO);
     }
+#endif
+
+    /* ESP32-C3 needs the global gate in addition to per-pad hold bits while
+     * the digital GPIO domain is powered down. Disable it immediately after
+     * the next wake (near the top of app_main). */
+#if !SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP
+    gpio_deep_sleep_hold_en();
 #endif
 
 #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
