@@ -36,6 +36,7 @@ static bool s_link_ready;
 static volatile bool s_command_pending;
 static bool s_command_started;
 static bool s_command_on;
+static volatile ble_light_status_t s_status = BLE_LIGHT_STATUS_STARTING;
 
 static int ble_light_gap_event(struct ble_gap_event *event, void *arg);
 static void ble_light_start_target_scan(void);
@@ -53,9 +54,15 @@ static void ble_light_reset_link(void)
     s_command_started = false;
 }
 
+static void ble_light_set_status(ble_light_status_t status)
+{
+    s_status = status;
+}
+
 static void ble_light_finish(uint16_t conn_handle, const char *reason)
 {
     ESP_LOGI(TAG, "%s", reason);
+    ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
     if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
         int rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         if (rc == BLE_HS_ENOTCONN) {
@@ -123,6 +130,7 @@ static int ble_light_on_chr(uint16_t conn_handle,
 
     s_link_ready = true;
     s_requested = false;
+    ble_light_set_status(BLE_LIGHT_STATUS_CONNECTED);
     ESP_LOGI(TAG, "blinkwh link ready; keeping connection open");
     if (s_command_pending) {
         ble_light_begin_write(conn_handle);
@@ -202,8 +210,11 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
             if (rc != 0) {
                 ESP_LOGW(TAG, "blinkwh connect could not start: rc=%d", rc);
                 s_connecting = false;
-                s_requested = false;
+                s_requested = true;
+                ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
+                ble_light_start_target_scan();
             } else {
+                ble_light_set_status(BLE_LIGHT_STATUS_CONNECTING);
                 ESP_LOGI(TAG, "connecting to whitelisted blinkwh");
             }
         }
@@ -214,7 +225,11 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
         if (s_requested && !s_connecting) {
             ESP_LOGW(TAG, "blinkwh was not seen within %d ms",
                      CONFIG_BLE_LIGHT_CONNECT_TIMEOUT_MS);
-            s_requested = false;
+            /* The configured lamp may advertise only once per second. Keep
+             * trying when one scan window misses it. */
+            s_requested = true;
+            ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
+            ble_light_start_target_scan();
         }
         return 0;
 
@@ -222,12 +237,14 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
         if (event->connect.status != 0) {
             ESP_LOGW(TAG, "connect failed: status=%d", event->connect.status);
             ble_light_reset_link();
+            ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
             s_requested = true;  /* Keep trying to establish the boot link. */
             ble_light_start_target_scan();
             return 0;
         }
 
         s_conn_handle = event->connect.conn_handle;
+        ble_light_set_status(BLE_LIGHT_STATUS_CONNECTING);
         ESP_LOGI(TAG, "connected; discovering blinkwh service");
         {
             int rc = ble_gattc_disc_svc_by_uuid(s_conn_handle,
@@ -246,6 +263,7 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
         /* The music session keeps a warm BLE link. Reconnect automatically
          * when blinkwh drops the connection or wakes from a low-power slot. */
         s_requested = true;
+        ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
         ble_light_start_target_scan();
         return 0;
     }
@@ -278,6 +296,8 @@ static void ble_light_start_target_scan(void)
         return;
     }
     s_scanning = true;
+    ble_light_set_status(s_link_ready ? BLE_LIGHT_STATUS_CONNECTED :
+                         BLE_LIGHT_STATUS_SCANNING);
     ESP_LOGI(TAG, "scanning only whitelisted blinkwh %s",
              CONFIG_BLE_LIGHT_DEVICE_ADDRESS);
 }
@@ -287,16 +307,19 @@ static void ble_light_on_sync(void)
     int rc = ble_hs_util_ensure_addr(0);
     if (rc != 0) {
         ESP_LOGE(TAG, "unable to establish BLE address: rc=%d", rc);
+        ble_light_set_status(BLE_LIGHT_STATUS_UNAVAILABLE);
         return;
     }
     rc = ble_hs_id_infer_auto(0, &s_own_addr_type);
     if (rc != 0) {
         ESP_LOGE(TAG, "unable to select BLE address type: rc=%d", rc);
+        ble_light_set_status(BLE_LIGHT_STATUS_UNAVAILABLE);
         return;
     }
     rc = ble_gap_wl_set(&s_peer_addr, 1);
     if (rc != 0) {
         ESP_LOGE(TAG, "could not configure blinkwh whitelist: rc=%d", rc);
+        ble_light_set_status(BLE_LIGHT_STATUS_UNAVAILABLE);
         return;
     }
     s_synced = true;
@@ -308,6 +331,7 @@ static void ble_light_on_reset(int reason)
     ESP_LOGW(TAG, "NimBLE reset: reason=%d", reason);
     s_synced = false;
     ble_light_reset_link();
+    ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
 }
 
 static void ble_light_host_task(void *param)
@@ -350,12 +374,14 @@ esp_err_t ble_light_init(void)
     }
 
     if (!ble_light_parse_peer_address()) {
+        ble_light_set_status(BLE_LIGHT_STATUS_UNAVAILABLE);
         return ESP_ERR_INVALID_ARG;
     }
 
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NimBLE init failed: %s", esp_err_to_name(err));
+        ble_light_set_status(BLE_LIGHT_STATUS_UNAVAILABLE);
         return err;
     }
 
@@ -364,6 +390,7 @@ esp_err_t ble_light_init(void)
     nimble_port_freertos_init(ble_light_host_task);
     s_initialized = true;
     s_requested = true;  /* Establish the persistent blinkwh link at boot. */
+    ble_light_set_status(BLE_LIGHT_STATUS_STARTING);
     ble_light_start_target_scan();
     ESP_LOGI(TAG, "NimBLE central initialized; blinkwh link requested");
     return ESP_OK;
@@ -398,6 +425,11 @@ esp_err_t ble_light_turn_off(void)
     return ble_light_set(false);
 }
 
+ble_light_status_t ble_light_get_status(void)
+{
+    return s_status;
+}
+
 #else
 
 esp_err_t ble_light_init(void)
@@ -413,6 +445,11 @@ esp_err_t ble_light_turn_on(void)
 esp_err_t ble_light_turn_off(void)
 {
     return ESP_ERR_NOT_SUPPORTED;
+}
+
+ble_light_status_t ble_light_get_status(void)
+{
+    return BLE_LIGHT_STATUS_DISABLED;
 }
 
 #endif

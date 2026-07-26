@@ -40,6 +40,7 @@ static lv_obj_t *time_label = NULL;
 static lv_obj_t *weather_label = NULL;
 static lv_obj_t *temp_label = NULL;
 static lv_obj_t *station_label = NULL;
+static lv_obj_t *ble_status_label = NULL;
 static char s_indoor_suffix[32] = {0};
 static bool s_indicator_on = false;
 
@@ -344,6 +345,18 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_label_set_text(station_label, "");
     lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
 
+    /* Visible glyphs use only the top part of this font's 18 px line box,
+     * leaving enough room for a compact connection state at the bottom. */
+    ble_status_label = lv_label_create(container);
+    lv_obj_set_style_text_color(ble_status_label, lv_color_make(0x99, 0x99, 0x99), 0);
+    lv_obj_set_style_text_font(ble_status_label, &lv_font_station, 0);
+    lv_obj_set_style_text_align(ble_status_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(ble_status_label, 0, 48);
+    lv_obj_set_size(ble_status_label, CANVAS_W, 16);
+    lv_label_set_long_mode(ble_status_label, LV_LABEL_LONG_CLIP);
+    lv_label_set_text(ble_status_label, "");
+    lv_obj_add_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);
+
     return container;
 }
 
@@ -364,6 +377,17 @@ void clock_screen_set_audio_indicator(bool on)
 {
     s_indicator_on = on;
     if (canvas) lv_obj_invalidate(canvas);
+}
+
+void clock_screen_set_ble_status(const char *status)
+{
+    if (!ble_status_label || night_mode) return;
+    if (status && status[0]) {
+        lv_label_set_text(ble_status_label, status);
+        lv_obj_clear_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+        lv_obj_add_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);
+    }
 }
 
 void clock_screen_set_indoor_env(float temp_c, float humidity)
@@ -523,6 +547,7 @@ void clock_screen_set_night_mode(bool enable)
         if (weather_label) lv_obj_add_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
         if (temp_label) lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
         if (station_label) lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
+        if (ble_status_label) lv_obj_add_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);
     } else {
         ssd1322_set_contrast(0x9F); /* restore normal contrast */
         if (canvas) lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
@@ -533,6 +558,9 @@ void clock_screen_set_night_mode(bool enable)
         }
         if (station_label && lv_label_get_text(station_label)[0]) {
             lv_obj_remove_flag(station_label, LV_OBJ_FLAG_HIDDEN);
+        }
+        if (ble_status_label && lv_label_get_text(ble_status_label)[0]) {
+            lv_obj_remove_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);
         }
         draw_chart();
     }

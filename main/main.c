@@ -102,6 +102,28 @@ static bool s_normal_mode              = false; /* true only when we reached the
                                                         * until the user actually gets WiFi
                                                         * working. */
 
+#if CONFIG_AUDIO_ENABLE && CONFIG_BLE_LIGHT_ENABLE
+static void update_ble_light_status(void)
+{
+    static ble_light_status_t last_status = BLE_LIGHT_STATUS_DISABLED;
+    ble_light_status_t status = ble_light_get_status();
+    if (status == last_status) return;
+
+    const char *text = "蓝牙:不可用";
+    switch (status) {
+    case BLE_LIGHT_STATUS_STARTING:     text = "蓝牙:启动中"; break;
+    case BLE_LIGHT_STATUS_SCANNING:     text = "蓝牙:搜索中"; break;
+    case BLE_LIGHT_STATUS_CONNECTING:   text = "蓝牙:连接中"; break;
+    case BLE_LIGHT_STATUS_CONNECTED:    text = "蓝牙:已连接"; break;
+    case BLE_LIGHT_STATUS_RECONNECTING: text = "蓝牙:重连中"; break;
+    case BLE_LIGHT_STATUS_UNAVAILABLE:  text = "蓝牙:不可用"; break;
+    case BLE_LIGHT_STATUS_DISABLED:     text = ""; break;
+    }
+    clock_screen_set_ble_status(text);
+    last_status = status;
+}
+#endif
+
 /* Try the on-board SHTC3 sensor. Returns true and fills *temp_c on success.
  * Hardware variant without the sensor just returns false; display omits the value. */
 static bool read_indoor_env(float *temp_c, float *humidity)
@@ -858,6 +880,7 @@ void app_main(void)
             ESP_LOGW(TAG, "BLE night light unavailable: %s", esp_err_to_name(ble_err));
         }
         log_heap("ble_light_init");
+        update_ble_light_status();
     }
 #endif
 
@@ -1068,6 +1091,10 @@ void app_main(void)
     for (uint32_t tick = 0; tick < (uint32_t)CONFIG_ACTIVE_DURATION_SECS; tick++) {
         uint32_t notified = 0;
         xTaskNotifyWait(0, EVENT_BUTTON_MASK, &notified, pdMS_TO_TICKS(1000));
+
+#if CONFIG_AUDIO_ENABLE && CONFIG_BLE_LIGHT_ENABLE
+        update_ble_light_status();
+#endif
 
         /* 右键 short click → sleep */
         if (notified & EVENT_SLEEP_PENDING) {

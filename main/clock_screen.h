@@ -15,6 +15,8 @@ void clock_screen_set_night_override(int8_t override);
 int8_t clock_screen_get_night_override(void);
 void clock_screen_set_station_name(const char *name);
 void clock_screen_set_audio_indicator(bool on);
+/* Short BLE state text displayed below the station/song row. */
+void clock_screen_set_ble_status(const char *status);
 /* Free the canvas pixel buffer (16KB). Safe to call before deep sleep;
  * canvas will no longer be drawable after this. */
 void clock_screen_deinit(void);
