@@ -746,7 +746,11 @@ void app_main(void)
      * flush here runs immediately and overwrites GDDRAM with the real screen.
      * This is the second half of the anti-white-flash fix (the first half
      * is painting the default screen black in lvgl_adapter_init). */
-    lv_refr_now(lv_disp_get_default());
+    /* The LVGL worker is already active at this point.  Go through the
+     * adapter so this first wake frame cannot race lv_timer_handler(); a
+     * direct lv_refr_now() here could leave the SSD1322 black after waking
+     * from deep sleep. */
+    lvgl_adapter_refr_now();
     int64_t t6 = esp_timer_get_time();
 
     // Turn on display AFTER first frame is in GDDRAM — eliminates white flash on wake
