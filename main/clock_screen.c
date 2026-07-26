@@ -345,12 +345,10 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_label_set_text(station_label, "");
     lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
 
-    /* Use LVGL's bundled ASCII font here.  The station font is intentionally
-     * a subsetted Chinese font, so it can render an empty label for new
-     * status words that were not included in its glyph set. */
+    /* Match the station / button-hint text so the state reads as its suffix. */
     ble_status_label = lv_label_create(container);
-    lv_obj_set_style_text_color(ble_status_label, lv_color_make(0xCC, 0xCC, 0xCC), 0);
-    lv_obj_set_style_text_font(ble_status_label, &lv_font_montserrat_14, 0);
+    lv_obj_set_style_text_color(ble_status_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
+    lv_obj_set_style_text_font(ble_status_label, &lv_font_station, 0);
     lv_obj_set_style_text_align(ble_status_label, LV_TEXT_ALIGN_RIGHT, 0);
     /* Share the known-visible station row instead of relying on the final
      * 14 pixels, which some panels crop.  A black backing keeps it legible
@@ -358,8 +356,8 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_set_style_bg_color(ble_status_label, lv_color_black(), 0);
     lv_obj_set_style_bg_opa(ble_status_label, LV_OPA_COVER, 0);
     lv_obj_set_style_pad_all(ble_status_label, 0, 0);
-    lv_obj_set_pos(ble_status_label, 166, 36);
-    lv_obj_set_size(ble_status_label, 90, 18);
+    lv_obj_set_pos(ble_status_label, 164, 36);
+    lv_obj_set_size(ble_status_label, 92, 18);
     lv_label_set_long_mode(ble_status_label, LV_LABEL_LONG_CLIP);
     lv_label_set_text(ble_status_label, "");
     lv_obj_add_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);

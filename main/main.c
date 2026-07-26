@@ -109,14 +109,14 @@ static void update_ble_light_status(void)
     ble_light_status_t status = ble_light_get_status();
     if (status == last_status) return;
 
-    const char *text = "BT: OFF";
+    const char *text = "蓝牙:不可用";
     switch (status) {
-    case BLE_LIGHT_STATUS_STARTING:     text = "BT: INIT"; break;
-    case BLE_LIGHT_STATUS_SCANNING:     text = "BT: SCAN"; break;
-    case BLE_LIGHT_STATUS_CONNECTING:   text = "BT: CONN"; break;
-    case BLE_LIGHT_STATUS_CONNECTED:    text = "BT: OK"; break;
-    case BLE_LIGHT_STATUS_RECONNECTING: text = "BT: RETRY"; break;
-    case BLE_LIGHT_STATUS_UNAVAILABLE:  text = "BT: OFF"; break;
+    case BLE_LIGHT_STATUS_STARTING:     text = "蓝牙:启动中"; break;
+    case BLE_LIGHT_STATUS_SCANNING:     text = "蓝牙:搜索中"; break;
+    case BLE_LIGHT_STATUS_CONNECTING:   text = "蓝牙:连接中"; break;
+    case BLE_LIGHT_STATUS_CONNECTED:    text = "蓝牙:已连接"; break;
+    case BLE_LIGHT_STATUS_RECONNECTING: text = "蓝牙:重连中"; break;
+    case BLE_LIGHT_STATUS_UNAVAILABLE:  text = "蓝牙:不可用"; break;
     case BLE_LIGHT_STATUS_DISABLED:     text = ""; break;
     }
     clock_screen_set_ble_status(text);
