@@ -81,12 +81,14 @@ menu "SlumberCube Configuration"
     menu "Bluetooth Night Light"
         config BLE_LIGHT_ENABLE
             bool "Turn on blinkwh light when audio starts"
-            default y
+            default n
+            depends on BT_NIMBLE_ENABLED
             help
-                On successful audio playback, discover only the configured
-                WCH blinkwh BLE device via the controller whitelist, then
-                write 0x01 to its LED characteristic (0xFFE1). The operation
-                is asynchronous and never attempts nearby devices.
+                Requires Bluetooth -> NimBLE to be enabled first. On successful
+                audio playback, discover only the configured WCH blinkwh BLE
+                device via the controller whitelist, then write 0x01 to its
+                LED characteristic (0xFFE1). The operation is asynchronous and
+                never attempts nearby devices.
         config BLE_LIGHT_DEVICE_ADDRESS
             string "blinkwh public BLE address"
             default "0c:3d:5e:a6:63:c0"
