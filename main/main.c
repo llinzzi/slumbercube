@@ -66,11 +66,13 @@ static void sync_pcf85063_after_ntp(uint32_t timeout_ms);
 /* Forward declaration — the audio-start path also kicks off a background
  * NTP sync; full implementation lives further down. */
 static void ntp_sync_task(void *arg);
+static void start_ntp_sync_task(const char *name);
 #define EVENT_BUTTON_MASK          (EVENT_SLEEP_PENDING | EVENT_AUDIO_TOGGLE | \
                                     EVENT_PROVISIONING_REQUEST | EVENT_NEXT_TRACK | \
                                     EVENT_NIGHT_TOGGLE | EVENT_NTP_SYNC)
 
 static TaskHandle_t s_main_task = NULL;  /* set at top of app_main() */
+static TaskHandle_t s_ntp_sync_task = NULL;
 
 static button_handle_t g_btn_right = NULL;
 static button_handle_t g_btn_left = NULL;
@@ -427,6 +429,7 @@ static void ntp_sync_task(void *arg)
                                  "skipping SNTP sync");
             clock_screen_set_station_name("网络未连接");
             ESP_LOGI("NTP_SYNC", "worker done");
+            s_ntp_sync_task = NULL;
             vTaskDelete(NULL);
             return;
         }
@@ -441,7 +444,26 @@ static void ntp_sync_task(void *arg)
         clock_screen_set_station_name("时间同步超时,请稍候");
     }
     ESP_LOGI("NTP_SYNC", "worker done");
+    s_ntp_sync_task = NULL;
     vTaskDelete(NULL);
+}
+
+/* Coalesce repeated sync requests while the one-shot worker is alive. Button
+ * events and the RTC-wake path can otherwise overlap and consume another 3KB
+ * stack while both workers perform the same network/RTC operation. */
+static void start_ntp_sync_task(const char *name)
+{
+    if (s_ntp_sync_task) {
+        ESP_LOGI("NTP_SYNC", "worker already running, request coalesced");
+        return;
+    }
+
+    BaseType_t created = xTaskCreate(ntp_sync_task, name, 3072, NULL, 1,
+                                     &s_ntp_sync_task);
+    if (created != pdPASS) {
+        s_ntp_sync_task = NULL;
+        ESP_LOGE("NTP_SYNC", "failed to create worker");
+    }
 }
 
 /* 左键 short click: agent enabled → toggle audio. The first time the user
@@ -888,7 +910,7 @@ void app_main(void)
                  * comment in audio_start_playback(). The RTC alarm-wake
                  * path should not block the main loop on a 30 s SNTP
                  * round-trip — audio / button handling stays responsive. */
-                xTaskCreate(ntp_sync_task, "ntp_sync_w", 3072, NULL, 1, NULL);
+                start_ntp_sync_task("ntp_sync_w");
 #endif
                 log_heap("wifi_connected");
             }
@@ -1050,7 +1072,7 @@ void app_main(void)
          * The main loop is not responsible for the SNTP poll at all; the
          * helper just kicks it off and exits. */
         if (notified & EVENT_NTP_SYNC) {
-            xTaskCreate(ntp_sync_task, "ntp_sync", 3072, NULL, 1, NULL);
+            start_ntp_sync_task("ntp_sync");
         }
 
         /* 左键 long press → next track (skip current, fetch new from /api/esp) */
@@ -1232,7 +1254,7 @@ void app_main(void)
     audio_deinit();
 #endif
 
-    /* Free canvas buffer (16KB) — safe, canvas is not drawn again */
+    /* Free the packed I4 canvas buffer (~8KB) — safe, canvas is not drawn again */
     clock_screen_deinit();
 
     /* Kill display and amp after audio tasks are stopped */

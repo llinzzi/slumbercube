@@ -337,18 +337,12 @@ static esp_err_t scan_handler(httpd_req_t *req)
     }
     esp_wifi_scan_get_ap_records(&ap_count, records);
 
-    /* Build JSON. Each entry: {"ssid":"...","rssi":-65,"auth":2}.
-     * Escape backslash and double-quote in SSID. */
-    char *buf = malloc(2048);
-    if (buf == NULL) {
-        free(records);
-        httpd_resp_set_status(req, "500 Internal Server Error");
-        return httpd_resp_send(req, "[]", HTTPD_RESP_USE_STRLEN);
-    }
-    size_t off = 0;
-    off += snprintf(buf + off, 2048 - off, "[");
+    /* Stream JSON instead of retaining a 2KB response buffer alongside the
+     * scan records. Each entry is bounded by the 32-byte SSID plus escaping. */
+    httpd_resp_set_type(req, "application/json");
+    esp_err_t send_ret = httpd_resp_send_chunk(req, "[", 1);
     bool first = true;
-    for (uint16_t i = 0; i < ap_count && off < 2000; i++) {
+    for (uint16_t i = 0; i < ap_count && send_ret == ESP_OK; i++) {
         /* Skip hidden / empty SSIDs. */
         if (records[i].ssid[0] == 0) continue;
 
@@ -367,18 +361,26 @@ static esp_err_t scan_handler(httpd_req_t *req)
         }
         esc[eo] = 0;
 
-        off += snprintf(buf + off, 2048 - off,
-                        "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
-                        first ? "" : ",", esc,
-                        records[i].rssi, records[i].authmode);
+        char item[144];
+        int item_len = snprintf(item, sizeof(item),
+                                "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
+                                first ? "" : ",", esc,
+                                records[i].rssi, records[i].authmode);
+        if (item_len < 0 || item_len >= (int)sizeof(item)) {
+            send_ret = ESP_FAIL;
+            break;
+        }
+        send_ret = httpd_resp_send_chunk(req, item, item_len);
         first = false;
     }
-    off += snprintf(buf + off, 2048 - off, "]");
 
-    httpd_resp_set_type(req, "application/json");
-    esp_err_t send_ret = httpd_resp_send(req, buf, off);
+    if (send_ret == ESP_OK) {
+        send_ret = httpd_resp_send_chunk(req, "]", 1);
+    }
+    if (send_ret == ESP_OK) {
+        send_ret = httpd_resp_send_chunk(req, NULL, 0);
+    }
     free(records);
-    free(buf);
     return send_ret;
 }
 

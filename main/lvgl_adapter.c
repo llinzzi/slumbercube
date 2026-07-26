@@ -145,8 +145,10 @@ esp_err_t lvgl_adapter_init(void)
 
     lv_display_set_color_format(g_disp, LV_COLOR_FORMAT_L8);
 
-    /* 1/4 screen partial buffer to reduce DMA memory usage for TLS */
-    size_t buf_size = LCD_H_RES * LCD_V_RES / 4;
+    /* Eight scanlines are enough in LVGL partial-render mode. Keeping this
+     * buffer to 1/8 screen saves 2KB of scarce DMA-capable internal RAM; LVGL
+     * transparently splits taller invalidated areas into additional flushes. */
+    size_t buf_size = LCD_H_RES * LCD_V_RES / 8;
 
     /* 全屏 I4 镜像：128 字节/行 × 64 行 = 8192 字节。作为持久 GDDRAM 镜像，
      * 让 flush 回调能以整宽发送任意 partial area（见 lvgl_flush_cb 注释）。 */
