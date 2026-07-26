@@ -2,6 +2,7 @@
 
 #include "lvgl.h"
 #include "audio_player_wrapper.h"
+#include <stdbool.h>
 
 lv_obj_t *clock_screen_create(lv_obj_t *parent);
 void clock_screen_set_data(const weather_data_t *data);
@@ -15,8 +16,8 @@ void clock_screen_set_night_override(int8_t override);
 int8_t clock_screen_get_night_override(void);
 void clock_screen_set_station_name(const char *name);
 void clock_screen_set_audio_indicator(bool on);
-/* Short BLE state text displayed below the station/song row. */
-void clock_screen_set_ble_status(const char *status);
+/* Show a compact BLE marker after the alarm.  Blinking means connecting. */
+void clock_screen_set_ble_indicator(bool visible, bool blinking);
 /* Free the canvas pixel buffer (16KB). Safe to call before deep sleep;
  * canvas will no longer be drawable after this. */
 void clock_screen_deinit(void);

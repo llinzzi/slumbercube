@@ -6,7 +6,10 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "esp_bt.h"
 #include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #include "nimble/nimble_port.h"
 #include "nimble/nimble_port_freertos.h"
 #include "host/ble_gatt.h"
@@ -37,10 +40,13 @@ static volatile bool s_command_pending;
 static bool s_command_started;
 static bool s_command_on;
 static volatile ble_light_status_t s_status = BLE_LIGHT_STATUS_STARTING;
+static volatile bool s_release_requested;
+static volatile bool s_stack_released;
 
 static int ble_light_gap_event(struct ble_gap_event *event, void *arg);
 static void ble_light_start_target_scan(void);
 static void ble_light_begin_write(uint16_t conn_handle);
+static void ble_light_release_stack(const char *reason);
 
 static void ble_light_reset_link(void)
 {
@@ -59,24 +65,65 @@ static void ble_light_set_status(ble_light_status_t status)
     s_status = status;
 }
 
-static void ble_light_finish(uint16_t conn_handle, const char *reason)
+/* A failed boot connection must not retain the sizeable NimBLE/controller
+ * allocations while audio is playing.  nimble_port_stop() waits for host
+ * events, so it must run in this separate task rather than in a GAP callback. */
+static void ble_light_release_task(void *arg)
 {
-    ESP_LOGI(TAG, "%s", reason);
-    ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
-    if (conn_handle != BLE_HS_CONN_HANDLE_NONE) {
-        int rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
-        if (rc == BLE_HS_ENOTCONN) {
-            /* No disconnect event will follow when the link is already gone. */
-            ble_light_reset_link();
-            s_requested = true;
-            ble_light_start_target_scan();
-        } else if (rc != 0) {
-            ESP_LOGW(TAG, "disconnect failed: rc=%d", rc);
-            ble_light_reset_link();
-            s_requested = true;
-            ble_light_start_target_scan();
+    (void)arg;
+    int rc = nimble_port_stop();
+    if (rc != 0) {
+        ESP_LOGE(TAG, "NimBLE stop failed: rc=%d", rc);
+    } else {
+        esp_err_t err = nimble_port_deinit();
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "NimBLE deinit failed: %s", esp_err_to_name(err));
+        } else {
+            /* This hands the controller's reserved BLE RAM back to the
+             * system heap. It is intentionally permanent until the next
+             * wake/reset, which prevents a failed lamp from consuming audio
+             * memory for the rest of this active session. */
+            err = esp_bt_mem_release(ESP_BT_MODE_BLE);
+            if (err != ESP_OK) {
+                ESP_LOGW(TAG, "BLE memory release failed: %s", esp_err_to_name(err));
+            } else {
+                ESP_LOGI(TAG, "BLE stack stopped; controller memory released");
+            }
         }
     }
+
+    ble_light_reset_link();
+    s_synced = false;
+    s_initialized = false;
+    s_stack_released = true;
+    s_release_requested = false;
+    ble_light_set_status(BLE_LIGHT_STATUS_UNAVAILABLE);
+    vTaskDelete(NULL);
+}
+
+static void ble_light_release_stack(const char *reason)
+{
+    if (s_release_requested || s_stack_released) return;
+
+    ESP_LOGW(TAG, "%s; stopping BLE and releasing memory", reason);
+    s_requested = false;
+    s_scanning = false;
+    s_connecting = false;
+    s_link_ready = false;
+    s_command_pending = false;
+    ble_light_set_status(BLE_LIGHT_STATUS_UNAVAILABLE);
+    s_release_requested = true;
+    if (xTaskCreate(ble_light_release_task, "ble_release", 3072, NULL, 4,
+                    NULL) != pdPASS) {
+        ESP_LOGE(TAG, "unable to create BLE release task");
+        s_release_requested = false;
+    }
+}
+
+static void ble_light_finish(uint16_t conn_handle, const char *reason)
+{
+    (void)conn_handle;
+    ble_light_release_stack(reason);
 }
 
 static int ble_light_on_write(uint16_t conn_handle,
@@ -209,10 +256,7 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
                                      NULL, ble_light_gap_event, NULL);
             if (rc != 0) {
                 ESP_LOGW(TAG, "blinkwh connect could not start: rc=%d", rc);
-                s_connecting = false;
-                s_requested = true;
-                ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
-                ble_light_start_target_scan();
+                ble_light_release_stack("blinkwh connection could not start");
             } else {
                 ble_light_set_status(BLE_LIGHT_STATUS_CONNECTING);
                 ESP_LOGI(TAG, "connecting to whitelisted blinkwh");
@@ -225,11 +269,7 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
         if (s_requested && !s_connecting) {
             ESP_LOGW(TAG, "blinkwh was not seen within %d ms",
                      CONFIG_BLE_LIGHT_CONNECT_TIMEOUT_MS);
-            /* The configured lamp may advertise only once per second. Keep
-             * trying when one scan window misses it. */
-            s_requested = true;
-            ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
-            ble_light_start_target_scan();
+            ble_light_release_stack("blinkwh was not found");
         }
         return 0;
 
@@ -237,9 +277,7 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
         if (event->connect.status != 0) {
             ESP_LOGW(TAG, "connect failed: status=%d", event->connect.status);
             ble_light_reset_link();
-            ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
-            s_requested = true;  /* Keep trying to establish the boot link. */
-            ble_light_start_target_scan();
+            ble_light_release_stack("blinkwh connection failed");
             return 0;
         }
 
@@ -260,11 +298,7 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT: {
         ESP_LOGI(TAG, "disconnected (reason=%d)", event->disconnect.reason);
         ble_light_reset_link();
-        /* The music session keeps a warm BLE link. Reconnect automatically
-         * when blinkwh drops the connection or wakes from a low-power slot. */
-        s_requested = true;
-        ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
-        ble_light_start_target_scan();
+        ble_light_release_stack("blinkwh disconnected");
         return 0;
     }
 
@@ -292,7 +326,7 @@ static void ble_light_start_target_scan(void)
                           &params, ble_light_gap_event, NULL);
     if (rc != 0) {
         ESP_LOGW(TAG, "blinkwh target scan could not start: rc=%d", rc);
-        s_requested = false;
+        ble_light_release_stack("blinkwh scan could not start");
         return;
     }
     s_scanning = true;
@@ -307,19 +341,19 @@ static void ble_light_on_sync(void)
     int rc = ble_hs_util_ensure_addr(0);
     if (rc != 0) {
         ESP_LOGE(TAG, "unable to establish BLE address: rc=%d", rc);
-        ble_light_set_status(BLE_LIGHT_STATUS_UNAVAILABLE);
+        ble_light_release_stack("BLE address setup failed");
         return;
     }
     rc = ble_hs_id_infer_auto(0, &s_own_addr_type);
     if (rc != 0) {
         ESP_LOGE(TAG, "unable to select BLE address type: rc=%d", rc);
-        ble_light_set_status(BLE_LIGHT_STATUS_UNAVAILABLE);
+        ble_light_release_stack("BLE address type setup failed");
         return;
     }
     rc = ble_gap_wl_set(&s_peer_addr, 1);
     if (rc != 0) {
         ESP_LOGE(TAG, "could not configure blinkwh whitelist: rc=%d", rc);
-        ble_light_set_status(BLE_LIGHT_STATUS_UNAVAILABLE);
+        ble_light_release_stack("BLE whitelist setup failed");
         return;
     }
     s_synced = true;
@@ -331,7 +365,7 @@ static void ble_light_on_reset(int reason)
     ESP_LOGW(TAG, "NimBLE reset: reason=%d", reason);
     s_synced = false;
     ble_light_reset_link();
-    ble_light_set_status(BLE_LIGHT_STATUS_RECONNECTING);
+    ble_light_release_stack("NimBLE reset");
 }
 
 static void ble_light_host_task(void *param)
@@ -369,6 +403,9 @@ static bool ble_light_parse_peer_address(void)
 
 esp_err_t ble_light_init(void)
 {
+    if (s_stack_released || s_release_requested) {
+        return ESP_ERR_INVALID_STATE;
+    }
     if (s_initialized) {
         return ESP_OK;
     }
@@ -382,6 +419,10 @@ esp_err_t ble_light_init(void)
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "NimBLE init failed: %s", esp_err_to_name(err));
         ble_light_set_status(BLE_LIGHT_STATUS_UNAVAILABLE);
+        /* nimble_port_init cleans partial controller setup itself. Give its
+         * static BLE region back as well; it cannot be reused until wake. */
+        (void)esp_bt_mem_release(ESP_BT_MODE_BLE);
+        s_stack_released = true;
         return err;
     }
 

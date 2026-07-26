@@ -109,18 +109,25 @@ static void update_ble_light_status(void)
     ble_light_status_t status = ble_light_get_status();
     if (status == last_status) return;
 
-    const char *text = "蓝牙:不可用";
+    bool visible = false;
+    bool blinking = false;
     switch (status) {
-    case BLE_LIGHT_STATUS_STARTING:     text = "蓝牙:启动中"; break;
-    case BLE_LIGHT_STATUS_SCANNING:     text = "蓝牙:搜索中"; break;
-    case BLE_LIGHT_STATUS_CONNECTING:   text = "蓝牙:连接中"; break;
-    case BLE_LIGHT_STATUS_CONNECTED:    text = "蓝牙:已连接"; break;
-    case BLE_LIGHT_STATUS_RECONNECTING: text = "蓝牙:重连中"; break;
-    case BLE_LIGHT_STATUS_UNAVAILABLE:  text = "蓝牙:不可用"; break;
-    case BLE_LIGHT_STATUS_DISABLED:     text = ""; break;
+    case BLE_LIGHT_STATUS_STARTING:
+    case BLE_LIGHT_STATUS_SCANNING:
+    case BLE_LIGHT_STATUS_CONNECTING:
+    case BLE_LIGHT_STATUS_RECONNECTING:
+        visible = true;
+        blinking = true;
+        break;
+    case BLE_LIGHT_STATUS_CONNECTED:
+        visible = true;
+        break;
+    case BLE_LIGHT_STATUS_UNAVAILABLE:
+    case BLE_LIGHT_STATUS_DISABLED:
+        break;
     }
-    clock_screen_set_ble_status(text);
-    ESP_LOGI(TAG, "BLE status UI: %s", text);
+    clock_screen_set_ble_indicator(visible, blinking);
+    ESP_LOGI(TAG, "BLE indicator UI: visible=%d blinking=%d", visible, blinking);
     last_status = status;
 }
 #endif

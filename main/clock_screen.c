@@ -40,9 +40,12 @@ static lv_obj_t *time_label = NULL;
 static lv_obj_t *weather_label = NULL;
 static lv_obj_t *temp_label = NULL;
 static lv_obj_t *station_label = NULL;
-static lv_obj_t *ble_status_label = NULL;
+static lv_obj_t *ble_indicator_label = NULL;
 static char s_indoor_suffix[32] = {0};
 static bool s_indicator_on = false;
+static volatile bool s_ble_indicator_visible = false;
+static volatile bool s_ble_indicator_blinking = false;
+static bool s_ble_indicator_phase = false;
 
 static const weather_data_t *weather = NULL;
 static bool night_mode = false;
@@ -255,6 +258,26 @@ void clock_screen_update_time(void)
         return;
     }
 
+    if (ble_indicator_label) {
+        /* The LVGL task owns the actual label visibility.  The main task
+         * only changes the two state flags through set_ble_indicator(). */
+        const char *alarm = temp_label ? lv_label_get_text(temp_label) : "";
+        lv_point_t alarm_size = {0};
+        lv_text_get_size(&alarm_size, alarm, &lv_font_station, 0, 0,
+                         LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+        int x = SEP_X + 7 + alarm_size.x + 3;
+        if (x > CANVAS_W - 12) x = CANVAS_W - 12;
+        lv_obj_set_pos(ble_indicator_label, x, 18);
+
+        s_ble_indicator_phase = !s_ble_indicator_phase;
+        if (s_ble_indicator_visible &&
+            (!s_ble_indicator_blinking || s_ble_indicator_phase)) {
+            lv_obj_remove_flag(ble_indicator_label, LV_OBJ_FLAG_HIDDEN);
+        } else {
+            lv_obj_add_flag(ble_indicator_label, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+
     time_t now = time(NULL);
     struct tm tm_now = {0};
     localtime_r(&now, &tm_now);
@@ -345,22 +368,15 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_label_set_text(station_label, "");
     lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
 
-    /* Match the station / button-hint text so the state reads as its suffix. */
-    ble_status_label = lv_label_create(container);
-    lv_obj_set_style_text_color(ble_status_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
-    lv_obj_set_style_text_font(ble_status_label, &lv_font_station, 0);
-    lv_obj_set_style_text_align(ble_status_label, LV_TEXT_ALIGN_RIGHT, 0);
-    /* Share the known-visible station row instead of relying on the final
-     * 14 pixels, which some panels crop.  A black backing keeps it legible
-     * over the scrolling song name. */
-    lv_obj_set_style_bg_color(ble_status_label, lv_color_black(), 0);
-    lv_obj_set_style_bg_opa(ble_status_label, LV_OPA_COVER, 0);
-    lv_obj_set_style_pad_all(ble_status_label, 0, 0);
-    lv_obj_set_pos(ble_status_label, 164, 36);
-    lv_obj_set_size(ble_status_label, 92, 18);
-    lv_label_set_long_mode(ble_status_label, LV_LABEL_LONG_CLIP);
-    lv_label_set_text(ble_status_label, "");
-    lv_obj_add_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);
+    /* A small marker is positioned after the current alarm text by
+     * clock_screen_update_time(), which runs inside the LVGL task. */
+    ble_indicator_label = lv_label_create(container);
+    lv_obj_set_style_text_color(ble_indicator_label, lv_color_make(0xFF, 0xFF, 0xFF), 0);
+    lv_obj_set_style_text_font(ble_indicator_label, &lv_font_station, 0);
+    lv_obj_set_pos(ble_indicator_label, CANVAS_W - 12, 18);
+    lv_obj_set_size(ble_indicator_label, 12, 18);
+    lv_label_set_text(ble_indicator_label, "B");
+    lv_obj_add_flag(ble_indicator_label, LV_OBJ_FLAG_HIDDEN);
 
     return container;
 }
@@ -384,15 +400,10 @@ void clock_screen_set_audio_indicator(bool on)
     if (canvas) lv_obj_invalidate(canvas);
 }
 
-void clock_screen_set_ble_status(const char *status)
+void clock_screen_set_ble_indicator(bool visible, bool blinking)
 {
-    if (!ble_status_label || night_mode) return;
-    if (status && status[0]) {
-        lv_label_set_text(ble_status_label, status);
-        lv_obj_clear_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);
-    } else {
-        lv_obj_add_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);
-    }
+    s_ble_indicator_visible = visible;
+    s_ble_indicator_blinking = blinking;
 }
 
 void clock_screen_set_indoor_env(float temp_c, float humidity)
@@ -552,7 +563,7 @@ void clock_screen_set_night_mode(bool enable)
         if (weather_label) lv_obj_add_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
         if (temp_label) lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
         if (station_label) lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
-        if (ble_status_label) lv_obj_add_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);
+        if (ble_indicator_label) lv_obj_add_flag(ble_indicator_label, LV_OBJ_FLAG_HIDDEN);
     } else {
         ssd1322_set_contrast(0x9F); /* restore normal contrast */
         if (canvas) lv_obj_add_flag(canvas, LV_OBJ_FLAG_HIDDEN);
@@ -563,9 +574,6 @@ void clock_screen_set_night_mode(bool enable)
         }
         if (station_label && lv_label_get_text(station_label)[0]) {
             lv_obj_remove_flag(station_label, LV_OBJ_FLAG_HIDDEN);
-        }
-        if (ble_status_label && lv_label_get_text(ble_status_label)[0]) {
-            lv_obj_remove_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);
         }
         draw_chart();
     }
