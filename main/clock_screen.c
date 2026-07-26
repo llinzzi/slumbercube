@@ -5,7 +5,6 @@
 #include "ssd1322_driver.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
-#include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <stdio.h>
@@ -18,6 +17,15 @@ static const char *TAG = "WEATHER_CHART";
 #define TIME_W   128
 #define SEP_X    TIME_W
 
+/* The canvas only uses 16 SSD1322 gray levels, so an indexed 4-bit canvas is
+ * sufficient. LVGL stores a 16-entry ARGB palette before the packed pixels. */
+#define CANVAS_PALETTE_ENTRIES 16
+#define CANVAS_STRIDE          (CANVAS_W / 2)
+#define CANVAS_PIXEL_BYTES     (CANVAS_STRIDE * CANVAS_H)
+#define CANVAS_BUF_BYTES       (CANVAS_PIXEL_BYTES + \
+                                CANVAS_PALETTE_ENTRIES * sizeof(lv_color32_t) + \
+                                LV_DRAW_BUF_ALIGN)
+
 #define COL_DATE   0xFF
 #define COL_TEMP   0xFF
 #define COL_LOW    0xFF
@@ -25,12 +33,14 @@ static const char *TAG = "WEATHER_CHART";
 
 static lv_obj_t *container = NULL;
 static lv_obj_t *canvas = NULL;
+static lv_draw_buf_t canvas_draw_buf;
 static uint8_t *canvas_buf = NULL;
+static uint8_t *canvas_pixels = NULL;
 static lv_obj_t *time_label = NULL;
 static lv_obj_t *weather_label = NULL;
 static lv_obj_t *temp_label = NULL;
-static lv_obj_t *indoor_label = NULL;
 static lv_obj_t *station_label = NULL;
+static char s_indoor_suffix[32] = {0};
 static bool s_indicator_on = false;
 
 static const weather_data_t *weather = NULL;
@@ -42,7 +52,20 @@ static int8_t s_night_override = -1;  /* -1=auto, 0=force day, 1=force night */
 static void draw_pixel(int x, int y, uint8_t gray)
 {
     if (x < 0 || x >= CANVAS_W || y < 0 || y >= CANVAS_H) return;
-    canvas_buf[y * CANVAS_W + x] = gray;
+    uint8_t *px = &canvas_pixels[y * CANVAS_STRIDE + x / 2];
+    uint8_t index = gray >> 4;
+    if (x & 1) {
+        *px = (*px & 0xF0) | index;
+    } else {
+        *px = (*px & 0x0F) | (index << 4);
+    }
+}
+
+static void clear_canvas(void)
+{
+    if (canvas_pixels) {
+        memset(canvas_pixels, 0, CANVAS_PIXEL_BYTES);
+    }
 }
 
 static void draw_line(int x0, int y0, int x1, int y1, uint8_t gray)
@@ -71,7 +94,7 @@ static void draw_chart(void)
      * draw_chart every ~10s but night clock draws every 1s). */
     if (night_mode) return;
 
-    memset(canvas_buf, 0, CANVAS_W * CANVAS_H);
+    clear_canvas();
 
     /* ── Left: Time ── */
     time_t now = time(NULL);
@@ -86,8 +109,7 @@ static void draw_chart(void)
     /* ── Right: Weather (current condition + indoor temp in parens) ── */
     {
         char buf[64];
-        const char *indoor = (indoor_label && lv_label_get_text(indoor_label)[0])
-                             ? lv_label_get_text(indoor_label) : NULL;
+        const char *indoor = s_indoor_suffix[0] ? s_indoor_suffix : NULL;
         ESP_LOGI(TAG, "weather row: text='%s' indoor=%s",
                  weather->daily[0].current_text, indoor ? indoor : "(none)");
         if (indoor) {
@@ -142,7 +164,7 @@ static void apply_grid_mask(void)
     for (int y = 0; y < CANVAS_H; y++) {
         for (int x = 0; x < CANVAS_W; x++) {
             if ((x & 7) || (y & 7)) {
-                canvas_buf[y * CANVAS_W + x] = 0;
+                draw_pixel(x, y, 0);
             }
         }
     }
@@ -193,7 +215,7 @@ static void draw_night_clock(void)
     last_minute = tm_now.tm_min;
     last_indicator = s_indicator_on;
 
-    memset(canvas_buf, 0, CANVAS_W * CANVAS_H);
+    clear_canvas();
 
     int total_w = SEG_W * 4 + COLON_W + SEG_GAP * 4;
     int start_x = ((CANVAS_W - total_w) / 2) & ~7; /* force multiple of 8 */
@@ -217,7 +239,7 @@ static void draw_night_clock(void)
     if (s_indicator_on) {
         for (int y = 0; y < 2; y++)
             for (int x = 0; x < 2; x++)
-                canvas_buf[y * CANVAS_W + x] = NIGHT_COLOR;
+                draw_pixel(x, y, NIGHT_COLOR);
     }
 
     lv_obj_invalidate(canvas);
@@ -253,15 +275,30 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_add_flag(container, LV_OBJ_FLAG_HIDDEN);
 
-    canvas_buf = heap_caps_malloc(CANVAS_W * CANVAS_H, MALLOC_CAP_8BIT);
+    canvas_buf = heap_caps_calloc(1, CANVAS_BUF_BYTES, MALLOC_CAP_8BIT);
     if (!canvas_buf) {
-        ESP_LOGE(TAG, "OOM for canvas buffer (%d)", CANVAS_W * CANVAS_H);
+        ESP_LOGE(TAG, "OOM for packed I4 canvas buffer");
         return container;
     }
-    memset(canvas_buf, 0, CANVAS_W * CANVAS_H);
+    if (lv_draw_buf_init(&canvas_draw_buf, CANVAS_W, CANVAS_H,
+                         LV_COLOR_FORMAT_I4, CANVAS_STRIDE,
+                         canvas_buf, CANVAS_BUF_BYTES) != LV_RESULT_OK) {
+        ESP_LOGE(TAG, "Failed to initialize packed I4 canvas buffer");
+        heap_caps_free(canvas_buf);
+        canvas_buf = NULL;
+        return container;
+    }
+    canvas_pixels = lv_draw_buf_goto_xy(&canvas_draw_buf, 0, 0);
+    clear_canvas();
 
     canvas = lv_canvas_create(container);
-    lv_canvas_set_buffer(canvas, canvas_buf, CANVAS_W, CANVAS_H, LV_COLOR_FORMAT_L8);
+    lv_canvas_set_draw_buf(canvas, &canvas_draw_buf);
+    for (uint8_t i = 0; i < CANVAS_PALETTE_ENTRIES; i++) {
+        uint8_t gray = i * 0x11;
+        lv_canvas_set_palette(canvas, i,
+                              lv_color_to_32(lv_color_make(gray, gray, gray),
+                                             LV_OPA_COVER));
+    }
     lv_obj_set_pos(canvas, 0, 0);
 
     /* ── Time label (left, big digital-7) ── */
@@ -272,11 +309,6 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_obj_set_pos(time_label, 0, 2);
     lv_obj_set_size(time_label, TIME_W, 48);
     lv_label_set_text(time_label, "");
-
-    /* ── Indoor temp cache (hidden label, used by draw_chart) ── */
-    indoor_label = lv_label_create(container);
-    lv_label_set_text(indoor_label, "");
-    lv_obj_add_flag(indoor_label, LV_OBJ_FLAG_HIDDEN);
 
     /* ── Weather text (right half, top row — with indoor in parens) ── */
     weather_label = lv_label_create(container);
@@ -336,19 +368,17 @@ void clock_screen_set_audio_indicator(bool on)
 
 void clock_screen_set_indoor_env(float temp_c, float humidity)
 {
-    if (!indoor_label) return;
-
     if (isnan(temp_c)) {  /* sensor absent */
         ESP_LOGI(TAG, "indoor env: sensor absent (NaN)");
-        lv_label_set_text(indoor_label, "");
+        s_indoor_suffix[0] = '\0';
         if (weather && weather->valid) draw_chart();
         return;
     }
 
-    char buf[32];
-    snprintf(buf, sizeof(buf), "(内%.1f\xc2\xb0%.0f%%)", temp_c, humidity);
-    ESP_LOGI(TAG, "indoor env: %.1f°C %.0f%%RH  →  suffix='%s'", temp_c, humidity, buf);
-    lv_label_set_text(indoor_label, buf);
+    snprintf(s_indoor_suffix, sizeof(s_indoor_suffix),
+             "(内%.1f\xc2\xb0%.0f%%)", temp_c, humidity);
+    ESP_LOGI(TAG, "indoor env: %.1f°C %.0f%%RH  →  suffix='%s'",
+             temp_c, humidity, s_indoor_suffix);
     if (weather && weather->valid) draw_chart();
 }
 
@@ -492,7 +522,6 @@ void clock_screen_set_night_mode(bool enable)
         if (time_label) lv_obj_add_flag(time_label, LV_OBJ_FLAG_HIDDEN);
         if (weather_label) lv_obj_add_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
         if (temp_label) lv_obj_add_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
-        if (indoor_label) lv_obj_add_flag(indoor_label, LV_OBJ_FLAG_HIDDEN);
         if (station_label) lv_obj_add_flag(station_label, LV_OBJ_FLAG_HIDDEN);
     } else {
         ssd1322_set_contrast(0x9F); /* restore normal contrast */
@@ -513,7 +542,8 @@ void clock_screen_set_night_mode(bool enable)
 void clock_screen_deinit(void)
 {
     if (canvas_buf) {
-        free(canvas_buf);
+        heap_caps_free(canvas_buf);
         canvas_buf = NULL;
+        canvas_pixels = NULL;
     }
 }

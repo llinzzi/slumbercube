@@ -69,14 +69,20 @@ static void sync_pcf85063_after_ntp(uint32_t timeout_ms);
 /* Forward declaration — the audio-start path also kicks off a background
  * NTP sync; full implementation lives further down. */
 static void ntp_sync_task(void *arg);
+static void start_ntp_sync_task(const char *name);
 #define EVENT_BUTTON_MASK          (EVENT_SLEEP_PENDING | EVENT_AUDIO_TOGGLE | \
                                     EVENT_PROVISIONING_REQUEST | EVENT_NEXT_TRACK | \
                                     EVENT_NIGHT_TOGGLE | EVENT_NTP_SYNC)
 
 static TaskHandle_t s_main_task = NULL;  /* set at top of app_main() */
+static TaskHandle_t s_ntp_sync_task = NULL;
 
 static button_handle_t g_btn_right = NULL;
 static button_handle_t g_btn_left = NULL;
+/* A button wake starts while the active-low key is still held. If the button
+ * driver is initialized before release, it can report that same gesture as a
+ * short click and immediately put the freshly-woken device back to sleep. */
+static volatile bool s_ignore_wake_button_release = false;
 
 static volatile bool s_audio_playing = false;   /* read by button callbacks AND main loop */
 static volatile bool s_in_provisioning = false; /* read by button callbacks during captive portal */
@@ -345,6 +351,11 @@ static void apply_weather_and_indoor(const weather_data_t *w)
 /* 右键 short click: sleep immediately. Aborts captive portal if active. */
 static void right_short_click_cb(void *button_handle, void *usr_data)
 {
+    if (s_ignore_wake_button_release) {
+        s_ignore_wake_button_release = false;
+        ESP_LOGI(TAG, "右键 wake-release consumed (not sleeping again)");
+        return;
+    }
     ESP_LOGI(TAG, "右键 short click → sleep");
     if (s_in_provisioning) {
         wifi_provisioning_abort();
@@ -430,6 +441,7 @@ static void ntp_sync_task(void *arg)
                                  "skipping SNTP sync");
             clock_screen_set_station_name("网络未连接");
             ESP_LOGI("NTP_SYNC", "worker done");
+            s_ntp_sync_task = NULL;
             vTaskDelete(NULL);
             return;
         }
@@ -444,7 +456,26 @@ static void ntp_sync_task(void *arg)
         clock_screen_set_station_name("时间同步超时,请稍候");
     }
     ESP_LOGI("NTP_SYNC", "worker done");
+    s_ntp_sync_task = NULL;
     vTaskDelete(NULL);
+}
+
+/* Coalesce repeated sync requests while the one-shot worker is alive. Button
+ * events and the RTC-wake path can otherwise overlap and consume another 3KB
+ * stack while both workers perform the same network/RTC operation. */
+static void start_ntp_sync_task(const char *name)
+{
+    if (s_ntp_sync_task) {
+        ESP_LOGI("NTP_SYNC", "worker already running, request coalesced");
+        return;
+    }
+
+    BaseType_t created = xTaskCreate(ntp_sync_task, name, 3072, NULL, 1,
+                                     &s_ntp_sync_task);
+    if (created != pdPASS) {
+        s_ntp_sync_task = NULL;
+        ESP_LOGE("NTP_SYNC", "failed to create worker");
+    }
 }
 
 /* 左键 short click: agent enabled → toggle audio. The first time the user
@@ -567,6 +598,7 @@ void app_main(void)
         if (wake_pins & (1ULL << CONFIG_WAKEUP_GPIO)) {
             audio_set_wake_source("btn");
             s_wake_kind = WAKE_BTN;
+            s_ignore_wake_button_release = true;
             ESP_LOGI(TAG, "Woke from 右键 (mask=0x%llX)", (unsigned long long)wake_pins);
             break;
         }
@@ -605,14 +637,27 @@ void app_main(void)
         break;
     }
 
-    /* Enable GPIO hold through deep sleep, and release any hold left from
-     * previous sleep cycle before reconfiguring pins. */
-    gpio_deep_sleep_hold_en();
+    /* Release the global deep-sleep hold before releasing individual pads.
+     * The old code called gpio_deep_sleep_hold_en() here, leaving the hold
+     * controller active after wake. On ESP32-C3 that can keep SSD1322 RST or
+     * the wake-input routing latched from the previous sleep cycle. */
+#if !SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP
+    gpio_deep_sleep_hold_dis();
+#endif
     gpio_hold_dis(PIN_NUM_RST);
     gpio_hold_dis(CONFIG_PIN_NS4168_CTRL);
     gpio_hold_dis(CONFIG_WAKEUP_GPIO);
 #if CONFIG_PCF85063_ENABLE
     gpio_hold_dis(CONFIG_PCF85063_INT_GPIO);
+#endif
+
+    /* Deep-sleep GPIO wake routing survives long enough to interfere with
+     * normal digital GPIO reads after wake, especially when IO0 (RTC alarm)
+     * was the source. Clear both possible routes before the button driver is
+     * initialized; the next sleep configures them again from wake_mask. */
+    gpio_wakeup_disable(CONFIG_WAKEUP_GPIO);
+#if CONFIG_PCF85063_ENABLE
+    gpio_wakeup_disable(CONFIG_PCF85063_INT_GPIO);
 #endif
 
     /* Hold all control and SPI pins at known levels before SSD1322 init.
@@ -710,6 +755,26 @@ void app_main(void)
     // Brief settle before sensor I2C (display already rendered)
     vTaskDelay(pdMS_TO_TICKS(10));
     int64_t t8 = esp_timer_get_time();
+
+    /* Consume the physical press which caused a button wake. Normally the key
+     * is released within a few hundred milliseconds, before iot_button starts.
+     * If it is still held after the timeout, the callback guard above consumes
+     * the eventual release instead of treating it as a new sleep request. */
+    if (s_wake_kind == WAKE_BTN) {
+        int waited_ms = 0;
+        while (gpio_get_level(CONFIG_WAKEUP_GPIO) == 0 && waited_ms < 1500) {
+            vTaskDelay(pdMS_TO_TICKS(10));
+            waited_ms += 10;
+        }
+        if (gpio_get_level(CONFIG_WAKEUP_GPIO) != 0) {
+            vTaskDelay(pdMS_TO_TICKS(30));  /* release debounce */
+            s_ignore_wake_button_release = false;
+            ESP_LOGI(TAG, "Wake button released after %d ms", waited_ms);
+        } else {
+            ESP_LOGW(TAG, "Wake button still held after %d ms; release will be consumed",
+                     waited_ms);
+        }
+    }
 
     // ── 右键 (电源) (wake / sleep / night toggle / factory reset) ──
     {
@@ -904,7 +969,7 @@ void app_main(void)
                  * comment in audio_start_playback(). The RTC alarm-wake
                  * path should not block the main loop on a 30 s SNTP
                  * round-trip — audio / button handling stays responsive. */
-                xTaskCreate(ntp_sync_task, "ntp_sync_w", 3072, NULL, 1, NULL);
+                start_ntp_sync_task("ntp_sync_w");
 #endif
                 log_heap("wifi_connected");
             }
@@ -1066,7 +1131,7 @@ void app_main(void)
          * The main loop is not responsible for the SNTP poll at all; the
          * helper just kicks it off and exits. */
         if (notified & EVENT_NTP_SYNC) {
-            xTaskCreate(ntp_sync_task, "ntp_sync", 3072, NULL, 1, NULL);
+            start_ntp_sync_task("ntp_sync");
         }
 
         /* 左键 long press → next track (skip current, fetch new from /api/esp) */
@@ -1248,7 +1313,7 @@ void app_main(void)
     audio_deinit();
 #endif
 
-    /* Free canvas buffer (16KB) — safe, canvas is not drawn again */
+    /* Free the packed I4 canvas buffer (~8KB) — safe, canvas is not drawn again */
     clock_screen_deinit();
 
     /* Kill display and amp after audio tasks are stopped */
@@ -1274,6 +1339,13 @@ void app_main(void)
         wake_mask |= (1ULL << CONFIG_PCF85063_INT_GPIO);
         gpio_hold_en(CONFIG_PCF85063_INT_GPIO);
     }
+#endif
+
+    /* ESP32-C3 needs the global gate in addition to per-pad hold bits while
+     * the digital GPIO domain is powered down. Disable it immediately after
+     * the next wake (near the top of app_main). */
+#if !SOC_GPIO_SUPPORT_HOLD_SINGLE_IO_IN_DSLP
+    gpio_deep_sleep_hold_en();
 #endif
 
 #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP

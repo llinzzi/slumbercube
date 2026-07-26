@@ -551,6 +551,7 @@ esp_err_t audio_init(void)
     esp_err_t err = i2s_new_channel(&chan_cfg, &s_i2s_tx_chan, NULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2s_new_channel: %s", esp_err_to_name(err));
+        gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0);
         return err;
     }
 
@@ -571,12 +572,18 @@ esp_err_t audio_init(void)
     err = i2s_channel_init_std_mode(s_i2s_tx_chan, &std_cfg);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2s_init_std_mode: %s", esp_err_to_name(err));
+        i2s_del_channel(s_i2s_tx_chan);
+        s_i2s_tx_chan = NULL;
+        gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0);
         return err;
     }
 
     err = i2s_channel_enable(s_i2s_tx_chan);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2s_channel_enable: %s", esp_err_to_name(err));
+        i2s_del_channel(s_i2s_tx_chan);
+        s_i2s_tx_chan = NULL;
+        gpio_set_level(CONFIG_PIN_NS4168_CTRL, 0);
         return err;
     }
 
@@ -625,7 +632,8 @@ static esp_err_t audio_play_url_inner(const char *url)
         ESP_LOGE(TAG, "stream_new failed (free=%" PRIu32 " largest=%" PRIu32 ")",
                  esp_get_free_heap_size(),
                  heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
-        audio_stop_internal(false);
+        audio_mixer_deinit();
+        s_mixer_ready = false;
         return ESP_FAIL;
     }
 
@@ -646,7 +654,11 @@ static esp_err_t audio_play_url_inner(const char *url)
     s_http_stream = audio_http_stream_open(&http_cfg);
     if (!s_http_stream) {
         ESP_LOGE(TAG, "http_stream_open failed");
-        audio_stop_internal(false);
+        audio_stream_stop(s_stream);
+        audio_stream_delete(s_stream);
+        s_stream = NULL;
+        audio_mixer_deinit();
+        s_mixer_ready = false;
         return ESP_FAIL;
     }
     ESP_LOGI(TAG, "Heap after HTTP stream: free=%" PRIu32 " largest=%" PRIu32,
