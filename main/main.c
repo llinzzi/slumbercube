@@ -1,5 +1,6 @@
 #include "esp_log.h"
 #include "driver/gpio.h"
+#include "driver/usb_serial_jtag.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "ssd1322_driver.h"
@@ -19,6 +20,8 @@
 #include "nvs_flash.h"
 #include <time.h>
 #include <math.h>
+#include <ctype.h>
+#include <strings.h>
 #include "iot_button.h"
 #include "button_gpio.h"
 #include "shtc3.h"
@@ -65,6 +68,7 @@ static void log_heap(const char *label)
 /* Forward declaration — the audio path uses sync_pcf85063_after_ntp() and
  * the implementation lives further down in this file. */
 static void sync_pcf85063_after_ntp(uint32_t timeout_ms);
+static void left_short_click_cb(void *button_handle, void *usr_data);
 
 /* Forward declaration — the audio-start path also kicks off a background
  * NTP sync; full implementation lives further down. */
@@ -101,6 +105,78 @@ static bool s_normal_mode              = false; /* true only when we reached the
                                                         * sensor stay completely uninitialised
                                                         * until the user actually gets WiFi
                                                         * working. */
+
+/* ── USB serial automation commands ────────────────────────────────
+ * Send a line through the same USB serial device used for logs:
+ *   left     simulate the left button's short press
+ *   right    simulate the right button's short press (sleep)
+ *   help     print this short command list
+ * Commands deliberately notify the main task, matching the physical-button
+ * path instead of mutating audio or display state from the serial task. */
+static void serial_test_handle_command(char *line)
+{
+    while (isspace((unsigned char)*line)) line++;
+    char *end = line + strlen(line);
+    while (end > line && isspace((unsigned char)end[-1])) *--end = '\0';
+
+    if (strcasecmp(line, "left") == 0) {
+        ESP_LOGI("SERIAL_TEST", "simulate LEFT short press");
+        left_short_click_cb(NULL, NULL);
+    } else if (strcasecmp(line, "right") == 0) {
+        ESP_LOGI("SERIAL_TEST", "simulate RIGHT short press (sleep)");
+        if (s_in_provisioning) wifi_provisioning_abort();
+        if (s_main_task) xTaskNotify(s_main_task, EVENT_SLEEP_PENDING, eSetBits);
+    } else if (strcasecmp(line, "help") == 0 || strcmp(line, "?") == 0) {
+        ESP_LOGI("SERIAL_TEST", "commands: left | right | help");
+    } else if (line[0] != '\0') {
+        ESP_LOGW("SERIAL_TEST", "unknown command '%s' (use help)", line);
+    }
+}
+
+static void serial_test_task(void *arg)
+{
+    (void)arg;
+    char line[32] = {0};
+    size_t used = 0;
+    uint8_t input[16];
+
+    while (true) {
+        int count = usb_serial_jtag_read_bytes(input, sizeof(input), portMAX_DELAY);
+        for (int i = 0; i < count; i++) {
+            char c = (char)input[i];
+            if (c == '\r' || c == '\n') {
+                if (used) {
+                    line[used] = '\0';
+                    serial_test_handle_command(line);
+                    used = 0;
+                }
+            } else if ((c == '\b' || c == 0x7f) && used) {
+                used--;
+            } else if (isprint((unsigned char)c) && used < sizeof(line) - 1) {
+                line[used++] = c;
+            }
+        }
+    }
+}
+
+static void serial_test_init(void)
+{
+    usb_serial_jtag_driver_config_t cfg = {
+        .tx_buffer_size = 64,
+        .rx_buffer_size = 128,
+    };
+    esp_err_t err = usb_serial_jtag_driver_install(&cfg);
+    if (err != ESP_OK) {
+        ESP_LOGW("SERIAL_TEST", "USB command input unavailable: %s", esp_err_to_name(err));
+        return;
+    }
+    if (xTaskCreate(serial_test_task, "serial_test", 3072, NULL, 2, NULL) != pdPASS) {
+        ESP_LOGE("SERIAL_TEST", "failed to start command task");
+        usb_serial_jtag_driver_uninstall();
+        return;
+    }
+    ESP_LOGI("SERIAL_TEST", "commands ready: left | right | help");
+}
 
 #if CONFIG_AUDIO_ENABLE && CONFIG_BLE_LIGHT_ENABLE
 static void update_ble_light_status(void)
@@ -857,6 +933,8 @@ void app_main(void)
     }
 
     int64_t t_post = esp_timer_get_time();
+
+    serial_test_init();
 
     /* ── Boot timing summary (microseconds from app_main entry) ── */
     ESP_LOGI(TAG, "╔══════════════════════════════════════════╗");
