@@ -503,16 +503,17 @@ static void left_short_click_cb(void *button_handle, void *usr_data)
             s_ntp_synced_this_wake = true;
             bits |= EVENT_NTP_SYNC;
             ESP_LOGI(TAG, "左键 short click → stop + NTP sync (first stop this wake)");
-            clock_screen_set_station_name("同步时间...");
         } else {
             ESP_LOGI(TAG, "左键 short click → audio toggle (stopping=%d)",
                      stopping);
         }
+        /* This callback is run by the button driver, not the LVGL owner.
+         * Do not call clock_screen_* here: those functions invalidate LVGL
+         * objects and previously raced lv_timer_handler during pause. The
+         * main loop consumes this notification and applies every UI update. */
         if (s_main_task) xTaskNotify(s_main_task, bits, eSetBits);
-        clock_screen_set_audio_indicator(!s_audio_playing);
     } else {
         ESP_LOGI(TAG, "左键 short click → NTP sync (agent off)");
-        clock_screen_set_station_name("同步时间...");
         if (s_main_task) xTaskNotify(s_main_task, EVENT_NTP_SYNC, eSetBits);
     }
 #else
