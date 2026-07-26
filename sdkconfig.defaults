@@ -15,6 +15,8 @@ CONFIG_LV_FONT_FMT_TXT_LARGE=y
 
 # BLE central used to send the blinkwh CH582 night-light's FFE1=0x01 command
 # after a successful audio start. Keep only the roles/services we need.
+CONFIG_BLE_LIGHT_DEVICE_ADDRESS="0c:3d:5e:a6:63:c0"
+CONFIG_BLE_LIGHT_CONNECT_TIMEOUT_MS=10000
 CONFIG_BT_ENABLED=y
 CONFIG_BT_BLUEDROID_ENABLED=n
 CONFIG_BT_NIMBLE_ENABLED=y

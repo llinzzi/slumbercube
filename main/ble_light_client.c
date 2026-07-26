@@ -3,6 +3,7 @@
 #if CONFIG_BLE_LIGHT_ENABLE
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 #include "esp_log.h"
@@ -11,35 +12,30 @@
 #include "host/ble_gatt.h"
 #include "host/ble_gap.h"
 #include "host/ble_hs.h"
-#include "host/ble_hs_adv.h"
 #include "host/util/util.h"
 
 /* These UUIDs are defined by the CH582 blinkwh firmware:
  * FFE0 = blinkwh service; FFE1 = writable LED state (0x01 turns it on). */
 #define BLINKWH_SERVICE_UUID 0xFFE0
 #define BLINKWH_LED_UUID     0xFFE1
-#define BLINKWH_DEVICE_NAME  "blinkwh_CH"
-#define BLE_LIGHT_SCAN_INTERVAL 160 /* 100 ms */
-#define BLE_LIGHT_SCAN_WINDOW   160 /* continuous during the short scan */
 
 static const char *TAG = "BLE_LIGHT";
 static uint8_t s_own_addr_type;
+static ble_addr_t s_peer_addr;
 static uint16_t s_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_service_start;
 static uint16_t s_service_end;
 static uint16_t s_led_value_handle;
 static bool s_initialized;
 static bool s_synced;
-static volatile bool s_requested; /* scan / connection / write in progress */
-static bool s_scanning;
+static volatile bool s_requested; /* connection / write in progress */
 static bool s_connecting;
 static volatile bool s_desired_on;
 static bool s_command_started;
 static bool s_command_on;
-static uint16_t s_scan_report_count;
 
 static int ble_light_gap_event(struct ble_gap_event *event, void *arg);
-static void ble_light_start_scan(void);
+static void ble_light_start_connect(void);
 
 static void ble_light_reset_link(void)
 {
@@ -153,116 +149,10 @@ static int ble_light_on_service(uint16_t conn_handle,
     return 0;
 }
 
-static bool ble_light_ad_contains_target(const uint8_t *data, uint8_t data_len)
-{
-    uint8_t offset = 0;
-    while (offset < data_len) {
-        uint8_t field_len = data[offset];
-        if (field_len == 0) {
-            break;
-        }
-        if ((uint16_t)offset + field_len + 1 > data_len) {
-            return false;
-        }
-
-        uint8_t type = data[offset + 1];
-        const uint8_t *value = &data[offset + 2];
-        uint8_t value_len = field_len - 1;
-        if (type == BLE_HS_ADV_TYPE_INCOMP_UUIDS16 ||
-            type == BLE_HS_ADV_TYPE_COMP_UUIDS16) {
-            for (uint8_t i = 0; i + 1 < value_len; i += 2) {
-                if (value[i] == (BLINKWH_SERVICE_UUID & 0xff) &&
-                    value[i + 1] == (BLINKWH_SERVICE_UUID >> 8)) {
-                    return true;
-                }
-            }
-        } else if ((type == BLE_HS_ADV_TYPE_INCOMP_NAME ||
-                    type == BLE_HS_ADV_TYPE_COMP_NAME) &&
-                   value_len == strlen(BLINKWH_DEVICE_NAME) &&
-                   memcmp(value, BLINKWH_DEVICE_NAME, value_len) == 0) {
-            return true;
-        }
-        offset += field_len + 1;
-    }
-    return false;
-}
-
-static bool ble_light_is_blinkwh(const struct ble_gap_disc_desc *disc)
-{
-    if (ble_light_ad_contains_target(disc->data, disc->length_data)) {
-        return true;
-    }
-
-    struct ble_hs_adv_fields fields;
-    memset(&fields, 0, sizeof(fields));
-    if (ble_hs_adv_parse_fields(&fields, disc->data, disc->length_data) != 0) {
-        if (s_scan_report_count <= 5) {
-            ESP_LOGW(TAG, "could not parse BLE advertisement (%u bytes)",
-                     disc->length_data);
-        }
-        return false;
-    }
-
-    for (uint8_t i = 0; i < fields.num_uuids16; i++) {
-        if (ble_uuid_u16(&fields.uuids16[i].u) == BLINKWH_SERVICE_UUID) {
-            return true;
-        }
-    }
-
-    /* The current blinkwh firmware advertises FFE0 in the primary packet.
-     * Retain the complete-name match as a compatibility fallback for older
-     * firmware revisions that exposed the service only after connection. */
-    if (fields.name != NULL &&
-        fields.name_len == strlen(BLINKWH_DEVICE_NAME) &&
-        memcmp(fields.name, BLINKWH_DEVICE_NAME, fields.name_len) == 0) {
-        return true;
-    }
-    return false;
-}
-
 static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
     switch (event->type) {
-    case BLE_GAP_EVENT_DISC:
-        s_scan_report_count++;
-        if (s_scan_report_count <= 5) {
-            ESP_LOGI(TAG,
-                     "scan report #%u addr=%02x:%02x:%02x:%02x:%02x:%02x rssi=%d len=%u",
-                     s_scan_report_count,
-                     event->disc.addr.val[5], event->disc.addr.val[4],
-                     event->disc.addr.val[3], event->disc.addr.val[2],
-                     event->disc.addr.val[1], event->disc.addr.val[0],
-                     event->disc.rssi, event->disc.length_data);
-        }
-        if (!s_requested || s_connecting || !ble_light_is_blinkwh(&event->disc)) {
-            return 0;
-        }
-        s_connecting = true;
-        s_scanning = false;
-        (void)ble_gap_disc_cancel();
-        {
-            int rc = ble_gap_connect(s_own_addr_type, &event->disc.addr, 10000,
-                                     NULL, ble_light_gap_event, NULL);
-            if (rc != 0) {
-                ESP_LOGW(TAG, "connect could not start: rc=%d", rc);
-                s_connecting = false;
-                s_requested = false;
-            } else {
-                ESP_LOGI(TAG, "connecting to blinkwh");
-            }
-        }
-        return 0;
-
-    case BLE_GAP_EVENT_DISC_COMPLETE:
-        s_scanning = false;
-        if (s_requested && !s_connecting) {
-            ESP_LOGW(TAG, "blinkwh not found within %d ms (%u reports)",
-                     CONFIG_BLE_LIGHT_SCAN_TIMEOUT_MS, s_scan_report_count);
-            s_requested = false;
-        }
-        return 0;
-
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status != 0) {
             ESP_LOGW(TAG, "connect failed: status=%d", event->connect.status);
@@ -293,7 +183,7 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
             /* A newer audio state arrived while the previous GATT write was
              * in flight. Apply that latest state in a new short connection. */
             s_requested = true;
-            ble_light_start_scan();
+            ble_light_start_connect();
         }
         return 0;
     }
@@ -303,32 +193,23 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
     }
 }
 
-static void ble_light_start_scan(void)
+static void ble_light_start_connect(void)
 {
-    if (!s_synced || !s_requested || s_scanning || s_connecting) {
+    if (!s_synced || !s_requested || s_connecting) {
         return;
     }
 
-    struct ble_gap_disc_params params = {0};
-    /* Use a continuous active window for this short scan. Current blinkwh
-     * firmware advertises FFE0 in the primary packet; active scanning and
-     * duplicate delivery also support older revisions that expose only the
-     * blinkwh_CH name in the scan response. The ESP32-C3 coexistence scheduler
-     * still arbitrates Wi-Fi radio time. */
-    params.itvl = BLE_LIGHT_SCAN_INTERVAL;
-    params.window = BLE_LIGHT_SCAN_WINDOW;
-    params.passive = 0;
-    params.filter_duplicates = 1;
-    s_scan_report_count = 0;
-    int rc = ble_gap_disc(s_own_addr_type, CONFIG_BLE_LIGHT_SCAN_TIMEOUT_MS,
-                          &params, ble_light_gap_event, NULL);
+    int rc = ble_gap_connect(s_own_addr_type, &s_peer_addr,
+                             CONFIG_BLE_LIGHT_CONNECT_TIMEOUT_MS,
+                             NULL, ble_light_gap_event, NULL);
     if (rc != 0) {
-        ESP_LOGW(TAG, "scan could not start: rc=%d", rc);
+        ESP_LOGW(TAG, "direct blinkwh connect could not start: rc=%d", rc);
         s_requested = false;
         return;
     }
-    s_scanning = true;
-    ESP_LOGI(TAG, "scanning for blinkwh service FFE0");
+    s_connecting = true;
+    ESP_LOGI(TAG, "direct connecting to blinkwh %s",
+             CONFIG_BLE_LIGHT_DEVICE_ADDRESS);
 }
 
 static void ble_light_on_sync(void)
@@ -344,14 +225,13 @@ static void ble_light_on_sync(void)
         return;
     }
     s_synced = true;
-    ble_light_start_scan();
+    ble_light_start_connect();
 }
 
 static void ble_light_on_reset(int reason)
 {
     ESP_LOGW(TAG, "NimBLE reset: reason=%d", reason);
     s_synced = false;
-    s_scanning = false;
     ble_light_reset_link();
 }
 
@@ -362,10 +242,40 @@ static void ble_light_host_task(void *param)
     nimble_port_freertos_deinit();
 }
 
+static bool ble_light_parse_peer_address(void)
+{
+    unsigned int octets[6];
+    if (sscanf(CONFIG_BLE_LIGHT_DEVICE_ADDRESS,
+               "%2x:%2x:%2x:%2x:%2x:%2x",
+               &octets[0], &octets[1], &octets[2],
+               &octets[3], &octets[4], &octets[5]) != 6) {
+        ESP_LOGE(TAG, "invalid blinkwh address '%s'",
+                 CONFIG_BLE_LIGHT_DEVICE_ADDRESS);
+        return false;
+    }
+
+    s_peer_addr.type = BLE_ADDR_PUBLIC;
+    /* NimBLE stores addresses least-significant octet first, while the
+     * configured address is written in the conventional display order. */
+    for (size_t i = 0; i < sizeof(s_peer_addr.val); i++) {
+        if (octets[i] > 0xff) {
+            ESP_LOGE(TAG, "invalid blinkwh address '%s'",
+                     CONFIG_BLE_LIGHT_DEVICE_ADDRESS);
+            return false;
+        }
+        s_peer_addr.val[sizeof(s_peer_addr.val) - 1 - i] = (uint8_t)octets[i];
+    }
+    return true;
+}
+
 esp_err_t ble_light_init(void)
 {
     if (s_initialized) {
         return ESP_OK;
+    }
+
+    if (!ble_light_parse_peer_address()) {
+        return ESP_ERR_INVALID_ARG;
     }
 
     esp_err_t err = nimble_port_init();
@@ -396,7 +306,7 @@ static esp_err_t ble_light_set(bool on)
     }
 
     s_requested = true;
-    ble_light_start_scan();
+    ble_light_start_connect();
     return ESP_OK;
 }
 

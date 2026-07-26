@@ -83,12 +83,20 @@ menu "SlumberCube Configuration"
             bool "Turn on blinkwh light when audio starts"
             default y
             help
-                On successful audio playback, scan for the WCH blinkwh BLE
-                service (0xFFE0), connect, and write 0x01 to its LED
+                On successful audio playback, directly connect to the
+                configured WCH blinkwh BLE device and write 0x01 to its LED
                 characteristic (0xFFE1). The operation is asynchronous and
-                does not delay audio playback.
-        config BLE_LIGHT_SCAN_TIMEOUT_MS
-            int "blinkwh scan timeout (ms)"
+                does not delay audio playback or scan nearby devices.
+        config BLE_LIGHT_DEVICE_ADDRESS
+            string "blinkwh public BLE address"
+            default "0c:3d:5e:a6:63:c0"
+            depends on BLE_LIGHT_ENABLE
+            help
+                Public Bluetooth address of the blinkwh device. This is a
+                direct connection target, not a scan filter. Use six
+                hexadecimal octets separated by colons.
+        config BLE_LIGHT_CONNECT_TIMEOUT_MS
+            int "blinkwh direct-connect timeout (ms)"
             range 1000 30000
             default 10000
             depends on BLE_LIGHT_ENABLE
