@@ -1,4 +1,5 @@
 #include "audio_player_wrapper.h"
+#include "ble_light_client.h"
 #include "wifi.h"
 #include "agent_config.h"
 #include "shtc3.h"
@@ -6,6 +7,7 @@
 #include "audio_stream.h"
 #include "audio_http_stream.h"
 #include "esp_log.h"
+#include "esp_heap_caps.h"
 #include "esp_http_client.h"
 #include "cJSON.h"
 #include "driver/i2s_std.h"
@@ -15,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <inttypes.h>
 
 static const char *TAG = "AUDIO";
 
@@ -582,10 +585,12 @@ esp_err_t audio_init(void)
     return ESP_OK;
 }
 
+static esp_err_t audio_stop_internal(bool turn_off_light);
+
 static esp_err_t audio_play_url_inner(const char *url)
 {
     /* Stop any existing playback first */
-    audio_stop();
+    audio_stop_internal(false);
 
     s_status = "Connecting...";
     ESP_LOGI(TAG, "Trying: %s", url);
@@ -612,21 +617,26 @@ static esp_err_t audio_play_url_inner(const char *url)
 
     /* Create decoder stream */
     audio_stream_config_t stream_cfg = DEFAULT_AUDIO_STREAM_CONFIG("music");
+    ESP_LOGI(TAG, "Heap before stream: free=%" PRIu32 " largest=%" PRIu32,
+             esp_get_free_heap_size(),
+             heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
     s_stream = audio_stream_new(&stream_cfg);
     if (!s_stream) {
-        ESP_LOGE(TAG, "stream_new failed");
+        ESP_LOGE(TAG, "stream_new failed (free=%" PRIu32 " largest=%" PRIu32 ")",
+                 esp_get_free_heap_size(),
+                 heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
+        audio_stop_internal(false);
         return ESP_FAIL;
     }
 
-    /* Open HTTP stream. buffer_size was 4KB which deadlocked on
-     * network jitter (ringbuf full → mixer write blocks → watchdog).
-     * 16KB gives the HTTP task enough headroom to absorb short stalls
-     * while still fitting comfortably in the post-playback heap budget
-     * (~189K free at boot, ~53K during playback). */
+    /* Open HTTP stream. 4KB previously stalled on network jitter, while
+     * 16KB no longer fits once the BLE controller and MP3 decoder coexist
+     * on the ESP32-C3. 8KB is the largest reliable middle ground: enough
+     * jitter headroom while leaving room for the HTTP task stack. */
     audio_http_stream_config_t http_cfg = DEFAULT_AUDIO_HTTP_STREAM_CONFIG(url);
-    http_cfg.buffer_size          = 16 * 1024;
-    http_cfg.high_watermark       = 12 * 1024;
-    http_cfg.low_watermark        = 4  * 1024;
+    http_cfg.buffer_size          = 8 * 1024;
+    http_cfg.high_watermark       = 6 * 1024;
+    http_cfg.low_watermark        = 2 * 1024;
     http_cfg.task_stack_size      = 6 * 1024;
     http_cfg.task_priority        = 6;   // above mixer/decoder (5) so the socket
                                          // connect/read isn't starved of CPU
@@ -636,8 +646,12 @@ static esp_err_t audio_play_url_inner(const char *url)
     s_http_stream = audio_http_stream_open(&http_cfg);
     if (!s_http_stream) {
         ESP_LOGE(TAG, "http_stream_open failed");
+        audio_stop_internal(false);
         return ESP_FAIL;
     }
+    ESP_LOGI(TAG, "Heap after HTTP stream: free=%" PRIu32 " largest=%" PRIu32,
+             esp_get_free_heap_size(),
+             heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 
     /* Wait for initial buffer, then try to start playback.
      * Retry with fallback sample rates if mixer rejects the stream's rate.
@@ -695,7 +709,7 @@ static esp_err_t audio_play_url_inner(const char *url)
     }
 
     ESP_LOGW(TAG, "Timeout waiting for buffer (last: %d bytes)", (int)audio_http_stream_get_buffered_bytes(s_http_stream));
-    audio_stop();
+    audio_stop_internal(false);
     s_status = "Network error";
     return ESP_ERR_TIMEOUT;
 }
@@ -729,8 +743,8 @@ esp_err_t audio_play_url(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* Copy URL before calling audio_play_url_inner() — it calls
-     * audio_stop() which clears s_radio_url, invalidating the pointer. */
+    /* Copy URL before calling audio_play_url_inner() — it clears
+     * s_radio_url, invalidating the pointer. */
     char url_copy[256];
     strncpy(url_copy, play_url, sizeof(url_copy) - 1);
     url_copy[sizeof(url_copy) - 1] = '\0';
@@ -739,6 +753,15 @@ esp_err_t audio_play_url(void)
 
     if (audio_play_url_inner(url_copy) == ESP_OK) {
         s_status = "Streaming...";
+#if CONFIG_BLE_LIGHT_ENABLE
+        /* Keep the music path non-blocking: the BLE client scans, connects
+         * and writes blinkwh's FFE1 LED command from its own host task. */
+        esp_err_t light_err = ble_light_turn_on();
+        if (light_err != ESP_OK) {
+            ESP_LOGW(TAG, "Could not queue blinkwh light-on: %s",
+                     esp_err_to_name(light_err));
+        }
+#endif
         return ESP_OK;
     }
 
@@ -746,7 +769,7 @@ esp_err_t audio_play_url(void)
     return ESP_ERR_TIMEOUT;
 }
 
-esp_err_t audio_stop(void)
+static esp_err_t audio_stop_internal(bool turn_off_light)
 {
     /* Close HTTP stream first — stops download task from filling the ringbuf.
      * This unblocks the drain in audio_http_stream_close() and lets the task
@@ -763,8 +786,22 @@ esp_err_t audio_stop(void)
     s_playback_active = false;
     s_content_length = 0;
     s_radio_url[0] = '\0';  /* force re-fetch on next play */
+#if CONFIG_BLE_LIGHT_ENABLE
+    if (turn_off_light) {
+        esp_err_t light_err = ble_light_turn_off();
+        if (light_err != ESP_OK) {
+            ESP_LOGW(TAG, "Could not queue blinkwh light-off: %s",
+                     esp_err_to_name(light_err));
+        }
+    }
+#endif
     ESP_LOGI(TAG, "Playback stopped");
     return ESP_OK;
+}
+
+esp_err_t audio_stop(void)
+{
+    return audio_stop_internal(true);
 }
 
 const char *audio_get_station_name(void)

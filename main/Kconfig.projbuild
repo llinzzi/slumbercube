@@ -78,6 +78,22 @@ menu "SlumberCube Configuration"
             default 10
     endmenu
 
+    menu "Bluetooth Night Light"
+        config BLE_LIGHT_ENABLE
+            bool "Turn on blinkwh light when audio starts"
+            default y
+            help
+                On successful audio playback, scan for the WCH blinkwh BLE
+                service (0xFFE0), connect, and write 0x01 to its LED
+                characteristic (0xFFE1). The operation is asynchronous and
+                does not delay audio playback.
+        config BLE_LIGHT_SCAN_TIMEOUT_MS
+            int "blinkwh scan timeout (ms)"
+            range 1000 30000
+            default 10000
+            depends on BLE_LIGHT_ENABLE
+    endmenu
+
     menu "WiFi Provisioning"
         config WIFI_PROV_AP_PASSWORD
             string "SoftAP password (min 8 chars for WPA2)"

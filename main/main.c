@@ -35,6 +35,9 @@
 
 #if CONFIG_AUDIO_ENABLE
 #include "audio_player_wrapper.h"
+#if CONFIG_BLE_LIGHT_ENABLE
+#include "ble_light_client.h"
+#endif
 #endif
 
 static const char *TAG = "MAIN";
@@ -250,15 +253,15 @@ static bool restore_pcf85063_alarm_wakeup(void)
 #endif
 
 /* When audio_play_url() returns a non-OK code, decide which user-facing
- * message to show. The "Agent disabled" case is the most actionable — it
- * tells the user to re-enable the agent in the captive portal. */
+ * message to show. Wi-Fi has already connected by this point, so do not
+ * mislabel decoder, stream, or server errors as a Wi-Fi failure. */
 static const char *audio_failure_station_name(void)
 {
     agent_config_t cfg;
     if (agent_config_load(&cfg) == ESP_OK && !cfg.enabled) {
         return "Agent disabled";
     }
-    return "WiFi failed";
+    return "Audio start failed";
 }
 
 static void apply_weather_and_indoor(const weather_data_t *w);
@@ -782,6 +785,19 @@ void app_main(void)
     ESP_LOGI(TAG, "║ TOTAL to post-init:%6lld us  (%lld ms) ║",
              (long long)(t_post - t_boot), (long long)((t_post - t_boot) / 1000));
     ESP_LOGI(TAG, "╚══════════════════════════════════════════╝");
+
+    /* The BLE controller needs one sizeable contiguous allocation.  Bring it
+     * up before Wi-Fi and the audio stream consume the heap; this only starts
+     * the NimBLE host task and does not scan or connect to the night light. */
+#if CONFIG_AUDIO_ENABLE && CONFIG_BLE_LIGHT_ENABLE
+    if (s_normal_mode) {
+        esp_err_t ble_err = ble_light_init();
+        if (ble_err != ESP_OK) {
+            ESP_LOGW(TAG, "BLE night light unavailable: %s", esp_err_to_name(ble_err));
+        }
+        log_heap("ble_light_init");
+    }
+#endif
 
     /* Read indoor sensor on every wake (for no-network display fallback).
      * The SHTC3 may need up to ~1 s to start ACKing after power-up — a
