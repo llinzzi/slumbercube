@@ -29,13 +29,14 @@ static uint16_t s_led_value_handle;
 static bool s_initialized;
 static bool s_synced;
 static volatile bool s_requested; /* connection / write in progress */
+static bool s_scanning;
 static bool s_connecting;
 static volatile bool s_desired_on;
 static bool s_command_started;
 static bool s_command_on;
 
 static int ble_light_gap_event(struct ble_gap_event *event, void *arg);
-static void ble_light_start_connect(void);
+static void ble_light_start_target_scan(void);
 
 static void ble_light_reset_link(void)
 {
@@ -43,6 +44,7 @@ static void ble_light_reset_link(void)
     s_service_start = 0;
     s_service_end = 0;
     s_led_value_handle = 0;
+    s_scanning = false;
     s_connecting = false;
     s_command_started = false;
 }
@@ -153,6 +155,38 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
 {
     (void)arg;
     switch (event->type) {
+    case BLE_GAP_EVENT_DISC:
+        /* The controller's whitelist guarantees this report is from the one
+         * configured blinkwh address; no other nearby device reaches here. */
+        if (!s_requested || s_connecting) {
+            return 0;
+        }
+        s_scanning = false;
+        s_connecting = true;
+        (void)ble_gap_disc_cancel();
+        {
+            int rc = ble_gap_connect(s_own_addr_type, &event->disc.addr,
+                                     CONFIG_BLE_LIGHT_CONNECT_TIMEOUT_MS,
+                                     NULL, ble_light_gap_event, NULL);
+            if (rc != 0) {
+                ESP_LOGW(TAG, "blinkwh connect could not start: rc=%d", rc);
+                s_connecting = false;
+                s_requested = false;
+            } else {
+                ESP_LOGI(TAG, "connecting to whitelisted blinkwh");
+            }
+        }
+        return 0;
+
+    case BLE_GAP_EVENT_DISC_COMPLETE:
+        s_scanning = false;
+        if (s_requested && !s_connecting) {
+            ESP_LOGW(TAG, "blinkwh was not seen within %d ms",
+                     CONFIG_BLE_LIGHT_CONNECT_TIMEOUT_MS);
+            s_requested = false;
+        }
+        return 0;
+
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status != 0) {
             ESP_LOGW(TAG, "connect failed: status=%d", event->connect.status);
@@ -183,7 +217,7 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
             /* A newer audio state arrived while the previous GATT write was
              * in flight. Apply that latest state in a new short connection. */
             s_requested = true;
-            ble_light_start_connect();
+            ble_light_start_target_scan();
         }
         return 0;
     }
@@ -193,22 +227,30 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
     }
 }
 
-static void ble_light_start_connect(void)
+static void ble_light_start_target_scan(void)
 {
-    if (!s_synced || !s_requested || s_connecting) {
+    if (!s_synced || !s_requested || s_scanning || s_connecting) {
         return;
     }
 
-    int rc = ble_gap_connect(s_own_addr_type, &s_peer_addr,
-                             CONFIG_BLE_LIGHT_CONNECT_TIMEOUT_MS,
-                             NULL, ble_light_gap_event, NULL);
+    struct ble_gap_disc_params params = {0};
+    /* Active, continuous discovery maximizes the chance of catching the WCH
+     * advertisement while Wi-Fi shares the ESP32-C3 radio. The controller
+     * whitelist filters every non-blinkwh report before it reaches NimBLE. */
+    params.itvl = 160;   /* 100 ms */
+    params.window = 160; /* continuous */
+    params.passive = 0;
+    params.filter_duplicates = 1;
+    params.filter_policy = BLE_HCI_SCAN_FILT_USE_WL;
+    int rc = ble_gap_disc(s_own_addr_type, CONFIG_BLE_LIGHT_CONNECT_TIMEOUT_MS,
+                          &params, ble_light_gap_event, NULL);
     if (rc != 0) {
-        ESP_LOGW(TAG, "direct blinkwh connect could not start: rc=%d", rc);
+        ESP_LOGW(TAG, "blinkwh target scan could not start: rc=%d", rc);
         s_requested = false;
         return;
     }
-    s_connecting = true;
-    ESP_LOGI(TAG, "direct connecting to blinkwh %s",
+    s_scanning = true;
+    ESP_LOGI(TAG, "scanning only whitelisted blinkwh %s",
              CONFIG_BLE_LIGHT_DEVICE_ADDRESS);
 }
 
@@ -224,8 +266,13 @@ static void ble_light_on_sync(void)
         ESP_LOGE(TAG, "unable to select BLE address type: rc=%d", rc);
         return;
     }
+    rc = ble_gap_wl_set(&s_peer_addr, 1);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "could not configure blinkwh whitelist: rc=%d", rc);
+        return;
+    }
     s_synced = true;
-    ble_light_start_connect();
+    ble_light_start_target_scan();
 }
 
 static void ble_light_on_reset(int reason)
@@ -306,7 +353,7 @@ static esp_err_t ble_light_set(bool on)
     }
 
     s_requested = true;
-    ble_light_start_connect();
+    ble_light_start_target_scan();
     return ESP_OK;
 }
 
