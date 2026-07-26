@@ -28,15 +28,18 @@ static uint16_t s_service_end;
 static uint16_t s_led_value_handle;
 static bool s_initialized;
 static bool s_synced;
-static volatile bool s_requested; /* connection / write in progress */
+static volatile bool s_requested; /* connection attempt in progress */
 static bool s_scanning;
 static bool s_connecting;
 static volatile bool s_desired_on;
+static bool s_link_ready;
+static volatile bool s_command_pending;
 static bool s_command_started;
 static bool s_command_on;
 
 static int ble_light_gap_event(struct ble_gap_event *event, void *arg);
 static void ble_light_start_target_scan(void);
+static void ble_light_begin_write(uint16_t conn_handle);
 
 static void ble_light_reset_link(void)
 {
@@ -46,6 +49,7 @@ static void ble_light_reset_link(void)
     s_led_value_handle = 0;
     s_scanning = false;
     s_connecting = false;
+    s_link_ready = false;
     s_command_started = false;
 }
 
@@ -56,12 +60,14 @@ static void ble_light_finish(uint16_t conn_handle, const char *reason)
         int rc = ble_gap_terminate(conn_handle, BLE_ERR_REM_USER_CONN_TERM);
         if (rc == BLE_HS_ENOTCONN) {
             /* No disconnect event will follow when the link is already gone. */
-            s_requested = false;
             ble_light_reset_link();
+            s_requested = true;
+            ble_light_start_target_scan();
         } else if (rc != 0) {
             ESP_LOGW(TAG, "disconnect failed: rc=%d", rc);
-            s_requested = false;
             ble_light_reset_link();
+            s_requested = true;
+            ble_light_start_target_scan();
         }
     }
 }
@@ -73,13 +79,23 @@ static int ble_light_on_write(uint16_t conn_handle,
 {
     (void)attr;
     (void)arg;
-    if (error->status == 0) {
-        ble_light_finish(conn_handle,
-                         s_command_on ? "blinkwh LED on" : "blinkwh LED off");
-    } else {
+    s_command_started = false;
+    if (error->status != 0) {
         ESP_LOGW(TAG, "LED write failed: status=%d", error->status);
         ble_light_finish(conn_handle, "blinkwh LED command failed");
+        return 0;
     }
+
+    /* A pause can arrive while the preceding play command is in flight.
+     * Apply the newest state on the existing link rather than reconnecting. */
+    if (s_desired_on != s_command_on) {
+        ble_light_begin_write(conn_handle);
+        return 0;
+    }
+
+    s_command_pending = false;
+    ESP_LOGI(TAG, "%s (link kept)",
+             s_command_on ? "blinkwh LED on" : "blinkwh LED off");
     return 0;
 }
 
@@ -105,6 +121,21 @@ static int ble_light_on_chr(uint16_t conn_handle,
         return 0;
     }
 
+    s_link_ready = true;
+    s_requested = false;
+    ESP_LOGI(TAG, "blinkwh link ready; keeping connection open");
+    if (s_command_pending) {
+        ble_light_begin_write(conn_handle);
+    }
+    return 0;
+}
+
+static void ble_light_begin_write(uint16_t conn_handle)
+{
+    if (!s_link_ready || s_led_value_handle == 0 || s_command_started) {
+        return;
+    }
+
     const uint8_t value = s_desired_on ? 0x01 : 0x00;
     s_command_on = (value != 0);
     s_command_started = true;
@@ -112,9 +143,9 @@ static int ble_light_on_chr(uint16_t conn_handle,
                                   &value, sizeof(value), ble_light_on_write, NULL);
     if (rc != 0) {
         ESP_LOGW(TAG, "LED write could not start: rc=%d", rc);
+        s_command_started = false;
         ble_light_finish(conn_handle, "blinkwh LED write unavailable");
     }
-    return 0;
 }
 
 static int ble_light_on_service(uint16_t conn_handle,
@@ -190,8 +221,9 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_CONNECT:
         if (event->connect.status != 0) {
             ESP_LOGW(TAG, "connect failed: status=%d", event->connect.status);
-            s_requested = false;
             ble_light_reset_link();
+            s_requested = true;  /* Keep trying to establish the boot link. */
+            ble_light_start_target_scan();
             return 0;
         }
 
@@ -210,15 +242,11 @@ static int ble_light_gap_event(struct ble_gap_event *event, void *arg)
 
     case BLE_GAP_EVENT_DISCONNECT: {
         ESP_LOGI(TAG, "disconnected (reason=%d)", event->disconnect.reason);
-        bool follow_up = s_command_started && (s_desired_on != s_command_on);
-        s_requested = false;
         ble_light_reset_link();
-        if (follow_up) {
-            /* A newer audio state arrived while the previous GATT write was
-             * in flight. Apply that latest state in a new short connection. */
-            s_requested = true;
-            ble_light_start_target_scan();
-        }
+        /* The music session keeps a warm BLE link. Reconnect automatically
+         * when blinkwh drops the connection or wakes from a low-power slot. */
+        s_requested = true;
+        ble_light_start_target_scan();
         return 0;
     }
 
@@ -335,7 +363,9 @@ esp_err_t ble_light_init(void)
     ble_hs_cfg.reset_cb = ble_light_on_reset;
     nimble_port_freertos_init(ble_light_host_task);
     s_initialized = true;
-    ESP_LOGI(TAG, "NimBLE central initialized");
+    s_requested = true;  /* Establish the persistent blinkwh link at boot. */
+    ble_light_start_target_scan();
+    ESP_LOGI(TAG, "NimBLE central initialized; blinkwh link requested");
     return ESP_OK;
 }
 
@@ -347,8 +377,9 @@ static esp_err_t ble_light_set(bool on)
     }
 
     s_desired_on = on;
-    if (s_requested) {
-        ESP_LOGD(TAG, "blinkwh request already in progress; updated desired state");
+    s_command_pending = true;
+    if (s_link_ready) {
+        ble_light_begin_write(s_conn_handle);
         return ESP_OK;
     }
 
