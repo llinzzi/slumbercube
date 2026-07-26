@@ -109,17 +109,18 @@ static void update_ble_light_status(void)
     ble_light_status_t status = ble_light_get_status();
     if (status == last_status) return;
 
-    const char *text = "BLE: UNAVAILABLE";
+    const char *text = "BT: OFF";
     switch (status) {
-    case BLE_LIGHT_STATUS_STARTING:     text = "BLE: STARTING"; break;
-    case BLE_LIGHT_STATUS_SCANNING:     text = "BLE: SCANNING"; break;
-    case BLE_LIGHT_STATUS_CONNECTING:   text = "BLE: CONNECTING"; break;
-    case BLE_LIGHT_STATUS_CONNECTED:    text = "BLE: CONNECTED"; break;
-    case BLE_LIGHT_STATUS_RECONNECTING: text = "BLE: RECONNECTING"; break;
-    case BLE_LIGHT_STATUS_UNAVAILABLE:  text = "BLE: UNAVAILABLE"; break;
+    case BLE_LIGHT_STATUS_STARTING:     text = "BT: INIT"; break;
+    case BLE_LIGHT_STATUS_SCANNING:     text = "BT: SCAN"; break;
+    case BLE_LIGHT_STATUS_CONNECTING:   text = "BT: CONN"; break;
+    case BLE_LIGHT_STATUS_CONNECTED:    text = "BT: OK"; break;
+    case BLE_LIGHT_STATUS_RECONNECTING: text = "BT: RETRY"; break;
+    case BLE_LIGHT_STATUS_UNAVAILABLE:  text = "BT: OFF"; break;
     case BLE_LIGHT_STATUS_DISABLED:     text = ""; break;
     }
     clock_screen_set_ble_status(text);
+    ESP_LOGI(TAG, "BLE status UI: %s", text);
     last_status = status;
 }
 #endif

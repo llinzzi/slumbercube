@@ -351,9 +351,15 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     ble_status_label = lv_label_create(container);
     lv_obj_set_style_text_color(ble_status_label, lv_color_make(0xCC, 0xCC, 0xCC), 0);
     lv_obj_set_style_text_font(ble_status_label, &lv_font_montserrat_14, 0);
-    lv_obj_set_style_text_align(ble_status_label, LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(ble_status_label, 0, 50);
-    lv_obj_set_size(ble_status_label, CANVAS_W, 14);
+    lv_obj_set_style_text_align(ble_status_label, LV_TEXT_ALIGN_RIGHT, 0);
+    /* Share the known-visible station row instead of relying on the final
+     * 14 pixels, which some panels crop.  A black backing keeps it legible
+     * over the scrolling song name. */
+    lv_obj_set_style_bg_color(ble_status_label, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(ble_status_label, LV_OPA_COVER, 0);
+    lv_obj_set_style_pad_all(ble_status_label, 0, 0);
+    lv_obj_set_pos(ble_status_label, 166, 36);
+    lv_obj_set_size(ble_status_label, 90, 18);
     lv_label_set_long_mode(ble_status_label, LV_LABEL_LONG_CLIP);
     lv_label_set_text(ble_status_label, "");
     lv_obj_add_flag(ble_status_label, LV_OBJ_FLAG_HIDDEN);
