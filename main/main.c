@@ -718,12 +718,10 @@ void app_main(void)
     int64_t t4 = esp_timer_get_time();
     log_heap("lvgl_init");
 
-    // Wait for LVGL task to start (one tick at 100Hz = 10ms; LVGL task prio 3
-    // gets scheduled within the first tick, so one tick is sufficient)
-    vTaskDelay(pdMS_TO_TICKS(10));
-
     /* Route to one of two pages based on NVS state. No more init-both-then-swap:
-     * clock and QR are independent LVGL screens, each loaded only on its own path. */
+     * clock and QR are independent LVGL screens, each loaded only on its own path.
+     * Do this before the refresh worker starts: LVGL object construction and
+     * lv_timer_handler() must never run concurrently. */
     wifi_creds_t boot_creds;
     bool has_creds = (wifi_creds_load(&boot_creds) == ESP_OK);
     s_normal_mode = has_creds;  /* unless provisioning later turns this off */
@@ -740,22 +738,16 @@ void app_main(void)
     }
     int64_t t5 = esp_timer_get_time();
 
-    /* Force a synchronous flush so the active screen is in GDDRAM *before*
-     * we turn the panel on. The lvgl_task is running at 10 ms intervals and
-     * may have queued a flush of the default (now black) screen; the sync
-     * flush here runs immediately and overwrites GDDRAM with the real screen.
-     * This is the second half of the anti-white-flash fix (the first half
-     * is painting the default screen black in lvgl_adapter_init). */
-    /* The LVGL worker is already active at this point.  Go through the
-     * adapter so this first wake frame cannot race lv_timer_handler(); a
-     * direct lv_refr_now() here could leave the SSD1322 black after waking
-     * from deep sleep. */
+    /* Force the first frame while no LVGL worker exists yet, so the active
+     * screen reaches GDDRAM before the OLED is enabled. */
     lvgl_adapter_refr_now();
     int64_t t6 = esp_timer_get_time();
 
     // Turn on display AFTER first frame is in GDDRAM — eliminates white flash on wake
     ssd1322_display_on();
     int64_t t7 = esp_timer_get_time();
+
+    ESP_ERROR_CHECK(lvgl_adapter_start_task());
 
     // Brief settle before sensor I2C (display already rendered)
     vTaskDelay(pdMS_TO_TICKS(10));

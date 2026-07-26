@@ -13,6 +13,7 @@ static const char *TAG = "LVGL_ADAPTER";
 static lv_display_t *g_disp = NULL;
 static uint8_t *g_i4_buffer = NULL;
 static SemaphoreHandle_t g_lvgl_mutex = NULL;
+static TaskHandle_t g_lvgl_task_handle = NULL;
 
 #define PARTIAL_SEND_BUF_SIZE 1024
 static uint8_t *g_partial_send_buf = NULL;
@@ -196,13 +197,28 @@ esp_err_t lvgl_adapter_init(void)
     lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, 0);
     lv_obj_set_style_bg_opa(boot_scr, LV_OPA_COVER, LV_PART_MAIN);
 
+    /* The caller now builds the first screen before starting lvgl_task.
+     * Running lv_timer_handler concurrently with screen construction corrupts
+     * LVGL's invalidation lists and can make the display task spin forever. */
+    ESP_LOGI(TAG, "LVGL adapter initialized (refresh worker deferred)");
+    return ESP_OK;
+}
+
+esp_err_t lvgl_adapter_start_task(void)
+{
+    if (g_lvgl_task_handle) {
+        return ESP_OK;
+    }
+
     /* Priority 3 — below audio mixer (5) and HTTP download (6) so that
      * the blocking SPI flush (~10ms) in lv_timer_handler can't starve the
-     * audio decoder and cause I2S underrun stutter. Priority 3 is high enough
-     * to get scheduled regularly (above idle at 0). */
-    xTaskCreate(lvgl_task, "lvgl_task", 4096, NULL, 3, NULL);
-
-    ESP_LOGI(TAG, "LVGL adapter initialized");
+     * audio decoder and cause I2S underrun stutter. */
+    if (xTaskCreate(lvgl_task, "lvgl_task", 4096, NULL, 3,
+                    &g_lvgl_task_handle) != pdPASS) {
+        g_lvgl_task_handle = NULL;
+        ESP_LOGE(TAG, "Failed to start LVGL task");
+        return ESP_ERR_NO_MEM;
+    }
     return ESP_OK;
 }
 

@@ -10,6 +10,11 @@
  */
 esp_err_t lvgl_adapter_init(void);
 
+/**
+ * @brief Start the LVGL refresh worker after the initial screen is built.
+ */
+esp_err_t lvgl_adapter_start_task(void);
+
 /* Force a full-screen render from the main task. */
 void lvgl_adapter_refr_now(void);
 
