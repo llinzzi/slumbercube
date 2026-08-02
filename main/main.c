@@ -830,18 +830,11 @@ void app_main(void)
      * lv_timer_handler() must never run concurrently. */
     wifi_creds_t boot_creds;
     bool has_creds = (wifi_creds_load(&boot_creds) == ESP_OK);
-    s_normal_mode = has_creds;  /* unless provisioning later turns this off */
+    s_normal_mode = false;
 
-    if (has_creds) {
-        ESP_ERROR_CHECK(ui_wrapper_init());
-    } else {
-        uint8_t mac[6];
-        esp_read_mac(mac, ESP_MAC_WIFI_STA);
-        char ap_ssid[32];
-        snprintf(ap_ssid, sizeof(ap_ssid), "SlumberCube-%02X%02X", mac[4], mac[5]);
-        config_screen_init(ap_ssid, CONFIG_WIFI_PROV_AP_PASSWORD);
-        config_screen_show();
-    }
+    /* UI-effects worktree: always show the visual prototype, independent of
+     * provisioning state or any other application state. */
+    ESP_ERROR_CHECK(ui_wrapper_init());
     int64_t t5 = esp_timer_get_time();
 
     /* Force the first frame while no LVGL worker exists yet, so the active
@@ -854,6 +847,14 @@ void app_main(void)
     int64_t t7 = esp_timer_get_time();
 
     ESP_ERROR_CHECK(lvgl_adapter_start_task());
+
+    /* Keep this branch focused on UI rendering. The LVGL worker continues to
+     * refresh the display; no networking, sensors, audio, or button behavior
+     * is started below this point. */
+    ESP_LOGI(TAG, "UI effects mode: showing two circles");
+    while (true) {
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
 
     // Brief settle before sensor I2C (display already rendered)
     vTaskDelay(pdMS_TO_TICKS(10));

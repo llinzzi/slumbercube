@@ -6,6 +6,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
+#include "esp_timer.h"
 #include "ui/ui.h"
 #include <string.h>
 
@@ -19,6 +20,11 @@ static TaskHandle_t g_lvgl_task_handle = NULL;
 static uint8_t *g_partial_send_buf = NULL;
 
 static void lvgl_task(void *arg);
+
+static uint32_t lvgl_tick_get_ms(void)
+{
+    return (uint32_t)(esp_timer_get_time() / 1000ULL);
+}
 
 static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 {
@@ -131,6 +137,10 @@ static void lvgl_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px
 esp_err_t lvgl_adapter_init(void)
 {
     lv_init();
+    /* LVGL 9 no longer consumes the legacy LV_TICK_CUSTOM config macros.
+     * Register the ESP monotonic clock explicitly so animations and LVGL
+     * timers advance instead of remaining permanently at tick zero. */
+    lv_tick_set_cb(lvgl_tick_get_ms);
 
     g_lvgl_mutex = xSemaphoreCreateMutex();
     if (!g_lvgl_mutex) {
