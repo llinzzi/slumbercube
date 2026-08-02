@@ -1,180 +1,181 @@
 #include "screens.h"
 
+#define SPRITE_W 72
+#define SPRITE_H 64
+
 static lv_obj_t *s_screen;
-static lv_obj_t *s_left_eye;
-static lv_obj_t *s_right_eye;
-static lv_obj_t *s_left_pupil;
-static lv_obj_t *s_right_pupil;
-static lv_obj_t *s_left_ear;
-static lv_obj_t *s_right_ear;
-static lv_obj_t *s_wave_paw;
+static lv_obj_t *s_ghast;
+LV_DRAW_BUF_DEFINE_STATIC(s_ghast_buf, SPRITE_W, SPRITE_H, LV_COLOR_FORMAT_RGB565);
+
+static bool s_eyes_closed;
 static uint8_t s_blink_step;
-static uint8_t s_gaze_step;
-static uint8_t s_action_step;
-static bool s_blink_closed;
+static uint8_t s_float_step;
+static int16_t s_patrol_x = -64;
+static int8_t s_direction = 1;
+static uint8_t s_turn_step;
+static bool s_turning;
 
-static lv_obj_t *pixel(lv_obj_t *parent, int32_t x, int32_t y,
-                       int32_t w, int32_t h, uint8_t gray)
+static lv_color_t gray(uint8_t value)
 {
-    lv_obj_t *obj = lv_obj_create(parent);
-    lv_obj_set_size(obj, w, h);
-    lv_obj_set_pos(obj, x, y);
-    lv_obj_set_style_radius(obj, 0, 0);
-    lv_obj_set_style_bg_color(obj, lv_color_make(gray, gray, gray), 0);
-    lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(obj, 0, 0);
-    lv_obj_set_style_pad_all(obj, 0, 0);
-    lv_obj_clear_flag(obj, LV_OBJ_FLAG_SCROLLABLE);
-    return obj;
+    return lv_color_make(value, value, value);
 }
 
-static lv_obj_t *transparent_group(lv_obj_t *parent, int32_t x, int32_t y,
-                                   int32_t w, int32_t h)
+/* Draw logical pixel-art rectangles into one canvas.  Keeping the entire
+ * character in a single LVGL object avoids the deep draw tree that previously
+ * overflowed app_main's stack during the first refresh. */
+static void block(int x, int y, int w, int h, uint8_t value,
+                  int scale, bool mirror)
 {
-    lv_obj_t *group = lv_obj_create(parent);
-    lv_obj_set_size(group, w, h);
-    lv_obj_set_pos(group, x, y);
-    lv_obj_set_style_bg_opa(group, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(group, 0, 0);
-    lv_obj_set_style_pad_all(group, 0, 0);
-    lv_obj_clear_flag(group, LV_OBJ_FLAG_SCROLLABLE);
-    return group;
+    const int center = SPRITE_W / 2;
+    lv_color_t color = gray(value);
+
+    for(int py = y; py < y + h; py++) {
+        if(py < 0 || py >= SPRITE_H) continue;
+        for(int px = x; px < x + w; px++) {
+            int logical_x = mirror ? (SPRITE_W - 1 - px) : px;
+            int dx = center + ((logical_x - center) * scale) / 64;
+            int dx_next = center + ((logical_x + 1 - center) * scale) / 64;
+            if(dx_next <= dx) dx_next = dx + 1;
+            for(int out_x = dx; out_x < dx_next; out_x++) {
+                if(out_x >= 0 && out_x < SPRITE_W) {
+                    lv_canvas_set_px(s_ghast, out_x, py, color, LV_OPA_COVER);
+                }
+            }
+        }
+    }
 }
 
-static lv_obj_t *create_ear(int32_t x)
+static void draw_ghast(void)
 {
-    lv_obj_t *ear = transparent_group(s_screen, x, 4, 20, 16);
-    pixel(ear, 0, 4, 20, 12, 0x58);
-    pixel(ear, 4, 0, 12, 8, 0x58);
-    pixel(ear, 5, 4, 10, 8, 0xA0);
-    return ear;
-}
+    /* Turn through the front, not around the back.  The head becomes slightly
+     * wider at the centered front pose, then settles into the opposite 3/4. */
+    static const uint8_t turn_width[] = { 64, 66, 68, 70, 72, 70, 68, 66, 64 };
+    int scale = s_turning ? turn_width[s_turn_step] : 64;
+    /* The visible side plane must lead the motion: right-facing while moving
+     * right, and the mirrored left-facing pose while moving left. */
+    bool mirror = s_direction > 0;
+    if(s_turning && s_turn_step >= 5) mirror = !mirror;
+    int yaw = s_turning ? s_turn_step : 0;
 
-static lv_obj_t *create_eye(int32_t x, lv_obj_t **pupil_out)
-{
-    lv_obj_t *eye = pixel(s_screen, x, 24, 28, 18, 0xD8);
-    pixel(eye, 0, 0, 4, 4, 0x88);
-    pixel(eye, 24, 0, 4, 4, 0x88);
+    lv_canvas_fill_bg(s_ghast, gray(0x08), LV_OPA_COVER);
 
-    lv_obj_t *pupil = pixel(eye, 12, 4, 8, 14, 0x18);
-    pixel(pupil, 0, 0, 4, 4, 0xFF);
-    *pupil_out = pupil;
-    return eye;
-}
+    /* Three value-separated planes make the 40px head read as a cube. */
+    block(18, 1, 38, 2, 0xf8, scale, mirror);
+    block(15, 3, 41, 2, 0xe8, scale, mirror);
+    block(12, 5, 44, 2, 0xdc, scale, mirror);
+    block(9, 7, 47, 2, 0xd0, scale, mirror);
+    block(8, 9, 40, 38, 0xc4, scale, mirror);
+    block(48, 9, 12, 31, 0x68, scale, mirror);
+    block(48, 40, 9, 3, 0x60, scale, mirror);
+    block(48, 43, 6, 2, 0x58, scale, mirror);
+    block(48, 45, 3, 2, 0x50, scale, mirror);
 
-static lv_obj_t *create_paw(int32_t x)
-{
-    lv_obj_t *paw = transparent_group(s_screen, x, 48, 40, 16);
-    pixel(paw, 0, 0, 40, 16, 0xC0);
-    pixel(paw, 0, 0, 4, 4, 0x78);
-    pixel(paw, 36, 0, 4, 4, 0x78);
-    pixel(paw, 8, 5, 4, 11, 0x68);
-    pixel(paw, 20, 5, 4, 11, 0x68);
-    pixel(paw, 32, 5, 4, 11, 0x68);
-    return paw;
-}
+    /* The dark side plane collapses into the front at mid-turn.  Covering it
+     * with the front value on frames 2..6 makes the lighting rotate toward
+     * the viewer instead of exposing a rear face. */
+    if(s_turning && yaw >= 2 && yaw <= 6) {
+        uint8_t front_value = yaw == 4 ? 0xcc : 0xc8;
+        block(45, 9, 15, 38, front_value, scale, mirror);
+        if(yaw != 4) block(47, 12, 3, 31, 0xa0, scale, mirror);
+        block(18, 5, 30, 2, yaw == 4 ? 0xf4 : 0xe4, scale, mirror);
+    }
 
-static void set_eye_height(void *obj, int32_t h)
-{
-    lv_obj_t *eye = obj;
-    lv_obj_set_height(eye, h);
-    lv_obj_set_y(eye, 24 + (18 - h) / 2);
-}
+    /* Mottled GBA-style grayscale texture. */
+    block(11, 12, 7, 5, 0x98, scale, mirror);
+    block(38, 13, 7, 4, 0xe0, scale, mirror);
+    block(13, 38, 8, 6, 0x9c, scale, mirror);
+    block(39, 35, 6, 7, 0x90, scale, mirror);
+    block(51, 14, 6, 6, 0x48, scale, mirror);
+    block(51, 31, 8, 6, 0x50, scale, mirror);
+    block(25, 3, 9, 2, 0xff, scale, mirror);
 
-static void animate_blink(lv_obj_t *eye)
-{
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, eye);
-    lv_anim_set_exec_cb(&a, set_eye_height);
-    lv_anim_set_values(&a, 18, 2);
-    lv_anim_set_duration(&a, 75);
-    lv_anim_set_playback_duration(&a, 125);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-    lv_anim_start(&a);
+    /* Keep the face visible: this turn deliberately passes through a frontal
+     * pose.  Hiding it here makes the character appear to turn backward. */
+    {
+        int face_shift = 0;
+        if(s_turning && yaw < 4) face_shift = -(4 - yaw) / 2;
+        if(s_turning && yaw > 4) face_shift = (yaw - 4) / 2;
+        if(s_eyes_closed) {
+            block(16 + face_shift, 26, 7, 2, 0x18, scale, mirror);
+            block(34 + face_shift, 26, 7, 2, 0x18, scale, mirror);
+        }
+        else {
+            /* Clean 2-tone sockets: black upper eye, one restrained gray tear
+             * underneath.  Large nested rectangles looked noisy at 256x64. */
+            block(16 + face_shift, 22, 7, 5, 0x10, scale, mirror);
+            block(34 + face_shift, 22, 7, 5, 0x10, scale, mirror);
+            block(18 + face_shift, 27, 4, 4, 0x60, scale, mirror);
+            block(35 + face_shift, 27, 4, 4, 0x60, scale, mirror);
+            block(19 + face_shift, 23, 2, 2, 0x02, scale, mirror);
+            block(35 + face_shift, 23, 2, 2, 0x02, scale, mirror);
+        }
+
+        /* Small downturned mouth: a simple dark bar with lowered corners is
+         * much closer to the Ghast's mournful texture than an open black box. */
+        block(24 + face_shift, 36, 10, 3, 0x20, scale, mirror);
+        block(24 + face_shift, 38, 3, 3, 0x20, scale, mirror);
+        block(31 + face_shift, 38, 3, 3, 0x20, scale, mirror);
+        block(27 + face_shift, 37, 4, 2, 0x04, scale, mirror);
+    }
+
+    /* Five uneven tentacles lag in alternating phases while the body floats. */
+    static const int x[] = { 11, 20, 29, 38, 49 };
+    static const int h[] = { 11, 15, 12, 16, 10 };
+    for(int i = 0; i < 5; i++) {
+        int sway = ((s_float_step + i * 2) % 8 >= 4) ? 2 : 0;
+        uint8_t shade = i == 4 ? 0x68 : (i & 1 ? 0x98 : 0xac);
+        block(x[i], 47 + sway, 5, h[i] - sway, shade, scale, mirror);
+        block(x[i], 47 + h[i] - 3, 5, 3, i == 4 ? 0x48 : 0x70,
+              scale, mirror);
+    }
+
+    lv_obj_invalidate(s_ghast);
 }
 
 static void blink_cb(lv_timer_t *timer)
 {
-    static const uint32_t rhythm[] = { 2400, 3400, 1800, 380, 2900 };
-    s_blink_closed = !s_blink_closed;
-    set_eye_height(s_left_eye, s_blink_closed ? 2 : 18);
-    set_eye_height(s_right_eye, s_blink_closed ? 2 : 18);
-    if(s_blink_closed) {
-        lv_timer_set_period(timer, 260);
+    static const uint32_t open_times[] = { 2600, 3900, 1800, 500, 3200 };
+    s_eyes_closed = !s_eyes_closed;
+    draw_ghast();
+
+    if(s_eyes_closed) {
+        lv_timer_set_period(timer, 180);
     }
     else {
-        lv_timer_set_period(timer, rhythm[s_blink_step]);
+        lv_timer_set_period(timer, open_times[s_blink_step]);
         s_blink_step = (s_blink_step + 1) % 5;
     }
 }
 
-static void set_x(void *obj, int32_t x)
+static void motion_cb(lv_timer_t *timer)
 {
-    lv_obj_set_x(obj, x);
-}
+    static const int8_t y_path[] = { 0, -1, -2, -2, -1, 0, 2, 3, 4, 4, 3, 2 };
 
-static void move_x(lv_obj_t *obj, int32_t target)
-{
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, obj);
-    lv_anim_set_exec_cb(&a, set_x);
-    lv_anim_set_values(&a, lv_obj_get_x(obj), target);
-    lv_anim_set_duration(&a, 260);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_in_out);
-    lv_anim_start(&a);
-}
-
-static void gaze_cb(lv_timer_t *timer)
-{
-    static const int32_t positions[] = { 16, 12, 6, 12 };
-    set_x(s_left_pupil, positions[s_gaze_step]);
-    set_x(s_right_pupil, positions[s_gaze_step]);
-    s_gaze_step = (s_gaze_step + 1) % 4;
-    lv_timer_set_period(timer, s_gaze_step == 0 ? 2200 : 1300);
-}
-
-static void set_y(void *obj, int32_t y)
-{
-    lv_obj_set_y(obj, y);
-}
-
-static void bounce_y(lv_obj_t *obj, int32_t rest_y, int32_t raised_y,
-                     uint32_t up_ms, uint32_t down_ms)
-{
-    lv_anim_t a;
-    lv_anim_init(&a);
-    lv_anim_set_var(&a, obj);
-    lv_anim_set_exec_cb(&a, set_y);
-    lv_anim_set_values(&a, rest_y, raised_y);
-    lv_anim_set_duration(&a, up_ms);
-    lv_anim_set_playback_duration(&a, down_ms);
-    lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-    lv_anim_start(&a);
-}
-
-static void action_cb(lv_timer_t *timer)
-{
-    if(s_action_step == 0) {
-        set_y(s_left_ear, 0);
-        lv_timer_set_period(timer, 400);
-    }
-    else if(s_action_step == 1) {
-        set_y(s_left_ear, 4);
-        set_y(s_right_ear, 0);
-        lv_timer_set_period(timer, 400);
-    }
-    else if(s_action_step == 2) {
-        set_y(s_right_ear, 4);
-        set_y(s_wave_paw, 32);
-        lv_timer_set_period(timer, 700);
+    if(s_turning) {
+        if(s_turn_step < 8) {
+            s_turn_step++;
+        }
+        else {
+            s_direction = -s_direction;
+            s_turning = false;
+            s_turn_step = 0;
+        }
     }
     else {
-        set_y(s_wave_paw, 48);
-        lv_timer_set_period(timer, 2200);
+        s_patrol_x += s_direction * 3;
+        /* Turn while the complete body is visible, rather than disappearing
+         * beyond the bezel and silently changing direction off-screen. */
+        if((s_direction > 0 && s_patrol_x >= 190) ||
+           (s_direction < 0 && s_patrol_x <= -2)) {
+            s_turning = true;
+            s_turn_step = 0;
+        }
     }
-    s_action_step = (s_action_step + 1) % 4;
+
+    lv_obj_set_pos(s_ghast, s_patrol_x, y_path[s_float_step]);
+    s_float_step = (s_float_step + 1) % 12;
+    draw_ghast();
+    lv_timer_set_period(timer, s_turning ? 90 : 120);
 }
 
 void screens_set_weather_data_ptr(const void *data)
@@ -186,41 +187,27 @@ void create_screen_main(void)
 {
     s_screen = lv_obj_create(NULL);
     lv_obj_set_size(s_screen, 256, 64);
-    lv_obj_set_style_bg_color(s_screen, lv_color_make(0x08, 0x08, 0x08), 0);
+    lv_obj_set_style_bg_color(s_screen, gray(0x08), 0);
     lv_obj_set_style_bg_opa(s_screen, LV_OPA_COVER, 0);
     lv_obj_set_style_border_width(s_screen, 0, 0);
     lv_obj_set_style_pad_all(s_screen, 0, 0);
     lv_obj_clear_flag(s_screen, LV_OBJ_FLAG_SCROLLABLE);
 
-    s_left_ear = create_ear(64);
-    s_right_ear = create_ear(176);
-    pixel(s_screen, 64, 16, 128, 32, 0x58);
-    pixel(s_screen, 72, 12, 112, 40, 0x68);
-
-    s_left_eye = create_eye(84, &s_left_pupil);
-    s_right_eye = create_eye(144, &s_right_pupil);
-
-    pixel(s_screen, 112, 38, 32, 12, 0x98);
-    pixel(s_screen, 124, 39, 8, 4, 0x20);
-    pixel(s_screen, 120, 43, 4, 4, 0x38);
-    pixel(s_screen, 132, 43, 4, 4, 0x38);
-    pixel(s_screen, 52, 40, 20, 2, 0x70);
-    pixel(s_screen, 184, 40, 20, 2, 0x70);
-    pixel(s_screen, 56, 45, 16, 2, 0x48);
-    pixel(s_screen, 184, 45, 16, 2, 0x48);
-
-    create_paw(72);
-    s_wave_paw = create_paw(148);
+    LV_DRAW_BUF_INIT_STATIC(s_ghast_buf);
+    s_ghast = lv_canvas_create(s_screen);
+    lv_canvas_set_draw_buf(s_ghast, &s_ghast_buf);
+    lv_obj_set_pos(s_ghast, s_patrol_x, 0);
+    lv_obj_clear_flag(s_ghast, LV_OBJ_FLAG_SCROLLABLE);
+    draw_ghast();
 
     lv_screen_load(s_screen);
-    lv_timer_create(blink_cb, 1700, NULL);
-    lv_timer_create(gaze_cb, 900, NULL);
-    lv_timer_create(action_cb, 1500, NULL);
+    lv_timer_create(blink_cb, 1800, NULL);
+    lv_timer_create(motion_cb, 120, NULL);
 }
 
 void tick_screen_main(void)
 {
-    /* The cat is driven entirely by LVGL timers and animations. */
+    /* Motion is driven by LVGL timers. */
 }
 
 void create_screens(void)
