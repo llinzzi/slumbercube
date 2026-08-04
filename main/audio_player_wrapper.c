@@ -548,6 +548,13 @@ esp_err_t audio_init(void)
     /* Create I2S TX channel */
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
     chan_cfg.auto_clear = true;
+    /* Deeper DMA ring for underrun resistance: 8 × 512 frames × 4 B =
+     * 16 KB ≈ 90 ms of 44.1 kHz stereo audio (default 6×240 = 5.76 KB ≈
+     * 33 ms). 512 frames also matches the mixer's 2048 B block exactly,
+     * so each i2s_channel_write() lands in whole DMA buffers instead of
+     * straddling descriptor boundaries. */
+    chan_cfg.dma_desc_num  = 8;
+    chan_cfg.dma_frame_num = 512;
     esp_err_t err = i2s_new_channel(&chan_cfg, &s_i2s_tx_chan, NULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "i2s_new_channel: %s", esp_err_to_name(err));
