@@ -1318,27 +1318,15 @@ void app_main(void)
             }
 
             if (track_done) {
-                static bool s_first_advance_synced = false;
                 stall_ticks = 0;
                 audio_deinit();
                 ESP_LOGI(TAG, "Audio deinit, fetching next song...");
                 vTaskDelay(pdMS_TO_TICKS(1000));
 
-                /* Sync PCF85063 from SNTP-corrected system time on the
-                 * FIRST auto-advance only. SNTP runs in the background
-                 * during playback; by the first track's end it should have
-                 * a fresh NTP fix. Subsequent tracks reuse the same session. */
-#if CONFIG_PCF85063_ENABLE
-                /* Sync PCF85063 from SNTP-corrected system time on the
-                 * FIRST auto-advance only — by then SNTP has had several
-                 * seconds of polling, but wait for the actual notification
-                 * to be sure. */
-                if (!s_first_advance_synced) {
-                    sync_pcf85063_after_ntp(30000);
-                    wifi_stop_sntp();
-                    s_first_advance_synced = true;
-                }
-#endif
+                /* Time sync is deliberately not part of auto-advance.  It is
+                 * handled by the one-shot NTP worker on the first user stop;
+                 * waiting here used to insert a 30-second silent gap whenever
+                 * SNTP had not been started in this wake cycle. */
 
                 clock_screen_set_station_name("Next song...");
                 if (!wifi_is_connected()) {
