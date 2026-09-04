@@ -624,6 +624,10 @@ static esp_err_t audio_play_url_inner(const char *url)
 
     /* Create decoder stream */
     audio_stream_config_t stream_cfg = DEFAULT_AUDIO_STREAM_CONFIG("music");
+    /* Decoder must be able to preempt the mixer while applying the sample rate
+     * discovered from the first MP3 frame.  The default stream priority is 1,
+     * which allowed the priority-5 mixer to monopolize startup. */
+    stream_cfg.priority = 6;
     ESP_LOGI(TAG, "Heap before stream: free=%" PRIu32 " largest=%" PRIu32,
              esp_get_free_heap_size(),
              heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
@@ -646,8 +650,8 @@ static esp_err_t audio_play_url_inner(const char *url)
     http_cfg.high_watermark       = 6 * 1024;
     http_cfg.low_watermark        = 2 * 1024;
     http_cfg.task_stack_size      = 6 * 1024;
-    http_cfg.task_priority        = 6;   // above mixer/decoder (5) so the socket
-                                         // connect/read isn't starved of CPU
+    http_cfg.task_priority        = 7;   // above decoder (6) and mixer (5) so
+                                         // socket reads are not starved of CPU
     http_cfg.read_timeout_ms      = 30000;  // /audio/local/track can wait for intro buffer
     http_cfg.reconnect_timeout_ms = 1500;
     http_cfg.enable_auto_reconnect = false;

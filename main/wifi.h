@@ -20,6 +20,9 @@ esp_err_t wifi_sta_connect(uint32_t timeout_ms);
  * sync. */
 esp_err_t wifi_start_sntp(void);
 
+/* Stop the one-shot SNTP client after a successful sync or timeout. */
+void wifi_stop_sntp(void);
+
 /* Non-blocking: init + start radio, return immediately.
  * Poll wifi_is_connected() to detect when the link comes up. */
 esp_err_t wifi_sta_ensure(void);

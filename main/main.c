@@ -555,6 +555,9 @@ static void ntp_sync_task(void *arg)
     }
 
     sync_pcf85063_after_ntp(30000);
+    /* This is a one-shot user-requested sync.  Leaving lwIP SNTP alive with
+     * its 15-second acquisition interval needlessly polls and logs forever. */
+    wifi_stop_sntp();
 
     if (wifi_is_time_synced()) {
         clock_screen_set_station_name("时间已更新");
@@ -1332,6 +1335,7 @@ void app_main(void)
                  * to be sure. */
                 if (!s_first_advance_synced) {
                     sync_pcf85063_after_ntp(30000);
+                    wifi_stop_sntp();
                     s_first_advance_synced = true;
                 }
 #endif

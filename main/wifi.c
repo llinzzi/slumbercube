@@ -141,7 +141,8 @@ static volatile bool s_sntp_synced_since_init = false;
 static void sntp_sync_cb(struct timeval *tv)
 {
     s_sntp_synced_since_init = true;
-    ESP_LOGI(TAG, "SNTP sync notification received (offset %lld.%06lds from epoch)",
+    /* tv is the synchronized wall-clock value, not an offset. */
+    ESP_LOGI(TAG, "SNTP sync received (Unix time %lld.%06ld)",
              (long long)tv->tv_sec, (long)tv->tv_usec);
 }
 
@@ -334,6 +335,14 @@ esp_err_t wifi_start_sntp(void)
     }
     sntp_init_time();
     return ESP_OK;
+}
+
+void wifi_stop_sntp(void)
+{
+    if (!s_sntp_started) return;
+    esp_sntp_stop();
+    s_sntp_started = false;
+    ESP_LOGI(TAG, "SNTP stopped after one-shot sync");
 }
 
 bool wifi_is_connected(void)
