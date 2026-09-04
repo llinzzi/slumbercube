@@ -665,42 +665,26 @@ static esp_err_t audio_play_url_inner(const char *url)
              esp_get_free_heap_size(),
              heap_caps_get_largest_free_block(MALLOC_CAP_DEFAULT));
 
-    /* Wait for initial buffer, then try to start playback.
-     * Retry with fallback sample rates if mixer rejects the stream's rate.
-     * Each retry gets a FRESH io handle because audio_stream_play_io()
-     * frees it on failure via audio_stream_io_close(). */
-    static const uint32_t RATES[] = {44100, 16000, 22050, 48000};
+    /* Wait for initial buffer, then start the decoder.  The MP3 sample rate is
+     * discovered asynchronously from its first frame; the mixer follows that
+     * rate safely while serializing the I2S clock change against writes. */
     for (int wait = 0; wait < 300; wait++) {
         size_t buffered = audio_http_stream_get_buffered_bytes(s_http_stream);
         if (buffered >= 2048) {
-            for (int ri = 0; ri < (int)(sizeof(RATES)/sizeof(RATES[0])); ri++) {
-                if (ri > 0) {
-                    /* Reinit mixer at new sample rate */
-                    audio_mixer_deinit();
-                    mixer_cfg.i2s_format.sample_rate = RATES[ri];
-                    if (audio_mixer_init(&mixer_cfg) != ESP_OK) continue;
-                    /* Recreate stream */
-                    audio_stream_stop(s_stream);
-                    audio_stream_delete(s_stream);
-                    s_stream = audio_stream_new(&stream_cfg);
-                    if (!s_stream) break;
-                }
-                audio_stream_io_handle_t io;
-                err = audio_http_stream_get_io(s_http_stream, &io);
-                if (err != ESP_OK) {
-                    ESP_LOGW(TAG, "get_io failed at %lu Hz: %s", RATES[ri], esp_err_to_name(err));
-                    continue;
-                }
+            audio_stream_io_handle_t io;
+            err = audio_http_stream_get_io(s_http_stream, &io);
+            if (err == ESP_OK) {
                 err = audio_stream_play_io(s_stream, io);
-                if (err == ESP_OK) {
-                    s_playback_active = true;
-                    s_content_length = audio_http_stream_get_content_length(s_http_stream);
-                    ESP_LOGI(TAG, "Playback started at %lu Hz (%d bytes buffered)", RATES[ri], (int)buffered);
-                    return ESP_OK;
-                }
-                ESP_LOGW(TAG, "play_io failed at %lu Hz: %s", RATES[ri], esp_err_to_name(err));
             }
-            /* All sample rates failed — clean up before returning.
+            if (err == ESP_OK) {
+                s_playback_active = true;
+                s_content_length = audio_http_stream_get_content_length(s_http_stream);
+                ESP_LOGI(TAG, "Playback pipeline started (%d bytes buffered)",
+                         (int)buffered);
+                return ESP_OK;
+            }
+            ESP_LOGW(TAG, "play_io failed: %s", esp_err_to_name(err));
+            /* Decoder startup failed — clean up before returning.
              * Without this, the mixer task stays alive and can starve the
              * IDLE task, triggering the task watchdog. */
             if (s_http_stream) {

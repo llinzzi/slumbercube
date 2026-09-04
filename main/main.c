@@ -1423,7 +1423,10 @@ void app_main(void)
     audio_deinit();
 #endif
 
-    /* Free the packed I4 canvas buffer (~8KB) — safe, canvas is not drawn again */
+    /* Stop rendering before releasing the canvas memory it may read. */
+    lvgl_adapter_stop_task();
+
+    /* Free the packed I4 canvas buffer (~8KB) — safe, worker is stopped. */
     clock_screen_deinit();
 
     /* Kill display and amp after audio tasks are stopped */

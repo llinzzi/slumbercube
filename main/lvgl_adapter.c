@@ -132,7 +132,10 @@ esp_err_t lvgl_adapter_init(void)
 {
     lv_init();
 
-    g_lvgl_mutex = xSemaphoreCreateMutex();
+    /* Recursive: ui_tick() runs while the worker owns this mutex and calls
+     * public clock_screen helpers which take the same lock. Public helpers
+     * also call one another during initial screen construction. */
+    g_lvgl_mutex = xSemaphoreCreateRecursiveMutex();
     if (!g_lvgl_mutex) {
         ESP_LOGE(TAG, "Failed to create LVGL mutex");
         return ESP_ERR_NO_MEM;
@@ -227,31 +230,58 @@ static void lvgl_task(void *arg)
     ESP_LOGI(TAG, "Starting LVGL task");
     uint32_t count = 0;
     while (1) {
-        if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
+        if (xSemaphoreTakeRecursive(g_lvgl_mutex, pdMS_TO_TICKS(20)) == pdTRUE) {
             uint32_t t0 = lv_tick_get();
             lv_timer_handler();
             uint32_t dt = lv_tick_elaps(t0);
-            xSemaphoreGive(g_lvgl_mutex);
+            xSemaphoreGiveRecursive(g_lvgl_mutex);
             if (dt > 200) {
                 ESP_LOGW(TAG, "lv_timer_handler slow: %u ms", (unsigned)dt);
             }
         }
         count++;
         if (count % 100 == 0) {
-            if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
+            if (xSemaphoreTakeRecursive(g_lvgl_mutex, pdMS_TO_TICKS(100)) == pdTRUE) {
                 ui_tick();
-                xSemaphoreGive(g_lvgl_mutex);
+                xSemaphoreGiveRecursive(g_lvgl_mutex);
             }
         }
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
+void lvgl_adapter_lock(void)
+{
+    if (g_lvgl_mutex) {
+        xSemaphoreTakeRecursive(g_lvgl_mutex, portMAX_DELAY);
+    }
+}
+
+void lvgl_adapter_unlock(void)
+{
+    if (g_lvgl_mutex) {
+        xSemaphoreGiveRecursive(g_lvgl_mutex);
+    }
+}
+
+void lvgl_adapter_stop_task(void)
+{
+    if (!g_lvgl_task_handle) return;
+
+    /* Take ownership first so the worker cannot be deleted while it owns the
+     * recursive mutex or while a DMA-backed flush is still in progress. */
+    lvgl_adapter_lock();
+    TaskHandle_t task = g_lvgl_task_handle;
+    g_lvgl_task_handle = NULL;
+    vTaskDelete(task);
+    lvgl_adapter_unlock();
+    ESP_LOGI(TAG, "LVGL task stopped");
+}
+
 void lvgl_adapter_refr_now(void)
 {
-    if (xSemaphoreTake(g_lvgl_mutex, pdMS_TO_TICKS(500)) == pdTRUE) {
-        lv_timer_handler();
-        lv_refr_now(g_disp);
-        xSemaphoreGive(g_lvgl_mutex);
-    }
+    lvgl_adapter_lock();
+    lv_timer_handler();
+    lv_refr_now(g_disp);
+    lvgl_adapter_unlock();
 }

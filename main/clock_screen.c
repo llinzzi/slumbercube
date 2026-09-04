@@ -1,4 +1,5 @@
 #include "clock_screen.h"
+#include "lvgl_adapter.h"
 #include "font_digital.h"
 #include "font_station.h"
 #include "audio_player_wrapper.h"
@@ -251,10 +252,15 @@ static void draw_night_clock(void)
 
 void clock_screen_update_time(void)
 {
-    if (!time_label) return;
+    lvgl_adapter_lock();
+    if (!time_label) {
+        lvgl_adapter_unlock();
+        return;
+    }
 
     if (night_mode) {
         draw_night_clock();
+        lvgl_adapter_unlock();
         return;
     }
 
@@ -285,12 +291,14 @@ void clock_screen_update_time(void)
     snprintf(buf, sizeof(buf), "%02d:%02d",
              (unsigned char)tm_now.tm_hour, (unsigned char)tm_now.tm_min);
     lv_label_set_text(time_label, buf);
+    lvgl_adapter_unlock();
 }
 
 /* ── Public API ── */
 
 lv_obj_t *clock_screen_create(lv_obj_t *parent)
 {
+    lvgl_adapter_lock();
     container = lv_obj_create(parent);
     lv_obj_set_pos(container, 0, 0);
     lv_obj_set_size(container, CANVAS_W, CANVAS_H);
@@ -302,6 +310,7 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     canvas_buf = heap_caps_calloc(1, CANVAS_BUF_BYTES, MALLOC_CAP_8BIT);
     if (!canvas_buf) {
         ESP_LOGE(TAG, "OOM for packed I4 canvas buffer");
+        lvgl_adapter_unlock();
         return container;
     }
     if (lv_draw_buf_init(&canvas_draw_buf, CANVAS_W, CANVAS_H,
@@ -310,6 +319,7 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
         ESP_LOGE(TAG, "Failed to initialize packed I4 canvas buffer");
         heap_caps_free(canvas_buf);
         canvas_buf = NULL;
+        lvgl_adapter_unlock();
         return container;
     }
     canvas_pixels = lv_draw_buf_goto_xy(&canvas_draw_buf, 0, 0);
@@ -378,13 +388,18 @@ lv_obj_t *clock_screen_create(lv_obj_t *parent)
     lv_label_set_text(ble_indicator_label, "B");
     lv_obj_add_flag(ble_indicator_label, LV_OBJ_FLAG_HIDDEN);
 
-    return container;
+    lv_obj_t *result = container;
+    lvgl_adapter_unlock();
+    return result;
 }
 
 void clock_screen_set_station_name(const char *name)
 {
-    if (!station_label) return;
-    if (night_mode) return;
+    lvgl_adapter_lock();
+    if (!station_label || night_mode) {
+        lvgl_adapter_unlock();
+        return;
+    }
 
     if (name && name[0]) {
         lv_label_set_text(station_label, name);
@@ -392,12 +407,15 @@ void clock_screen_set_station_name(const char *name)
         lv_label_set_text(station_label, "Streaming...");
     }
     lv_obj_clear_flag(station_label, LV_OBJ_FLAG_HIDDEN);
+    lvgl_adapter_unlock();
 }
 
 void clock_screen_set_audio_indicator(bool on)
 {
+    lvgl_adapter_lock();
     s_indicator_on = on;
     if (canvas) lv_obj_invalidate(canvas);
+    lvgl_adapter_unlock();
 }
 
 void clock_screen_set_ble_indicator(bool visible, bool blinking)
@@ -408,10 +426,12 @@ void clock_screen_set_ble_indicator(bool visible, bool blinking)
 
 void clock_screen_set_indoor_env(float temp_c, float humidity)
 {
+    lvgl_adapter_lock();
     if (isnan(temp_c)) {  /* sensor absent */
         ESP_LOGI(TAG, "indoor env: sensor absent (NaN)");
         s_indoor_suffix[0] = '\0';
         if (weather && weather->valid) draw_chart();
+        lvgl_adapter_unlock();
         return;
     }
 
@@ -420,12 +440,16 @@ void clock_screen_set_indoor_env(float temp_c, float humidity)
     ESP_LOGI(TAG, "indoor env: %.1f°C %.0f%%RH  →  suffix='%s'",
              temp_c, humidity, s_indoor_suffix);
     if (weather && weather->valid) draw_chart();
+    lvgl_adapter_unlock();
 }
 
 void clock_screen_set_indoor_full(float temp_c, float humidity)
 {
-    if (!weather_label) return;
-    if (night_mode) return;
+    lvgl_adapter_lock();
+    if (!weather_label || night_mode) {
+        lvgl_adapter_unlock();
+        return;
+    }
 
     char buf[32];
     if (isnan(temp_c)) {
@@ -435,58 +459,80 @@ void clock_screen_set_indoor_full(float temp_c, float humidity)
         lv_label_set_text(weather_label, buf);
     }
     lv_obj_remove_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
+    lvgl_adapter_unlock();
 }
 
 void clock_screen_set_alarm_time(int hour, int minute)
 {
-    if (!temp_label) return;
-    if (night_mode) return;
+    lvgl_adapter_lock();
+    if (!temp_label || night_mode) {
+        lvgl_adapter_unlock();
+        return;
+    }
 
     char buf[32];
     snprintf(buf, sizeof(buf), "闹钟 %02d:%02d", hour, minute);
     lv_label_set_text(temp_label, buf);
     lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
+    lvgl_adapter_unlock();
 }
 
 void clock_screen_set_alarm_off(void)
 {
-    if (!temp_label) return;
-    if (night_mode) return;
+    lvgl_adapter_lock();
+    if (!temp_label || night_mode) {
+        lvgl_adapter_unlock();
+        return;
+    }
 
     lv_label_set_text(temp_label, "闹铃关闭");
     lv_obj_remove_flag(temp_label, LV_OBJ_FLAG_HIDDEN);
+    lvgl_adapter_unlock();
 }
 
 void clock_screen_show_button_hint(void)
 {
-    if (!station_label) return;
-    if (night_mode) return;
+    lvgl_adapter_lock();
+    if (!station_label || night_mode) {
+        lvgl_adapter_unlock();
+        return;
+    }
 
     lv_label_set_text(station_label, "按左键播放");
     lv_obj_clear_flag(station_label, LV_OBJ_FLAG_HIDDEN);
+    lvgl_adapter_unlock();
 }
 
 void clock_screen_show_button_hint_agent_off(void)
 {
-    if (!station_label) return;
-    if (night_mode) return;
+    lvgl_adapter_lock();
+    if (!station_label || night_mode) {
+        lvgl_adapter_unlock();
+        return;
+    }
 
     lv_label_set_text(station_label, "左键同步时间 · 右键睡眠");
     lv_obj_clear_flag(station_label, LV_OBJ_FLAG_HIDDEN);
+    lvgl_adapter_unlock();
 }
 
 void clock_screen_set_data(const weather_data_t *data)
 {
+    lvgl_adapter_lock();
     weather = data;
     if (!weather || !weather->valid) {
         ESP_LOGI(TAG, "set_data: invalid weather data");
+        lvgl_adapter_unlock();
         return;
     }
     ESP_LOGI(TAG, "set_data: %s %d°/%d°",
              weather->daily[0].day_text,
              weather->daily[0].high, weather->daily[0].low);
 
-    if (night_mode) return; /* Don't change visibility during night mode */
+    if (night_mode) {
+        lvgl_adapter_unlock();
+        return; /* Don't change visibility during night mode */
+    }
 
     /* Show weather data */
     if (weather_label) lv_obj_remove_flag(weather_label, LV_OBJ_FLAG_HIDDEN);
@@ -494,11 +540,16 @@ void clock_screen_set_data(const weather_data_t *data)
     draw_chart();
     lv_obj_invalidate(container);
     lv_refr_now(lv_disp_get_default());
+    lvgl_adapter_unlock();
 }
 
 void clock_screen_show(void)
 {
-    if (!container) return;
+    lvgl_adapter_lock();
+    if (!container) {
+        lvgl_adapter_unlock();
+        return;
+    }
 
     /* Apply night/day mode based on current time on first show.
      * night_mode starts as false but the clock may already be in night
@@ -512,6 +563,7 @@ void clock_screen_show(void)
     }
     lv_obj_remove_flag(container, LV_OBJ_FLAG_HIDDEN);
     lv_obj_invalidate(container);
+    lvgl_adapter_unlock();
 }
 
 bool clock_screen_is_night_time(void)
@@ -553,7 +605,11 @@ int8_t clock_screen_get_night_override(void)
 
 void clock_screen_set_night_mode(bool enable)
 {
-    if (night_mode == enable) return;
+    lvgl_adapter_lock();
+    if (night_mode == enable) {
+        lvgl_adapter_unlock();
+        return;
+    }
     night_mode = enable;
 
     if (enable) {
@@ -578,13 +634,16 @@ void clock_screen_set_night_mode(bool enable)
         draw_chart();
     }
     lv_obj_invalidate(container);
+    lvgl_adapter_unlock();
 }
 
 void clock_screen_deinit(void)
 {
+    lvgl_adapter_lock();
     if (canvas_buf) {
         heap_caps_free(canvas_buf);
         canvas_buf = NULL;
         canvas_pixels = NULL;
     }
+    lvgl_adapter_unlock();
 }
