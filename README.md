@@ -7,6 +7,18 @@
 
 > **Slumber** = 安睡 · **Cube** = 方块 —— 床头那块陪你安稳入眠的小方块。
 
+## 蓝牙扫描与调试
+
+macOS 上可以使用项目自带的 BLE Inspector 查看周围设备的广播信息和 GATT
+控制能力：
+
+```bash
+./tools/ble-inspector
+./tools/ble-inspector --inspect blinkwh
+```
+
+详细用法见 [docs/ble-inspector.md](docs/ble-inspector.md)。
+
 ## 简介
 
 一款定位于床头的AI Agent项目， 他哄你入睡，伴你睡眠，唤你起床。
