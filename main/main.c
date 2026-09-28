@@ -9,6 +9,7 @@
 #include "weather_service.h"
 #include "clock_screen.h"
 #include "esp_sleep.h"
+#include <time.h>
 #include "iot_button.h"
 #include "button_gpio.h"
 
@@ -154,6 +155,27 @@ void app_main(void)
 #else
     ESP_LOGW(TAG, "GPIO deep sleep wakeup not supported on this chip, wake by timer only");
 #endif
+
+    // Schedule timer wakeup at configured time (default 7:50)
+    {
+        time_t now = time(NULL);
+        struct tm tm_now = {0};
+        localtime_r(&now, &tm_now);
+
+        struct tm tm_wake = tm_now;
+        tm_wake.tm_hour = CONFIG_WAKEUP_HOUR;
+        tm_wake.tm_min = CONFIG_WAKEUP_MINUTE;
+        tm_wake.tm_sec = 0;
+        time_t wake_time = mktime(&tm_wake);
+        if (wake_time <= now) {
+            wake_time += 24 * 60 * 60;  // next day
+        }
+        uint64_t sleep_us = (uint64_t)(wake_time - now) * 1000000ULL;
+        esp_sleep_enable_timer_wakeup(sleep_us);
+        ESP_LOGI(TAG, "Timer wakeup in %llu min (%02d:%02d)",
+                 (unsigned long long)(sleep_us / 60000000),
+                 CONFIG_WAKEUP_HOUR, CONFIG_WAKEUP_MINUTE);
+    }
 
     // Enter deep sleep
     esp_deep_sleep_start();
