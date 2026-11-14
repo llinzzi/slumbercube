@@ -1,6 +1,7 @@
 set(slumbercube_sources
     "config_screen.c"
     "wifi_provisioning.c"
+    "alarm_schedule.c"
     "main.c"
     "ssd1322_driver.c"
     "lvgl_adapter.c"

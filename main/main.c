@@ -11,6 +11,7 @@
 #include "wifi_provisioning.h"
 #include "config_screen.h"
 #include "agent_config.h"
+#include "alarm_schedule.h"
 #include "clock_screen.h"
 #include "esp_sleep.h"
 #include "esp_system.h"
@@ -292,16 +293,42 @@ static bool arm_pcf85063_alarm_wakeup(void)
         ESP_LOGW(TAG, "PCF85063: no valid server alarm, not arming");
         return false;
     }
-    /* Server alarm is in local time (CST, UTC+8). PCF85063 stores UTC
-     * internally and compares alarm registers against its UTC clock. */
-    uint8_t wake_h = (uint8_t)(((int)srv->hour + 24 - 8) % 24);
-    uint8_t wake_m = srv->minute;
-    ESP_LOGI(TAG, "PCF85063: server alarm %02d:%02d CST -> %02d:%02d UTC",
-             srv->hour, srv->minute, wake_h, wake_m);
-    pcf85063_alarm_t alarm = { .enable = true, .minute = wake_m, .hour = wake_h,
-                                .day = PCF85063_ALARM_DISABLE,
-                                .weekday = PCF85063_ALARM_DISABLE };
-    esp_err_t err = pcf85063_set_alarm(&alarm);
+    /* PCF85063 has one match register set. Arm only its next eligible
+     * occurrence, then re-arm after that wake. This makes disabled weekend
+     * days genuine sleep days and avoids matching the current minute again
+     * while the device is still processing the alarm that just fired. */
+    alarm_occurrence_t occurrence;
+    if (!alarm_schedule_next_occurrence(time(NULL), srv->hour, srv->minute,
+                                        srv->weekend_saturday,
+                                        srv->weekend_sunday,
+                                        &occurrence)) {
+        ESP_LOGW(TAG, "PCF85063: no eligible alarm occurrence");
+        return false;
+    }
+    struct tm target_utc;
+    if (!gmtime_r(&occurrence.local_epoch, &target_utc)) {
+        ESP_LOGW(TAG, "PCF85063: failed to convert alarm target to UTC");
+        return false;
+    }
+    ESP_LOGI(TAG, "PCF85063: next server alarm %04d-%02d-%02d %02d:%02d CST "
+             "-> UTC %02d:%02d wday=%u",
+             occurrence.local_year, occurrence.local_month,
+             occurrence.local_day, occurrence.local_hour,
+             occurrence.local_minute, target_utc.tm_hour,
+             target_utc.tm_min, occurrence.utc_weekday);
+
+    /* Disable the interrupt while replacing match fields so an old match
+     * cannot leave IO0 asserted during the update. */
+    esp_err_t err = pcf85063_enable_alarm_int(false);
+    if (err != ESP_OK) { ESP_LOGW(TAG, "disable_alarm_int failed"); return false; }
+    pcf85063_alarm_t alarm = {
+        .enable = true,
+        .minute = (uint8_t)target_utc.tm_min,
+        .hour = (uint8_t)target_utc.tm_hour,
+        .day = PCF85063_ALARM_DISABLE,
+        .weekday = occurrence.utc_weekday,
+    };
+    err = pcf85063_set_alarm(&alarm);
     if (err != ESP_OK) { ESP_LOGW(TAG, "set_alarm failed"); return false; }
     err = pcf85063_enable_alarm_int(true);
     if (err != ESP_OK) { ESP_LOGW(TAG, "enable_alarm_int failed"); return false; }
@@ -316,13 +343,15 @@ static bool arm_pcf85063_alarm_wakeup(void)
     pcf85063_datetime_t now_dt;
     if (pcf85063_read_datetime(&now_dt) == ESP_OK) {
         ESP_LOGI(TAG, "PCF85063: current time %04u-%02u-%02u %02u:%02u:%02u UTC, "
-                 "alarm armed for %02d:%02d UTC (IO%d wake)",
+                 "alarm armed for %02d:%02d UTC wday=%u (IO%d wake)",
                  now_dt.year, now_dt.month, now_dt.day,
                  now_dt.hour, now_dt.minute, now_dt.second,
-                 wake_h, wake_m, CONFIG_PCF85063_INT_GPIO);
+                 target_utc.tm_hour, target_utc.tm_min,
+                 occurrence.utc_weekday, CONFIG_PCF85063_INT_GPIO);
     } else {
-        ESP_LOGI(TAG, "PCF85063: alarm armed for %02d:%02d UTC (IO%d wake)",
-                 wake_h, wake_m, CONFIG_PCF85063_INT_GPIO);
+        ESP_LOGI(TAG, "PCF85063: alarm armed for %02d:%02d UTC wday=%u (IO%d wake)",
+                 target_utc.tm_hour, target_utc.tm_min,
+                 occurrence.utc_weekday, CONFIG_PCF85063_INT_GPIO);
     }
     return true;
 }
@@ -1114,13 +1143,6 @@ void app_main(void)
     ESP_LOGI(TAG, "Audio block guard: wake=%d normal=%d night=%d",
              s_wake_kind, s_normal_mode, clock_screen_is_night_time());
     if (s_wake_kind == WAKE_RTC && s_normal_mode && !clock_screen_is_night_time()) {
-#if CONFIG_PCF85063_ENABLE
-        if (should_skip_alarm_today()) {
-            ESP_LOGI(TAG, "Weekend — alarm suppressed, clock-only wake");
-            clock_screen_set_station_name("Weekend");
-        } else
-#endif
-        {
         /* Read indoor sensor before any network call */
         float t = 0, h = 0;
         bool got_indoor = shtc3_read(&t, &h);
@@ -1146,6 +1168,20 @@ void app_main(void)
                     clock_screen_set_alarm_time(acfg->hour, acfg->minute);
                 }
             }
+
+            /* The weekend flags arrive in this same /api/esp response, so
+             * the decision must happen after audio_fetch_api(). A stale
+             * daily alarm may still wake us once after a settings change;
+             * suppress playback here while arm_pcf85063_alarm_wakeup() moves
+             * the next wake to an eligible weekday. */
+            bool skip_alarm = false;
+#if CONFIG_PCF85063_ENABLE
+            skip_alarm = should_skip_alarm_today();
+#endif
+            if (skip_alarm) {
+                ESP_LOGI(TAG, "Weekend — alarm suppressed, clock-only wake");
+                clock_screen_set_station_name("Weekend");
+            }
             if (fetch_rc == ESP_ERR_NOT_SUPPORTED) {
                 ESP_LOGI(TAG, "Agent disabled by config, clock-only mode");
                 clock_screen_set_station_name(audio_failure_station_name());
@@ -1157,12 +1193,12 @@ void app_main(void)
             }
             clock_screen_set_indoor_env(t, h);
 
-            if (got_weather) {
+            if (got_weather && !skip_alarm) {
                 clock_screen_set_station_name(audio_get_station_name());
             }
 
             /* RTC alarm → auto-play. Cold boot → just fetch, no play. */
-            if (s_wake_kind == WAKE_RTC && audio_radio_url_is_set()) {
+            if (!skip_alarm && s_wake_kind == WAKE_RTC && audio_radio_url_is_set()) {
                 if (audio_play_url() == ESP_OK) {
                     clock_screen_set_station_name(audio_get_station_name());
                     clock_screen_set_audio_indicator(true);
@@ -1170,7 +1206,6 @@ void app_main(void)
                 }
             }
         }
-        } /* !should_skip_alarm_today */
     }
 #endif
 

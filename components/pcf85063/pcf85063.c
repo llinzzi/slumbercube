@@ -247,10 +247,16 @@ esp_err_t pcf85063_set_alarm(const pcf85063_alarm_t *alarm)
     ESP_LOGI(TAG, "set_alarm: sec=0x%02X min=0x%02X hr=0x%02X day=0x%02X wday=0x%02X",
              buf[0], buf[1], buf[2], buf[3], buf[4]);
 
-    esp_err_t err = write_regs(REG_SECOND_ALARM, buf, sizeof(buf));
+    /* Clear an old match BEFORE installing the new one. Otherwise the old
+     * interrupt can stay asserted until after the new fields are written,
+     * and a target matching the current minute can immediately re-trigger. */
+    esp_err_t err = pcf85063_clear_alarm_flag();
     if (err != ESP_OK) return err;
 
-    /* Clear any leftover AF from a prior match. */
+    err = write_regs(REG_SECOND_ALARM, buf, sizeof(buf));
+    if (err != ESP_OK) return err;
+
+    /* Clear again in case the match condition asserted during the update. */
     return pcf85063_clear_alarm_flag();
 }
 
